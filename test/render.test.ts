@@ -21,6 +21,12 @@ describe("render", () => {
 		assert.match(text, /step 8/);
 	});
 
+	it("shows the notes Scout kept, so people can object", () => {
+		const message = finalMessage({ startedAt: 0, steps: [], text: "Done.", notes: ["Deploys need the release role."] }, 1000);
+		assert.match(JSON.stringify(message.blocks), /Noted for this channel: “Deploys need the release role\.”\. Disagree\? Tell me to forget it\./);
+		assert.doesNotMatch(JSON.stringify(finalMessage({ startedAt: 0, steps: [], text: "Done." }, 1000).blocks), /Noted/);
+	});
+
 	it("says what went wrong when a run fails without an answer", () => {
 		const message = finalMessage({ startedAt: 0, steps: [], error: "model overloaded" }, 1000);
 		assert.match(message.text, /ran into a problem.*model overloaded/);

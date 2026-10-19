@@ -21,6 +21,8 @@ type Run = {
 	error?: string;
 	ts?: string;
 	stoppedBy?: string;
+	/** Notes Scout kept during the run, shown with its answer so people can object. */
+	notes?: string[];
 };
 
 /**
@@ -87,6 +89,9 @@ export class ThreadView {
 			case "tool_execution_start":
 				if (this.#run === undefined || event.parentToolCallId !== undefined) return;
 				this.#run.steps.push(describeStep(event.toolName, event.args));
+				if (event.toolName === "remember" && typeof event.args.note === "string") {
+					(this.#run.notes ??= []).push(event.args.note);
+				}
 				this.#schedule();
 				return;
 			case "message_end": {
@@ -161,7 +166,7 @@ export function progressMessage(run: Pick<Run, "startedAt" | "steps" | "note">, 
 }
 
 export function finalMessage(
-	run: Pick<Run, "startedAt" | "steps" | "text" | "error" | "stoppedBy">,
+	run: Pick<Run, "startedAt" | "steps" | "text" | "error" | "stoppedBy" | "notes">,
 	now: number,
 ): ChatMessage {
 	const answer =
@@ -175,6 +180,19 @@ export function finalMessage(
 		text: clip(answer, 3_000),
 		blocks: [
 			{ type: "markdown", text: clip(answer, MARKDOWN_LIMIT) },
+			...(run.notes === undefined
+				? []
+				: [
+						{
+							type: "context",
+							elements: [
+								{
+									type: "mrkdwn",
+									text: `Noted for this channel: ${run.notes.map((n) => `“${clip(n, 200)}”`).join(" · ")}. Disagree? Tell me to forget it.`,
+								},
+							],
+						},
+					]),
 			{ type: "context", elements: [{ type: "mrkdwn", text: footer }] },
 		],
 	};
