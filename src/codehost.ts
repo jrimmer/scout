@@ -80,7 +80,7 @@ export function createCodeHostExtension(options: CodeHostOptions) {
 			const ahead = await git(["-C", mirror.path, "rev-list", "--count", `refs/heads/${base}..refs/heads/${branch}`]);
 			if (ahead === "0") throw new Error(`No changes on ${branch} beyond ${base} yet.`);
 
-			const { stat, diff, lines } = await diffOf(mirror.path, base, branch);
+			const { stat, diff, lines } = await diffOf(mirror.path, `refs/heads/${base}`, `refs/heads/${branch}`);
 			const max = options.maxChangedLines;
 			if (max !== undefined && lines > max) {
 				throw new Error(

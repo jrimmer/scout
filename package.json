@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env src/main.ts",
     "test": "node --test 'test/**/*.test.ts'",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "job": "node --env-file-if-exists=.env src/job.ts"
   },
   "type": "module",
   "dependencies": {

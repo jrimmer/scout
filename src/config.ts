@@ -25,6 +25,8 @@ export type Config = {
 	/** Local hour (0-23) for the nightly reflection, and Scout's home channel: proposals and the weekly report. */
 	reflect: { hour: number; channel?: string };
 	sandbox: { image: string; network: string; memory: string };
+	/** Pull requests with this label get a review from Scout (automation mode); unset, Scout reviews none. */
+	reviewLabel?: string;
 	/** Largest change, in lines added plus removed, Scout puts in one pull request. */
 	maxPullLines: number;
 	/** Scout's commit identity, and the SSH key the host pushes and pulls with: Scout's own, not a person's. */
@@ -46,7 +48,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	if (kind !== "forgejo" && kind !== "github") throw new Error("SCOUT_CODEHOST must be forgejo or github");
 
 	return {
-		slack: { botToken: required(env, "SLACK_BOT_TOKEN"), appToken: required(env, "SLACK_APP_TOKEN") },
+		// Only the Slack service needs these (see main.ts); jobs run without them.
+		slack: { botToken: env.SLACK_BOT_TOKEN ?? "", appToken: env.SLACK_APP_TOKEN ?? "" },
 		model: { provider, modelId },
 		dataDir: resolve(env.SCOUT_DATA_DIR ?? "data"),
 		profileDir: resolve(env.SCOUT_PROFILE_DIR ?? "profile"),
@@ -74,6 +77,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			...(env.SCOUT_REFLECT_CHANNEL ? { channel: env.SCOUT_REFLECT_CHANNEL } : {}),
 		},
 		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
+		...(env.SCOUT_REVIEW_LABEL ? { reviewLabel: env.SCOUT_REVIEW_LABEL } : {}),
 		sandbox: {
 			image: env.SCOUT_SANDBOX_IMAGE ?? "scout-sandbox:latest",
 			network: env.SCOUT_SANDBOX_NETWORK ?? "none",
@@ -85,4 +89,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			...(env.SCOUT_GIT_SSH_KEY ? { sshKey: resolve(env.SCOUT_GIT_SSH_KEY.replace(/^~(?=\/|$)/, homedir())) } : {}),
 		},
 	};
+}
+
+/** Every git command the host runs (clone, fetch, push, profile pulls) uses Scout's own key. Containers never see it. */
+export function useScoutsKey(sshKey: string | undefined): void {
+	if (sshKey !== undefined) {
+		process.env.GIT_SSH_COMMAND = `ssh -i '${sshKey}' -o IdentitiesOnly=yes -o IdentityAgent=none`;
+	}
 }

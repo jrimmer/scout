@@ -85,9 +85,9 @@ export async function reviewAsSubtask(
 	return parseReview(text);
 }
 
-/** What a branch changes against its base, from the host-owned mirror. */
-export async function diffOf(mirrorPath: string, base: string, branch: string): Promise<{ stat: string; diff: string; lines: number }> {
-	const range = `refs/heads/${base}...refs/heads/${branch}`;
+/** What `to` changes against `from` (refs or commits), from the host-owned mirror. */
+export async function diffOf(mirrorPath: string, from: string, to: string): Promise<{ stat: string; diff: string; lines: number }> {
+	const range = `${from}...${to}`;
 	const git = async (...args: string[]) =>
 		(await run("git", ["-C", mirrorPath, ...args], { maxBuffer: 64 * 1024 * 1024 })).stdout;
 	const numstat = await git("diff", "--numstat", range);

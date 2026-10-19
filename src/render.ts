@@ -182,7 +182,7 @@ export function finalMessage(
 
 export function describeStep(toolName: string, args: Record<string, unknown>): string {
 	const arg = (name: string) => (typeof args[name] === "string" ? (args[name] as string) : undefined);
-	const detail = toolName === "bash" ? arg("command")?.split("\n")[0] : (arg("path") ?? arg("name") ?? arg("title"));
+	const detail = toolName === "bash" ? arg("command")?.split("\n")[0] : (arg("path") ?? arg("name") ?? arg("title") ?? arg("query") ?? arg("note"));
 	const label = detail === undefined ? toolName : `${toolName} ${detail}`;
 	return `\`${clip(label, 100).replaceAll("`", "'")}\``;
 }

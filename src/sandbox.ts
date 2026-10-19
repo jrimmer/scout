@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord";
@@ -77,6 +77,13 @@ export class Mirror {
 		await git(["-C", dir, "checkout", "--quiet", "-b", branch, `origin/${base}`]);
 		await git(["-C", dir, "config", "user.name", identity.name]);
 		await git(["-C", dir, "config", "user.email", identity.email]);
+	}
+
+	/** A fresh clone checked out at `commit`, for reading, unless `dir` already holds one. */
+	async checkout(dir: string, commit: string): Promise<void> {
+		if (await exists(join(dir, ".git"))) return;
+		await git(["clone", "--no-hardlinks", "--quiet", "--no-checkout", this.path, dir]);
+		await git(["-C", dir, "checkout", "--quiet", "--detach", commit]);
 	}
 }
 
@@ -161,6 +168,12 @@ export class Workspaces {
 			sandbox.image,
 			"sleep", "infinity",
 		]);
+	}
+
+	/** Remove a conversation's container and files, for work that is over (a job). */
+	async remove(conversationId: number): Promise<void> {
+		await run("docker", ["rm", "--force", containerFor(this.#config.instance, conversationId)]).catch(() => {});
+		await rm(this.paths(conversationId).root, { recursive: true, force: true });
 	}
 
 	/** Stop a thread's container; its files stay, and the next tool call starts it again. */

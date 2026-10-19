@@ -47,6 +47,15 @@ export class Pulls {
 				checked_at INTEGER NOT NULL DEFAULT 0
 			);
 			CREATE TABLE IF NOT EXISTS reports (week TEXT PRIMARY KEY, sent_at INTEGER NOT NULL);
+			CREATE TABLE IF NOT EXISTS reviews (
+				slug TEXT NOT NULL,
+				number INTEGER NOT NULL,
+				sha TEXT NOT NULL,
+				conversation_id INTEGER NOT NULL,
+				submission_id INTEGER NOT NULL,
+				posted_at INTEGER,
+				PRIMARY KEY (slug, number, sha)
+			);
 		`);
 	}
 
@@ -123,9 +132,51 @@ export class Pulls {
 		return Number((this.#db.prepare(`SELECT COUNT(*) AS n FROM pulls WHERE ${where}`).get(...args) as { n: number }).n);
 	}
 
+	/** Reviews of other people's pull requests (automation.ts), by the commit reviewed. */
+	review(slug: string, number: number, sha: string): ReviewRow | undefined {
+		const row = this.#db.prepare("SELECT * FROM reviews WHERE slug = ? AND number = ? AND sha = ?").get(slug, number, sha);
+		return row === undefined ? undefined : toReview(row);
+	}
+
+	reviewStarted(row: Omit<ReviewRow, "postedAt">): void {
+		this.#db
+			.prepare("INSERT INTO reviews (slug, number, sha, conversation_id, submission_id) VALUES (?, ?, ?, ?, ?)")
+			.run(row.slug, row.number, row.sha, row.conversationId, row.submissionId);
+	}
+
+	unpostedReviews(): ReviewRow[] {
+		return this.#db.prepare("SELECT * FROM reviews WHERE posted_at IS NULL").all().map(toReview);
+	}
+
+	reviewPosted(row: Pick<ReviewRow, "slug" | "number" | "sha">, now = Date.now()): void {
+		this.#db
+			.prepare("UPDATE reviews SET posted_at = ? WHERE slug = ? AND number = ? AND sha = ?")
+			.run(now, row.slug, row.number, row.sha);
+	}
+
 	close(): void {
 		this.#db.close();
 	}
+}
+
+export type ReviewRow = {
+	slug: string;
+	number: number;
+	sha: string;
+	conversationId: number;
+	submissionId: number;
+	postedAt?: number;
+};
+
+function toReview(row: Record<string, unknown>): ReviewRow {
+	return {
+		slug: String(row.slug),
+		number: Number(row.number),
+		sha: String(row.sha),
+		conversationId: Number(row.conversation_id),
+		submissionId: Number(row.submission_id),
+		...(row.posted_at === null || row.posted_at === undefined ? {} : { postedAt: Number(row.posted_at) }),
+	};
 }
 
 function report(pulls: Pulls, now: number): string {
