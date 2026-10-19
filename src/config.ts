@@ -33,6 +33,8 @@ export type Config = {
 	/** Local hour (0-23) for the nightly reflection, and Scout's home channel: proposals and the weekly report. */
 	reflect: { hour: number; channel?: string };
 	sandbox: { image: string; network: string; memory: string };
+	/** MCP servers whose tools Scout may use (see mcp.ts). */
+	mcpFile?: string;
 	/** Pull requests with this label get a review from Scout (automation mode); unset, Scout reviews none. */
 	reviewLabel?: string;
 	/** Largest change, in lines added plus removed, Scout puts in one pull request. */
@@ -100,6 +102,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		},
 		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
 		...(env.SCOUT_REVIEW_LABEL ? { reviewLabel: env.SCOUT_REVIEW_LABEL } : {}),
+		...(env.SCOUT_MCP_FILE ? { mcpFile: resolve(env.SCOUT_MCP_FILE) } : {}),
 		sandbox: {
 			image: env.SCOUT_SANDBOX_IMAGE ?? "scout-sandbox:latest",
 			network: env.SCOUT_SANDBOX_NETWORK ?? "none",

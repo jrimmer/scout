@@ -7,6 +7,7 @@ import { type AgentChange, type ConversationId, createRegistry, Harness, type St
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createCodeHostExtension } from "./codehost.ts";
 import type { Config, RepoConfig } from "./config.ts";
+import { closeMcp, connectMcp, loadMcpConfig, type McpConnection, mcpExtension } from "./mcp.ts";
 import { ThreadDoc } from "./docs.ts";
 import { consolidationExtension, Memory, memoryExtension } from "./memory.ts";
 import { cloneProfile, loadProfile, type Profile, profileExtension, watchProfile } from "./profile.ts";
@@ -38,6 +39,8 @@ export type ScoutOptions = {
 	watchProfile?: boolean;
 	/** Model access; by default the Anthropic and OpenAI providers, with keys from the environment. */
 	models?: Models;
+	/** MCP servers already connected; by default, the ones in `config.mcpFile`. */
+	mcp?: McpConnection[];
 };
 
 export type Scout = Awaited<ReturnType<typeof openScout>>;
@@ -133,6 +136,9 @@ export async function openScout(options: ScoutOptions) {
 		},
 	});
 	const consolidation = consolidationExtension(memory);
+	const mcp = options.mcp ?? (config.mcpFile === undefined ? [] : await connectMcp(loadMcpConfig(config.mcpFile)));
+	const mcpTools = await mcpExtension(mcp);
+	if (mcp.length > 0) console.log(`MCP: ${mcp.map((c) => c.name).join(", ")} (${mcpTools.tools?.length ?? 0} tools)`);
 
 	for (const extension of [
 		reviewer,
@@ -145,6 +151,7 @@ export async function openScout(options: ScoutOptions) {
 		reflection.files,
 		profileCodeHost,
 		consolidation,
+		mcpTools,
 	]) {
 		registry.install(extension);
 	}
@@ -208,7 +215,7 @@ export async function openScout(options: ScoutOptions) {
 		/** What a thread (or a job) runs with. */
 		workAgent: {
 			model: config.model,
-			extensions: [profileTools, codingTools, workCodeHost, searchTools, memoryTools],
+			extensions: [profileTools, codingTools, workCodeHost, searchTools, memoryTools, mcpTools],
 		} satisfies AgentChange,
 		reviewerAgent,
 		async close(): Promise<void> {
@@ -218,6 +225,7 @@ export async function openScout(options: ScoutOptions) {
 			pulls.close();
 			search.close();
 			memory.close();
+			await closeMcp(mcp);
 		},
 	};
 }
