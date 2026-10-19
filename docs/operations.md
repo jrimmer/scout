@@ -28,6 +28,10 @@ threads can be *working* at once. Ask a spoond admin to raise it for Scout's acc
 thread, plus a few for short commands. (`POST /api/users/{id}/quota` with `{"exec_concurrency": N}`, from the spoond
 release after `c95af19`.) Then set Scout's concurrency limits (below) under it.
 
+When spoond is nearly full it answers new leases with "wait" or "full", and Scout retries for up to ten minutes
+before the thread hears that no sandbox was free. spoond also pauses leases to keep memory free; a paused lease
+resumes on its next use, so a thread's first command after a quiet spell can take longer.
+
 ## Model gateway
 
 `SCOUT_GATEWAY_URL` sends model calls to a gateway (Bifrost, LiteLLM, Cloudflare AI Gateway) instead of the provider,

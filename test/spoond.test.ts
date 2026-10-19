@@ -74,6 +74,31 @@ describe("spoond driver", () => {
 	});
 });
 
+describe("spoond driver when spoond is full", () => {
+	function answering(statuses: number[]): { fetch: typeof fetch; calls: number } {
+		const state: { fetch: typeof fetch; calls: number } = { calls: 0, fetch: (async () => {
+			const status = statuses[state.calls++] ?? 200;
+			return status === 200
+				? Response.json({ sandboxes: [] })
+				: new Response(status === 503 ? "capacity_wait" : "box_full", { status, headers: { "retry-after": "0" } });
+		}) as typeof fetch };
+		return state;
+	}
+
+	it("waits out capacity_wait and box_full", async () => {
+		const spoond = answering([503, 429, 503]);
+		await new SpoondDriver({ url: "http://spoond", token: "t", fetch: spoond.fetch }).remove("t-1");
+		assert.equal(spoond.calls, 4);
+	});
+
+	it("gives up when spoond stays full past its patience", async () => {
+		const spoond = answering([503, 503]);
+		const driver = new SpoondDriver({ url: "http://spoond", token: "t", fetch: spoond.fetch, patience: 0 });
+		await assert.rejects(driver.remove("t-1"), /503 capacity_wait/);
+		assert.equal(spoond.calls, 1);
+	});
+});
+
 /**
  * The same against a real spoond: `SCOUT_SPOOND_TESTS=1 SCOUT_SPOOND_URL=… SCOUT_SPOOND_TOKEN=… npm test`. The image
  * (SCOUT_SANDBOX_IMAGE, default dev-base) needs git; the code host here is a bundle-only local repo, so nothing leaves.

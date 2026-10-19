@@ -24,6 +24,8 @@ export type SpoondOptions = {
 	checkpointInterval?: number;
 	/** The guest's home directory (spoond's images run as root). */
 	home?: string;
+	/** Seconds to keep retrying while spoond is full or busy (default 600). */
+	patience?: number;
 };
 
 type Lease = { id: string; holder?: string; state?: string };
@@ -126,9 +128,13 @@ export class SpoondDriver implements SandboxDriver {
 		return response.status === 204 ? undefined : response.json();
 	}
 
-	/** One request, waiting and retrying when spoond is full or busy (it says how long with Retry-After). */
+	/**
+	 * One request, waiting and retrying when spoond is full or busy (it says how long with Retry-After). Near full it
+	 * answers creates with 503 or 429 more often, and pauses leases to keep memory free, so this waits minutes, not tries.
+	 */
 	async #request(method: string, path: string, body?: string | Uint8Array<ArrayBuffer>): Promise<Response> {
-		for (let attempt = 0; ; attempt++) {
+		const deadline = Date.now() + (this.#options.patience ?? 600) * 1000;
+		for (;;) {
 			const response = await this.#fetch(`${this.#options.url}${path}`, {
 				method,
 				headers: {
@@ -138,9 +144,12 @@ export class SpoondDriver implements SandboxDriver {
 				...(body === undefined ? {} : { body }),
 			});
 			const busy = response.status === 409 || response.status === 429 || response.status === 503;
-			if (!busy || attempt >= 5) return response;
-			const wait = Number(response.headers.get("retry-after") ?? 5);
-			await new Promise((resolve) => setTimeout(resolve, Math.min(60, Number.isFinite(wait) ? wait : 5) * 1000));
+			if (!busy) return response;
+			const seconds = Number(response.headers.get("retry-after") ?? 5);
+			const wait = Math.min(60, Number.isFinite(seconds) && seconds >= 0 ? seconds : 5) * 1000;
+			if (Date.now() + wait >= deadline) return response;
+			await response.body?.cancel();
+			await new Promise((resolve) => setTimeout(resolve, wait));
 		}
 	}
 }
