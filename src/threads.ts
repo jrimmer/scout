@@ -32,7 +32,7 @@ export class Threads {
 
 	constructor(path: string) {
 		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-		this.#db = new DatabaseSync(path);
+		this.#db = new DatabaseSync(path, { timeout: 5000 });
 		this.#db.exec(`
 			PRAGMA journal_mode = WAL;
 			CREATE TABLE IF NOT EXISTS threads (

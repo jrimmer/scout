@@ -16,7 +16,7 @@ export class ThreadSearch {
 
 	constructor(path: string) {
 		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-		this.#db = new DatabaseSync(path);
+		this.#db = new DatabaseSync(path, { timeout: 5000 });
 		this.#db.exec(`
 			CREATE VIRTUAL TABLE IF NOT EXISTS thread_text USING fts5(
 				key UNINDEXED, conversation_id UNINDEXED, channel_name UNINDEXED, speaker UNINDEXED, at UNINDEXED, text,
