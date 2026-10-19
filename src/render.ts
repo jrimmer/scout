@@ -66,6 +66,14 @@ export class ThreadView {
 		return this.#run !== undefined;
 	}
 
+	/** The current run, for the dashboard: when it started, how many steps, and the latest. */
+	get runInfo(): { startedAt: number; steps: number; lastStep?: string } | undefined {
+		const run = this.#run;
+		if (run === undefined) return undefined;
+		const last = run.steps.at(-1);
+		return { startedAt: run.startedAt, steps: run.steps.length, ...(last === undefined ? {} : { lastStep: last.replaceAll("`", "") }) };
+	}
+
 	/** The Slack message showing the current run, once posted. */
 	get runTs(): string | undefined {
 		return this.#run?.ts;

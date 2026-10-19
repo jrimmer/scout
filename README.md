@@ -20,6 +20,8 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
     and every thread gets it.
   - Every Monday it reports its merge rate.
 - **Beyond code.** MCP servers (the data warehouse, traces, CI) run on the host, optionally per channel.
+- **A dashboard** (after spoond's): what Scout is working on, its merge rate, what it's learning, the notes nobody
+  has reviewed yet, and what it costs, live, at `http://127.0.0.1:8893/`.
 - **Three ways in:**
   - Slack threads.
   - Pull requests labelled for review (it comments).

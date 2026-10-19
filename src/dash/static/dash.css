@@ -1,0 +1,26 @@
+/* Scout's dashboard: the character grid (see grid.ts), after spoond's. One class per grid style, mapped to the
+   palette; each row (span.gr) is the unit a live update replaces. */
+:root {
+	--bg: #0c0c0d; --fg: #c9c9c9; --dim: #6b6b6b; --frame: #3a3a40; --title: #6fd8e8; --head: #f2f2f2;
+	--ok: #6ef59a; --warn: #ffc46b; --bad: #ff7a85; --state: #86a9ff; --id: #b09aff; --spark: #6fd8e8;
+}
+html, body { background: var(--bg); color: var(--fg); margin: 0; }
+main { margin: 0 auto; padding: 1rem 1rem 2rem; width: fit-content; }
+pre.grid {
+	font-family: "JetBrains Mono", ui-monospace, monospace;
+	font-size: 13px; line-height: 1.15; margin: 0; white-space: pre;
+	overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+}
+pre.grid::-webkit-scrollbar { display: none; }
+pre.grid > span.gr { display: block; white-space: pre; }
+.g-head { color: var(--head); font-weight: 700; }
+.g-frame { color: var(--frame); }
+.g-title { color: var(--title); font-weight: 700; }
+.g-dim { color: var(--dim); }
+.g-text { color: var(--fg); }
+.g-ok { color: var(--ok); }
+.g-warn { color: var(--warn); }
+.g-bad { color: var(--bad); }
+.g-state { color: var(--state); }
+.g-id { color: var(--id); }
+.g-spark { color: var(--spark); }

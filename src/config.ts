@@ -35,6 +35,8 @@ export type Config = {
 	/** Local hour (0-23) for the nightly reflection, and Scout's home channel: proposals and the weekly report. */
 	reflect: { hour: number; channel?: string };
 	sandbox: { image: string; network: string; memory: string };
+	/** The read-only dashboard (see dash/server.ts); absent when SCOUT_DASH_ADDR is `off`. */
+	dash?: { addr: string; auth?: { user: string; passwordHash: string } };
 	/** MCP servers whose tools Scout may use (see mcp.ts). */
 	mcpFile?: string;
 	/** Pull requests with this label get a review from Scout (automation mode); unset, Scout reviews none. */
@@ -105,6 +107,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
 		...(env.SCOUT_REVIEW_LABEL ? { reviewLabel: env.SCOUT_REVIEW_LABEL } : {}),
 		...(env.SCOUT_MCP_FILE ? { mcpFile: resolve(env.SCOUT_MCP_FILE) } : {}),
+		...(env.SCOUT_DASH_ADDR === "off"
+			? {}
+			: {
+					dash: {
+						addr: env.SCOUT_DASH_ADDR ?? "127.0.0.1:8893",
+						...(env.SCOUT_DASH_USER && env.SCOUT_DASH_PASSWORD_HASH
+							? { auth: { user: env.SCOUT_DASH_USER, passwordHash: env.SCOUT_DASH_PASSWORD_HASH } }
+							: {}),
+					},
+				}),
 		sandbox: {
 			image: env.SCOUT_SANDBOX_IMAGE ?? "scout-sandbox:latest",
 			network: env.SCOUT_SANDBOX_NETWORK ?? "none",

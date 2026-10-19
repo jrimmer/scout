@@ -85,6 +85,14 @@ export class Bridge {
 		return this.#views.get(conversationId);
 	}
 
+	/** Threads Scout is working in right now. */
+	working(): { conversationId: number; startedAt: number; steps: number; lastStep?: string }[] {
+		return [...this.#views].flatMap(([conversationId, view]) => {
+			const info = view.runInfo;
+			return info === undefined ? [] : [{ conversationId, ...info }];
+		});
+	}
+
 	async onMessage(message: IncomingMessage): Promise<void> {
 		const { botUserId, surface } = this.#options;
 		if (message.user === botUserId) return;

@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { PullReviewer } from "./automation.ts";
+import { hostname } from "node:os";
 import { Bridge } from "./bridge.ts";
+import { Collector } from "./dash/collect.ts";
+import { startDashboard } from "./dash/server.ts";
+import { ThreadDoc } from "./docs.ts";
+import { Health } from "./health.ts";
 import { loadConfig, useScoutsKey } from "./config.ts";
 import { pullProfile } from "./profile.ts";
 import { weekOf } from "./pulls.ts";
@@ -26,6 +31,8 @@ if (config.sandbox.network === "none") {
 }
 
 const slack = new Slack(config.slack);
+const health = new Health();
+const startedAt = Date.now();
 /** Say something in Scout's home channel, if it has one. */
 function announce(text: string): void {
 	if (config.reflect.channel === undefined) return;
@@ -87,12 +94,8 @@ console.log(`scout is listening as <@${slack.botUserId}> (model ${config.model.p
 
 async function reflect(day: string): Promise<void> {
 	if (reflector === undefined) return;
-	try {
-		const started = await reflector.run(day);
-		if (started !== undefined) console.log(`reflecting on ${started.threads} thread(s) for ${day}`);
-	} catch (error) {
-		console.error(`reflection for ${day} failed:`, error);
-	}
+	const started = await health.watch("reflect", "the nightly reflection failed", () => reflector.run(day));
+	if (started !== undefined) console.log(`reflecting on ${started.threads} thread(s) for ${day}`);
 }
 
 const tick = setInterval(() => {
@@ -104,11 +107,11 @@ const tick = setInterval(() => {
 		}
 	}
 	if (config.profileRepo !== undefined) {
-		pullProfile(config.profileDir).catch((error: unknown) => console.error("profile pull failed:", error));
+		void health.watch("profile", "pulling the profile failed", () => pullProfile(config.profileDir));
 	}
 	if (new Date(now).getHours() >= config.reflect.hour) void reflect(localDay(new Date(now)));
-	void pullReviewer?.poll().catch((error: unknown) => console.error("pull request reviews failed:", error));
-	void pulls.refresh(config.codeHost).then(async (decided) => {
+	if (pullReviewer !== undefined) void health.watch("reviews", "reviewing labelled pull requests failed", () => pullReviewer.poll());
+	void health.watch("pulls", "checking pull requests failed", () => pulls.refresh(config.codeHost)).then(async (decided = []) => {
 		// A reflection's proposal was decided: merged retires the notes it covered; rejected keeps them.
 		for (const pull of decided) {
 			const day = pull.kind === "profile" ? threads.reflectionDay(pull.conversationId) : undefined;
@@ -124,6 +127,42 @@ const tick = setInterval(() => {
 	});
 }, 5 * MINUTE);
 
+// The dashboard: read-only, on its own address (loopback unless it has a password).
+const channelNames = new Map<number, string>();
+const dashboard =
+	config.dash === undefined
+		? undefined
+		: await startDashboard({
+				addr: config.dash.addr,
+				...(config.dash.auth === undefined ? {} : { auth: config.dash.auth }),
+				collector: new Collector({
+					host: hostname(),
+					model: `${config.model.provider}/${config.model.modelId}`,
+					startedAt,
+					reflectHour: config.reflect.hour,
+					profileRepo: config.profileRepo !== undefined,
+					...(config.reviewLabel === undefined ? {} : { reviewLabel: config.reviewLabel }),
+					threads,
+					pulls,
+					memory,
+					working: () => bridge.working(),
+					channelOf: async (id) => {
+						let name = channelNames.get(id);
+						if (name === undefined) {
+							name = (await harness.snapshot(ThreadDoc, id as never, context))?.channelName || "?";
+							channelNames.set(id, name);
+						}
+						return name;
+					},
+					spend: async () => {
+						const usage = await harness.usage(context);
+						return Object.fromEntries(Object.entries(usage.models).map(([model, u]) => [model, u.cost?.total ?? 0]));
+					},
+					alerts: () => health.list(),
+				}),
+			});
+if (config.dash !== undefined) console.log(`dashboard on http://${config.dash.addr}/`);
+
 // `kill -USR2 <pid>` reflects now, if today's reflection hasn't run yet.
 process.on("SIGUSR2", () => void reflect(localDay(new Date())));
 
@@ -134,6 +173,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		stopping = true;
 		clearInterval(tick);
 		await slack.stop().catch(() => {});
+		await dashboard?.close();
 		await scout.close();
 		process.exit(0);
 	});

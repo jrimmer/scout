@@ -69,6 +69,20 @@ export class Threads {
 		return row === undefined ? undefined : toThread(row);
 	}
 
+	recent(limit: number): ThreadRow[] {
+		return this.#db.prepare("SELECT * FROM threads ORDER BY last_activity DESC LIMIT ?").all(limit).map(toThread);
+	}
+
+	countSince(since: number): number {
+		return Number((this.#db.prepare("SELECT COUNT(*) AS n FROM threads WHERE last_activity >= ?").get(since) as { n: number }).n);
+	}
+
+	lastReflection(): { day: string; conversationId: number; threads: number } | undefined {
+		const row = this.#db.prepare("SELECT * FROM reflections ORDER BY day DESC LIMIT 1").get();
+		if (row === undefined) return undefined;
+		return { day: String(row.day), conversationId: Number(row.conversation_id), threads: (JSON.parse(String(row.threads)) as string[]).length };
+	}
+
 	activeSince(since: number): ThreadRow[] {
 		return this.#db.prepare("SELECT * FROM threads WHERE last_activity >= ?").all(since).map(toThread);
 	}

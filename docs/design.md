@@ -57,6 +57,8 @@ one-off:   job.ts ─▶ the same agent, no Slack, nothing kept
 | `src/pulls.ts` | Every pull request Scout opens and what became of it; the weekly merge rate. |
 | `src/automation.ts` | Pull requests with the review label get a review comment, once per commit. |
 | `src/mcp.ts` | MCP servers' tools, run on the host, optionally per channel. |
+| `src/dash/` | The read-only dashboard: a character grid (after spoond's), live over SSE, row by row. |
+| `src/health.ts` | What needs a person: background jobs that keep failing. |
 | `src/threads.ts` | Thread ↔ conversation map, plus per-thread stats (River's `river_sessions`). |
 | `src/scout.ts` | Everything but the front door: harness, extensions, workspaces, stores. |
 | `src/main.ts` | The Slack service and its schedules. `src/job.ts` is the one-off front door. |
@@ -150,8 +152,6 @@ The first Scout (`scout-legacy`, archived) had about 82k lines of Go for roughly
 - **Automation can't review pull requests from forks** unless the code host mirrors their heads
   (`refs/pull/*/head`); the review is skipped with a log line.
 - **Attachments are ignored.**
-- **Progress after a restart.** A run that resumes after a restart posts a new progress message instead of editing
-  the old one.
 - **Two open profile proposals can conflict.** The reflection sees which earlier proposals merged or closed, but
   not their review comments.
 

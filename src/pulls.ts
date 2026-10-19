@@ -81,6 +81,14 @@ export class Pulls {
 			.map(toPull);
 	}
 
+	latest(limit: number): PullRow[] {
+		return this.#db.prepare("SELECT * FROM pulls ORDER BY opened_at DESC LIMIT ?").all(limit).map(toPull);
+	}
+
+	latestReviews(limit: number): ReviewRow[] {
+		return this.#db.prepare("SELECT * FROM reviews ORDER BY rowid DESC LIMIT ?").all(limit).map(toReview);
+	}
+
 	forConversation(conversationId: number): PullRow[] {
 		return this.#db.prepare("SELECT * FROM pulls WHERE conversation_id = ?").all(conversationId).map(toPull);
 	}
