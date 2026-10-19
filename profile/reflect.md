@@ -10,7 +10,8 @@ Look for:
 1. **Where you got stuck or went wrong**: failed commands, wrong guesses about how something works, corrections from people, work redone after feedback. Write down what you should have known.
 2. **What people taught you**: someone explained a system, a convention, a command, or how their team likes things done.
 3. **What worked well and will come up again**: a sequence of steps worth reusing.
-4. **What is wrong in the profile**: instructions that misled you or no longer hold. Fix or remove them; un-learning matters as much as learning.
+4. **Notes you kept during threads** (listed above the threads, when there are any). Fold the ones that will keep mattering into the profile and call consolidate_memories with their ids; they retire once your pull request merges. Leave notes that are too fresh or too narrow to judge.
+5. **What is wrong in the profile**: instructions that misled you or no longer hold. Fix or remove them; un-learning matters as much as learning.
 
 Rules:
 - Put team-specific knowledge under that channel's directory. Only put things in `system.md` or shared skills when they apply everywhere.

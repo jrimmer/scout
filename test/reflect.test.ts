@@ -9,8 +9,9 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, type EntryRecord, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { createCodeHostExtension } from "../src/codehost.ts";
+import { consolidationExtension, Memory } from "../src/memory.ts";
 import { Pulls } from "../src/pulls.ts";
-import { ThreadDoc } from "../src/profile.ts";
+import { ThreadDoc } from "../src/docs.ts";
 import { branchForDay, Reflector, reflectionExtensions, renderTranscript } from "../src/reflect.ts";
 import { threadKey, Threads } from "../src/threads.ts";
 
@@ -58,9 +59,11 @@ describe("nightly reflection", () => {
 
 	const threads = new Threads(":memory:");
 	const pulls = new Pulls(":memory:");
+	const memory = new Memory(":memory:");
 	after(() => {
 		threads.close();
 		pulls.close();
+		memory.close();
 	});
 
 	it("reads new threads, edits the profile, and proposes it once a day", async () => {
@@ -82,7 +85,9 @@ describe("nightly reflection", () => {
 				return new Response(JSON.stringify({ html_url: "https://example/pull/7", number: 7 }), { status: 201 });
 			},
 		});
+		const consolidation = consolidationExtension(memory);
 		const registry = createRegistry();
+		registry.install(consolidation);
 		registry.install(reflection.reflect);
 		registry.install(reflection.files);
 		registry.install(codeHost);
@@ -96,11 +101,12 @@ describe("nightly reflection", () => {
 			harness,
 			threads,
 			pulls,
+			memory,
 			context,
 			dataDir: join(root, "data"),
 			profileRepo: { gitUrl: remote, base: "main", slug: "team/scout-profile" },
 			git: { name: "Scout", email: "scout@localhost" },
-			agent: { model, extensions: [reflection.reflect, reflection.files, codeHost] },
+			agent: { model, extensions: [reflection.reflect, reflection.files, codeHost, consolidation] },
 			threadLink: async () => "https://slack/archives/C1/p1",
 		});
 
@@ -127,6 +133,7 @@ describe("nightly reflection", () => {
 			)
 		).wait(context);
 		threads.spoke(threadKey("C1", "1.0"), "scout", Date.now() + 1);
+		const note = memory.remember("deploys", "Deploys go through ./bin/deploy.");
 
 		let digest = "";
 		faux.setResponses([
@@ -137,7 +144,13 @@ describe("nightly reflection", () => {
 					fauxToolCall("write", { path: ".git/hooks/pre-commit", content: "#!/bin/sh\ntouch /tmp/scout-pwned\n" }),
 				], toolUse);
 			},
-			fauxAssistantMessage([fauxToolCall("open_pull_request", { title: "Teach Scout to deploy", body: "From #deploys." })], toolUse),
+			fauxAssistantMessage(
+				[
+					fauxToolCall("consolidate_memories", { ids: [note] }),
+					fauxToolCall("open_pull_request", { title: "Teach Scout to deploy", body: "From #deploys." }),
+				],
+				toolUse,
+			),
 			fauxAssistantMessage("Proposed a deploy skill."),
 		]);
 
@@ -152,6 +165,7 @@ describe("nightly reflection", () => {
 		assert.match(digest, /Scout: I couldn't run the deploy\./);
 		assert.match(digest, /Learn from the threads\./);
 		assert.match(digest, /system\.md/, "the reflection sees the profile's files");
+		assert.match(digest, /\[1\] #deploys: Deploys go through \.\/bin\/deploy\./, "and the notes kept since");
 
 		const branch = branchForDay("2026-10-19");
 		assert.equal(git("--git-dir", remote, "show", `${branch}:skills/deploys.md`), "---\ndescription: Deploying\n---\nUse ./bin/deploy.");
@@ -163,6 +177,8 @@ describe("nightly reflection", () => {
 		]);
 
 		assert.equal(pulls.get("https://example/pull/7")?.title, "Teach Scout to deploy");
+		memory.proposalDecided(threads.reflectionDay(started!.conversationId)!, true);
+		assert.deepEqual(memory.active(), [], "the note retires once the proposal merges");
 
 		// Once per day, and only for threads with something new.
 		assert.equal(await reflector.run("2026-10-19"), undefined);

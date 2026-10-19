@@ -1,7 +1,7 @@
 import type { Context } from "@earendil-works/chord";
 import { type AgentChange, type ConversationId, type Harness, watchEvents } from "@earendil-works/pi-durable";
 import { delivery } from "./etiquette.ts";
-import { ThreadDoc } from "./profile.ts";
+import { ThreadDoc } from "./docs.ts";
 import type { ThreadSearch } from "./search.ts";
 import { type ChatMessage, type ChatSurface, ThreadView } from "./render.ts";
 import { threadKey, type ThreadRow, type Threads } from "./threads.ts";

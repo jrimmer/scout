@@ -4,17 +4,8 @@ import { promisify } from "node:util";
 import { basename, join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/chord";
-import { type ConversationId, type DocumentReader, defineDoc, defineExtension, defineTool, section } from "@earendil-works/pi-durable";
-
-/** Which Slack thread a conversation is. Written when the thread's conversation is created. */
-export const ThreadDoc = defineDoc<{ channel: string; channelName: string; threadTs: string }>({
-	kind: "scout.thread",
-	version: 1,
-	scope: "conversation",
-	history: "latest",
-	fork: "current",
-	initial: () => ({ channel: "", channelName: "", threadTs: "" }),
-});
+import { type ConversationId, type DocumentReader, defineExtension, defineTool, section } from "@earendil-works/pi-durable";
+import { ThreadDoc } from "./docs.ts";
 
 export type Skill = { name: string; description: string; body: string };
 

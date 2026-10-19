@@ -4,7 +4,6 @@ import type { Context } from "@earendil-works/chord";
 import {
 	type AgentChange,
 	type ConversationId,
-	defineDoc,
 	defineExtension,
 	type EntryRecord,
 	type EnvTarget,
@@ -13,7 +12,8 @@ import {
 } from "@earendil-works/pi-durable";
 import { createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import type { PullTarget } from "./codehost.ts";
-import { ThreadDoc } from "./profile.ts";
+import { ReflectionDoc, ThreadDoc } from "./docs.ts";
+import { describeNotes, type Memory } from "./memory.ts";
 import type { Pulls } from "./pulls.ts";
 import { ConfinedEnv, Mirror } from "./sandbox.ts";
 import type { ThreadRow, Threads } from "./threads.ts";
@@ -27,16 +27,6 @@ import type { ThreadRow, Threads } from "./threads.ts";
  * its profile pulled, so merged changes reach every thread.
  */
 
-/** Marks a conversation as a reflection, and where its clone of the profile lives. */
-export const ReflectionDoc = defineDoc<{ day: string; root: string }>({
-	kind: "scout.reflection",
-	version: 1,
-	scope: "conversation",
-	history: "latest",
-	fork: "current",
-	initial: () => ({ day: "", root: "" }),
-});
-
 export const DEFAULT_REFLECT_INSTRUCTIONS =
 	"Read the threads below and improve Scout's profile so the next thread goes better. Edit the files, then call " +
 	"open_pull_request. If nothing is worth changing, say so and change nothing.";
@@ -48,6 +38,8 @@ export type ReflectorOptions = {
 	harness: Harness;
 	threads: Threads;
 	pulls: Pulls;
+	/** Notes kept during threads, for the reflection to fold into the profile. */
+	memory?: Memory;
 	context: Context;
 	dataDir: string;
 	profileRepo: { gitUrl: string; base: string; slug: string };
@@ -169,7 +161,10 @@ export class Reflector {
 						"",
 						"",
 					].join("\n");
-		const intro = `${outcomes}Threads with new activity since the last reflection: ${pending.length}.`;
+		const notes = describeNotes(this.#options.memory?.active() ?? []);
+		const intro =
+			`${outcomes}${notes === "" ? "" : `${notes}\n\n`}` +
+			`Threads with new activity since the last reflection: ${pending.length}.`;
 		const tail = omitted > 0 ? `\n\n(${omitted} more thread${omitted === 1 ? "" : "s"} left out for length.)` : "";
 		return `${intro}\n\n${parts.join("\n\n")}${tail}`;
 	}

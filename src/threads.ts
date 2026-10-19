@@ -102,6 +102,12 @@ export class Threads {
 		return { conversationId: Number(row.conversation_id), threads: JSON.parse(String(row.threads)) as string[] };
 	}
 
+	/** The day a reflection conversation reflected on. */
+	reflectionDay(conversationId: number): string | undefined {
+		const row = this.#db.prepare("SELECT day FROM reflections WHERE conversation_id = ?").get(conversationId);
+		return row === undefined ? undefined : String(row.day);
+	}
+
 	/** Record a day's reflection and mark what it read, in one transaction. */
 	reflected(day: string, conversationId: number, read: readonly ThreadRow[]): void {
 		this.#db.exec("BEGIN");

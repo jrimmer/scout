@@ -12,6 +12,7 @@ import { Bridge } from "./bridge.ts";
 import { createCodeHostExtension } from "./codehost.ts";
 import { loadConfig } from "./config.ts";
 import { cloneProfile, loadProfile, profileExtension, pullProfile, watchProfile } from "./profile.ts";
+import { consolidationExtension, Memory, memoryExtension } from "./memory.ts";
 import { Pulls, weekOf } from "./pulls.ts";
 import { searchExtension, ThreadSearch } from "./search.ts";
 import { localDay, Reflector, reflectionExtensions } from "./reflect.ts";
@@ -36,6 +37,7 @@ models.setProvider(openaiProvider());
 const threads = new Threads(join(config.dataDir, "scout.sqlite"));
 const pulls = new Pulls(join(config.dataDir, "scout.sqlite"));
 const search = new ThreadSearch(join(config.dataDir, "scout.sqlite"));
+const memory = new Memory(join(config.dataDir, "scout.sqlite"));
 const workspaces = new Workspaces({ ...config, instance: instanceId(config.dataDir) });
 const slack = new Slack(config.slack);
 let reflector: Reflector | undefined;
@@ -78,6 +80,8 @@ registry.install(profileTools);
 registry.install(codingTools);
 registry.install(workCodeHost);
 registry.install(searchTools);
+const memoryTools = memoryExtension(memory);
+registry.install(memoryTools);
 
 // Reflection conversations: profile files only, pull requests against the profile repo.
 const reflection = reflectionExtensions(() => profile.reflect);
@@ -95,9 +99,11 @@ const profileCodeHost = createCodeHostExtension({
 		announce(`I went over yesterday's threads and wrote down what I learned. Could someone review it? ${pull.url}`);
 	},
 });
+const consolidation = consolidationExtension(memory);
 registry.install(reflection.reflect);
 registry.install(reflection.files);
 registry.install(profileCodeHost);
+registry.install(consolidation);
 
 const stopWatching = watchProfile(config.profileDir, (next) => {
 	profile = next;
@@ -127,11 +133,12 @@ if (config.profileRepo !== undefined) {
 		harness,
 		threads,
 		pulls,
+		memory,
 		context,
 		dataDir: config.dataDir,
 		profileRepo: config.profileRepo,
 		git: config.git,
-		agent: { model: config.model, extensions: [reflection.reflect, reflection.files, profileCodeHost] },
+		agent: { model: config.model, extensions: [reflection.reflect, reflection.files, profileCodeHost, consolidation] },
 		threadLink: (thread) => slack.permalink(thread.channel, thread.threadTs),
 	});
 } else {
@@ -144,7 +151,7 @@ const bridge = new Bridge({
 	surface: slack.surface,
 	botUserId: await slack.identify(),
 	nameOf: (user) => slack.nameOf(user),
-	agent: { model: config.model, extensions: [profileTools, codingTools, workCodeHost, searchTools] },
+	agent: { model: config.model, extensions: [profileTools, codingTools, workCodeHost, searchTools, memoryTools] },
 	context,
 	channelOffer: (user) => slack.channelOffer(user),
 	search,
@@ -180,7 +187,12 @@ const tick = setInterval(() => {
 		pullProfile(config.profileDir).catch((error: unknown) => console.error("profile pull failed:", error));
 	}
 	if (new Date(now).getHours() >= config.reflect.hour) void reflect(localDay(new Date(now)));
-	void pulls.refresh(config.codeHost).then(() => {
+	void pulls.refresh(config.codeHost).then((decided) => {
+		// A reflection's proposal was decided: merged retires the notes it covered; rejected keeps them.
+		for (const pull of decided) {
+			const day = pull.kind === "profile" ? threads.reflectionDay(pull.conversationId) : undefined;
+			if (day !== undefined) memory.proposalDecided(day, pull.state === "merged");
+		}
 		// Mondays, after the reflection hour: how last week went.
 		const today = new Date();
 		if (today.getDay() !== 1 || today.getHours() < config.reflect.hour) return;
@@ -212,6 +224,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		threads.close();
 		pulls.close();
 		search.close();
+		memory.close();
 		process.exit(0);
 	});
 }
