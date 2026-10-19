@@ -22,9 +22,11 @@ can't, and Scout falls back to the default network there and says so.
 
 **spoond.** Set `SCOUT_SPOOND_URL` and `SCOUT_SPOOND_TOKEN`. The image (`SCOUT_SANDBOX_IMAGE`, default `dev-base`)
 needs git; `SCOUT_SANDBOX_SIZE` is a spoond size class. Scout reaches each lease's daemon over spoond's stream
-WebSocket and keeps that connection only while tools run (it closes after two idle minutes). spoond limits concurrent
-streams per account, so its limit bounds how many threads can be *working* at once; set Scout's concurrency limits
-(below) under it.
+WebSocket and keeps that connection only while tools run (it closes after two idle minutes). spoond limits each
+account's concurrent execs and streams together (`EXEC_CONCURRENCY_MAX`, 8 by default), so that limit bounds how many
+threads can be *working* at once. Ask a spoond admin to raise it for Scout's account: about one per concurrent working
+thread, plus a few for short commands. (`POST /api/users/{id}/quota` with `{"exec_concurrency": N}`, from the spoond
+release after `c95af19`.) Then set Scout's concurrency limits (below) under it.
 
 ## Model gateway
 
