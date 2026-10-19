@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import type { GatewayConfig } from "./gateway.ts";
 
 export type CodeHostKind = "forgejo" | "github";
 
@@ -50,6 +51,8 @@ export type Config = {
 	/** Local hour (0-23) for the nightly reflection, and Scout's home channel: proposals and the weekly report. */
 	reflect: { hour: number; channel?: string };
 	sandbox: SandboxConfig;
+	/** Model calls through a gateway (see gateway.ts), when SCOUT_GATEWAY_URL is set. */
+	gateway?: GatewayConfig;
 	/** The read-only dashboard (see dash/server.ts); absent when SCOUT_DASH_ADDR is `off`. */
 	dash?: { addr: string; auth?: { user: string; passwordHash: string } };
 	/** MCP servers whose tools Scout may use (see mcp.ts). */
@@ -148,6 +151,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
 		...(env.SCOUT_REVIEW_LABEL ? { reviewLabel: env.SCOUT_REVIEW_LABEL } : {}),
 		...(env.SCOUT_MCP_FILE ? { mcpFile: resolve(env.SCOUT_MCP_FILE) } : {}),
+		...(env.SCOUT_GATEWAY_URL
+			? {
+					gateway: {
+						url: env.SCOUT_GATEWAY_URL.replace(/\/$/, ""),
+						...(env.SCOUT_GATEWAY_KEY ? { key: env.SCOUT_GATEWAY_KEY } : {}),
+						...(env.SCOUT_GATEWAY_HEADERS ? { headers: JSON.parse(env.SCOUT_GATEWAY_HEADERS) as Record<string, string> } : {}),
+						...(env.SCOUT_GATEWAY_OPENAI_API === "responses" ? { openaiApi: "responses" as const } : {}),
+					},
+				}
+			: {}),
 		...(env.SCOUT_DASH_ADDR === "off"
 			? {}
 			: {

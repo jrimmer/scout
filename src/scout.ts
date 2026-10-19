@@ -1,12 +1,11 @@
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import { createModels, type Models } from "@earendil-works/pi-ai/models";
-import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import type { Models } from "@earendil-works/pi-ai/models";
 import { type AgentChange, type ConversationId, createRegistry, Harness, type Storage } from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createCodeHostExtension } from "./codehost.ts";
 import type { Config, RepoConfig } from "./config.ts";
+import { modelsFor } from "./gateway.ts";
 import { closeMcp, connectMcp, loadMcpConfig, type McpConnection, mcpExtension } from "./mcp.ts";
 import { ThreadDoc } from "./docs.ts";
 import { consolidationExtension, Memory, memoryExtension } from "./memory.ts";
@@ -65,13 +64,6 @@ function driverFor(config: Config, dataDir: string, instance: string): SandboxDr
 	return new DockerDriver({ prefix: `scout-${instance}`, openNetwork: sandbox.dockerNetwork });
 }
 
-function defaultModels(): Models {
-	const models = createModels();
-	models.setProvider(anthropicProvider());
-	models.setProvider(openaiProvider());
-	return models;
-}
-
 export async function openScout(options: ScoutOptions) {
 	const { config, dataDir, context } = options;
 	const announce = options.announce ?? (() => {});
@@ -95,7 +87,7 @@ export async function openScout(options: ScoutOptions) {
 	let reflector: Reflector | undefined;
 	let harness: Harness | undefined;
 
-	const models = options.models ?? defaultModels();
+	const models = options.models ?? modelsFor(config.gateway);
 
 	// What Scout knows. With a profile repo, the directory is a clone kept pulled, so merged changes just arrive.
 	if (config.profileRepo !== undefined) await cloneProfile(config.profileDir, config.profileRepo);
