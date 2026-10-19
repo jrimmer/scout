@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 export type CodeHostKind = "forgejo" | "github";
@@ -78,7 +79,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		git: {
 			name: env.SCOUT_GIT_NAME ?? "Scout",
 			email: env.SCOUT_GIT_EMAIL ?? "scout@localhost",
-			...(env.SCOUT_GIT_SSH_KEY ? { sshKey: resolve(env.SCOUT_GIT_SSH_KEY) } : {}),
+			...(env.SCOUT_GIT_SSH_KEY ? { sshKey: resolve(env.SCOUT_GIT_SSH_KEY.replace(/^~(?=\/|$)/, homedir())) } : {}),
 		},
 	};
 }
