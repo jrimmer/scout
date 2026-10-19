@@ -2,8 +2,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
-import { defineExtension, defineTool } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { CodeHostKind } from "./config.ts";
+import { ReviewsDoc } from "./docs.ts";
+import { diffOf, type Review } from "./review.ts";
 import type { Mirror } from "./sandbox.ts";
 
 const run = promisify(execFile);
@@ -36,8 +38,14 @@ export type CodeHostOptions = {
 	 */
 	commitAll?: boolean;
 	onPullRequest?: (conversationId: number, pull: OpenedPull) => void;
+	/** Refuse pull requests that change more lines than this; ask for smaller ones instead. */
+	maxChangedLines?: number;
+	/** Review each new commit before people are asked to (see review.ts). */
+	selfReview?: (change: ProposedChange, api: ToolExecutionApi, context: Context) => Promise<Review>;
 	fetch?: typeof fetch;
 };
+
+export type ProposedChange = { target: PullTarget; title: string; body: string; stat: string; diff: string; sha: string };
 
 /**
  * Pushing and opening pull requests run on the host, with the host's credentials; the agent never sees them.
@@ -71,9 +79,42 @@ export function createCodeHostExtension(options: CodeHostOptions) {
 			await git(["-C", mirror.path, "fetch", "--quiet", "--no-tags", dir, `+HEAD:refs/heads/${branch}`]);
 			const ahead = await git(["-C", mirror.path, "rev-list", "--count", `refs/heads/${base}..refs/heads/${branch}`]);
 			if (ahead === "0") throw new Error(`No changes on ${branch} beyond ${base} yet.`);
+
+			const { stat, diff, lines } = await diffOf(mirror.path, base, branch);
+			const max = options.maxChangedLines;
+			if (max !== undefined && lines > max) {
+				throw new Error(
+					`This change touches ${lines} lines; the most I'll put in one pull request is ${max}. Split it into ` +
+						"smaller pull requests that each make sense alone, or ask whoever runs Scout to raise SCOUT_PR_MAX_LINES.",
+				);
+			}
+			let reviewNote = "";
+			if (options.selfReview !== undefined) {
+				const sha = await git(["-C", mirror.path, "rev-parse", `refs/heads/${branch}`]);
+				const earlier = (await api.snapshot(ReviewsDoc, api.conversationId, context))?.verdicts[sha];
+				if (earlier === undefined) {
+					const review = await options.selfReview({ target, title: args.title, body: args.body, stat, diff, sha }, api, context);
+					await api.commit(async (tx) => {
+						(await tx.doc(ReviewsDoc, api.conversationId)).verdicts[sha] = review.verdict;
+					}, context);
+					if (review.verdict === "changes") {
+						throw new Error(
+							`My self-review found problems:\n\n${review.text}\n\nFix them, commit, and call open_pull_request ` +
+								"again. If you disagree with a point, say why in the description and call it again without changes.",
+						);
+					}
+					reviewNote = review.text;
+				} else if (earlier === "changes") {
+					reviewNote = "Opened over my own self-review's objections; the description says why.";
+				}
+			}
+
 			await git(["-C", mirror.path, "push", "--quiet", "--force", mirror.gitUrl, `refs/heads/${branch}:refs/heads/${branch}`]);
 
-			const body = target.link === undefined ? args.body : `${args.body}\n\n---\nWorked out in the open: ${target.link}`;
+			const reviewed =
+				reviewNote === "" ? "" : `\n\n<details><summary>Scout's self-review</summary>\n\n${reviewNote}\n\n</details>`;
+			const link = target.link === undefined ? "" : `\n\n---\nWorked out in the open: ${target.link}`;
+			const body = `${args.body}${reviewed}${link}`;
 			const { url, number } = await createOrFindPull(options.codeHost, target.slug, doFetch, {
 				title: args.title,
 				body,

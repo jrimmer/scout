@@ -21,3 +21,23 @@ export const ReflectionDoc = defineDoc<{ day: string; root: string }>({
 	fork: "current",
 	initial: () => ({ day: "", root: "" }),
 });
+
+/** Marks a reviewer conversation, and the workspace it reads. */
+export const ReviewDoc = defineDoc<{ root: string; cwd: string }>({
+	kind: "scout.review",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "current",
+	initial: () => ({ root: "", cwd: "" }),
+});
+
+/** Self-reviews a thread has had, by the commit they reviewed, so a change is reviewed once. */
+export const ReviewsDoc = defineDoc<{ verdicts: Record<string, "approve" | "changes"> }>({
+	kind: "scout.reviews",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "current",
+	initial: () => ({ verdicts: {} }),
+});

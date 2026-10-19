@@ -25,6 +25,8 @@ export type Config = {
 	/** Local hour (0-23) for the nightly reflection, and Scout's home channel: proposals and the weekly report. */
 	reflect: { hour: number; channel?: string };
 	sandbox: { image: string; network: string; memory: string };
+	/** Largest change, in lines added plus removed, Scout puts in one pull request. */
+	maxPullLines: number;
 	/** Scout's commit identity, and the SSH key the host pushes and pulls with: Scout's own, not a person's. */
 	git: { name: string; email: string; sshKey?: string };
 };
@@ -71,6 +73,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			hour: Number(env.SCOUT_REFLECT_HOUR ?? 3),
 			...(env.SCOUT_REFLECT_CHANNEL ? { channel: env.SCOUT_REFLECT_CHANNEL } : {}),
 		},
+		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
 		sandbox: {
 			image: env.SCOUT_SANDBOX_IMAGE ?? "scout-sandbox:latest",
 			network: env.SCOUT_SANDBOX_NETWORK ?? "none",

@@ -14,6 +14,7 @@ import { loadConfig } from "./config.ts";
 import { cloneProfile, loadProfile, profileExtension, pullProfile, watchProfile } from "./profile.ts";
 import { consolidationExtension, Memory, memoryExtension } from "./memory.ts";
 import { Pulls, weekOf } from "./pulls.ts";
+import { reviewAsSubtask, reviewEnv, reviewExtension } from "./review.ts";
 import { searchExtension, ThreadSearch } from "./search.ts";
 import { localDay, Reflector, reflectionExtensions } from "./reflect.ts";
 import { Workspaces } from "./sandbox.ts";
@@ -56,6 +57,8 @@ if (workspace.offline) {
 
 // Thread conversations: the profile, coding tools in the thread's container, pull requests against the work repo.
 const registry = createRegistry();
+const reviewer = reviewExtension(() => profile.review);
+registry.install(reviewer);
 const profileTools = profileExtension(profile, workspace);
 const codingTools = createCodingTools();
 const workCodeHost = createCodeHostExtension({
@@ -74,6 +77,19 @@ const workCodeHost = createCodeHostExtension({
 		};
 	},
 	onPullRequest: (id, pull) => pulls.opened({ ...pull, kind: "work", conversationId: id }),
+	maxChangedLines: config.maxPullLines,
+	selfReview: (change, api, ctx) =>
+		reviewAsSubtask(
+			api,
+			{
+				agent: { model: config.model, extensions: [reviewer] },
+				root: workspaces.paths(api.conversationId).root,
+				cwd: change.target.dir,
+				prompt: [`# ${change.title}`, change.body, "```", change.stat, "```", "```diff", change.diff, "```"].join("\n\n"),
+				requestId: `review:${change.sha}`,
+			},
+			ctx,
+		),
 });
 const searchTools = searchExtension(search, threads, (thread) => slack.permalink(thread.channel, thread.threadTs));
 registry.install(profileTools);
@@ -116,7 +132,8 @@ const harness = await Harness.open(
 	{
 		models,
 		registry,
-		env: async (target, ctx) => (await reflector?.env(target, ctx)) ?? workspaces.env(target.conversationId),
+		env: async (target, ctx) =>
+			(await reflector?.env(target, ctx)) ?? (await reviewEnv(target, ctx)) ?? workspaces.env(target.conversationId),
 		onReport: (report) => console.error("harness:", report),
 	},
 	context,

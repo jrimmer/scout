@@ -15,6 +15,7 @@ export type Skill = { name: string; description: string; body: string };
  *     profile/
  *       system.md                       who Scout is and how it works with people
  *       reflect.md                      how Scout reviews its own threads each night (see reflect.ts)
+ *       review.md                       how Scout reviews its own change before opening a pull request
  *       skills/<name>.md                know-how, loaded on demand (frontmatter: description)
  *       channels/<channel-name>/
  *         instructions.md               what this channel's team wants Scout to know
@@ -25,6 +26,7 @@ export type Skill = { name: string; description: string; body: string };
 export type Profile = {
 	system: string;
 	reflect?: string;
+	review?: string;
 	skills: Skill[];
 	channels: Map<string, { instructions?: string; skills: Skill[] }>;
 };
@@ -43,9 +45,11 @@ export function loadProfile(dir: string): Profile {
 		}
 	}
 	const reflect = readOptional(join(dir, "reflect.md"));
+	const review = readOptional(join(dir, "review.md"));
 	return {
 		system: readOptional(join(dir, "system.md")) ?? "",
 		...(reflect === undefined ? {} : { reflect }),
+		...(review === undefined ? {} : { review }),
 		skills: loadSkills(join(dir, "skills")),
 		channels,
 	};
