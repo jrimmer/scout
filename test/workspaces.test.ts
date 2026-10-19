@@ -93,6 +93,15 @@ describe("workspaces (local driver)", () => {
 		assert.equal(await workspaces.status(1), "", "the repository doesn't see them");
 	});
 
+	it("lets go of idle daemon connections, and reconnects on the next tool call", async () => {
+		const env = await workspaces.env(1);
+		await run(env, "true");
+		assert.equal(await workspaces.disconnectIdle(Date.now(), 60_000), 0, "not yet idle");
+		assert.ok((await workspaces.disconnectIdle(Date.now() + 61_000, 60_000)) >= 1);
+		assert.equal(workspaces.connected, 0);
+		assert.equal(await run(await workspaces.env(1), "git branch --show-current"), "scout/t-1", "the same sandbox, files intact");
+	});
+
 	it("removes a sandbox when the work is over", async () => {
 		const env = await workspaces.env(3);
 		const where = await run(env, "pwd");

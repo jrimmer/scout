@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Connection, RemoteExecutionEnv } from "@earendil-works/pi-env";
+import { Connection, type ConnectionOptions, type Reply, RemoteExecutionEnv, type RequestOptions } from "@earendil-works/pi-env";
 import type { NetworkPolicy, SandboxDriver, SandboxHandle, SandboxSpec } from "./drivers/types.ts";
 import { Mirror } from "./sandbox.ts";
 
@@ -35,7 +35,29 @@ export type WorkspacesConfig = {
 	git: { name: string; email: string };
 };
 
-type Opened = { handle: SandboxHandle; connection: Connection; repo: WorkspaceRepo };
+/**
+ * A daemon connection that knows when it's idle. Substrates may limit open connections (spoond limits streams per
+ * account), so a thread holds one only while its tools run, not while it waits for people.
+ */
+class TrackedConnection extends Connection {
+	inFlight = 0;
+	lastUsed = Date.now();
+
+	override async request(op: string, json: Record<string, unknown>, options?: RequestOptions): Promise<Reply> {
+		this.inFlight++;
+		try {
+			return await super.request(op, json, options);
+		} finally {
+			this.inFlight--;
+			this.lastUsed = Date.now();
+		}
+	}
+}
+
+type Opened = { handle: SandboxHandle; connection: TrackedConnection; repo: WorkspaceRepo };
+
+/** How long a sandbox connection may sit unused before it's closed; the next tool call opens it again. */
+const IDLE_DISCONNECT_MS = 2 * 60 * 1000;
 
 /**
  * One workspace per conversation: a sandbox from the configured driver, holding a clone of the conversation's
@@ -52,6 +74,7 @@ export class Workspaces {
 	readonly #open = new Map<number, Promise<Opened>>();
 	/** Which repository a conversation works in; set once the harness exists. */
 	repoOf: (conversationId: number) => Promise<string | undefined> = async () => undefined;
+	readonly #sweep: ReturnType<typeof setInterval>;
 
 	constructor(config: WorkspacesConfig) {
 		if (config.repos.length === 0) throw new Error("no repositories configured");
@@ -61,6 +84,29 @@ export class Workspaces {
 		for (const repo of config.repos) {
 			this.#mirrors.set(repo.name, new Mirror(join(this.#dataDir, "mirrors", `${repo.name}.git`), repo.gitUrl));
 		}
+		this.#sweep = setInterval(() => void this.disconnectIdle(), 30_000);
+		this.#sweep.unref();
+	}
+
+	/** Close daemon connections nothing has used for a while. Their sandboxes keep running; files stay. */
+	async disconnectIdle(now = Date.now(), idleMs = IDLE_DISCONNECT_MS): Promise<number> {
+		let closed = 0;
+		for (const [id, pending] of this.#open) {
+			const opened = await pending.catch(() => undefined);
+			if (opened === undefined || opened.connection.inFlight > 0 || now - opened.connection.lastUsed < idleMs) continue;
+			if (this.#open.get(id) !== pending) continue;
+			this.#open.delete(id);
+			try {
+				opened.connection.close();
+			} catch {}
+			closed++;
+		}
+		return closed;
+	}
+
+	/** Conversations with a daemon connection open right now. */
+	get connected(): number {
+		return this.#open.size;
 	}
 
 	get driver(): SandboxDriver {
@@ -134,7 +180,11 @@ export class Workspaces {
 	async #prepare(conversationId: number): Promise<Opened> {
 		const repo = this.repo(await this.repoOf(conversationId));
 		const handle = await this.#config.driver.open(this.key(conversationId), this.spec(repo, conversationId));
-		const connection = new Connection({ command: handle.daemonCommand, onLog: (text) => console.error(`sandbox ${this.key(conversationId)}: ${text.trimEnd()}`) });
+		const options: ConnectionOptions = {
+			command: handle.daemonCommand,
+			onLog: (text) => console.error(`sandbox ${this.key(conversationId)}: ${text.trimEnd()}`),
+		};
+		const connection = new TrackedConnection(options);
 		const opened = { handle, connection, repo };
 		const env = this.#envAt(conversationId, opened, handle.workdir);
 		const clone = `${handle.workdir}/repo`;
@@ -229,6 +279,7 @@ export class Workspaces {
 	}
 
 	async close(): Promise<void> {
+		clearInterval(this.#sweep);
 		await Promise.all([...this.#open.keys()].map((id) => this.#close(id)));
 	}
 }
