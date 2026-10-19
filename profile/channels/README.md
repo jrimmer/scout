@@ -19,6 +19,7 @@ and Scout starts looking in the zones:
 ---
 repo: storefront
 zones: apps/checkout, libs/payments
+model: anthropic/claude-sonnet-5-5    # optional: this team's model, if not the default
 ---
 We ship on Tuesdays. Ask in #payments before changing anything under libs/payments.
 ```

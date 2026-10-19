@@ -1,5 +1,5 @@
 import { App, LogLevel } from "@slack/bolt";
-import type { IncomingMessage } from "./bridge.ts";
+import type { IncomingMessage, SharedFile } from "./bridge.ts";
 import type { ChatMessage, ChatSurface } from "./render.ts";
 
 /** Message subtypes that are still people talking; every other subtype (edits, joins, bots) is ignored. */
@@ -22,8 +22,10 @@ export class Slack {
 	botUserId = "";
 	readonly #names = new Map<string, string>();
 	readonly #channels = new Map<string, string>();
+	readonly #botToken: string;
 
 	constructor(tokens: { botToken: string; appToken: string }) {
+		this.#botToken = tokens.botToken;
 		this.app = new App({ token: tokens.botToken, appToken: tokens.appToken, socketMode: true, logLevel: LogLevel.WARN });
 		const client = this.app.client;
 		this.surface = {
@@ -66,6 +68,7 @@ export class Slack {
 					text: typeof e.text === "string" ? e.text : "",
 					ts: e.ts,
 					...(typeof e.thread_ts === "string" ? { threadTs: e.thread_ts } : {}),
+					...(Array.isArray(e.files) ? { files: sharedFiles(e.files) } : {}),
 				});
 			} catch (error) {
 				console.error(`message ${e.channel}/${e.ts} failed:`, error);
@@ -125,6 +128,13 @@ export class Slack {
 		};
 	}
 
+	/** A file shared in Slack; private file URLs need the bot's token. */
+	async download(url: string): Promise<Uint8Array> {
+		const response = await fetch(url, { headers: { authorization: `Bearer ${this.#botToken}` } });
+		if (!response.ok) throw new Error(`Slack answered ${response.status}`);
+		return new Uint8Array(await response.arrayBuffer());
+	}
+
 	async nameOf(user: string): Promise<string> {
 		const cached = this.#names.get(user);
 		if (cached !== undefined) return cached;
@@ -170,6 +180,22 @@ export class Slack {
 		}
 		throw new Error(`no free channel name like ${base}`);
 	}
+}
+
+function sharedFiles(files: unknown[]): SharedFile[] {
+	return files.flatMap((f) => {
+		const file = f as Record<string, unknown>;
+		const url = file.url_private_download ?? file.url_private;
+		if (typeof url !== "string") return [];
+		return [
+			{
+				name: typeof file.name === "string" ? file.name : "file",
+				mimetype: typeof file.mimetype === "string" ? file.mimetype : "application/octet-stream",
+				size: typeof file.size === "number" ? file.size : 0,
+				url,
+			},
+		];
+	});
 }
 
 export function slackChannelName(text: string): string {

@@ -12,6 +12,8 @@ export type RepoConfig = {
 	base: string;
 	/** `owner/name` on the code host. */
 	slug: string;
+	/** The sandbox image for this repository's threads, if it needs its own toolchain; else SCOUT_SANDBOX_IMAGE. */
+	image?: string;
 };
 
 export type Config = {
@@ -49,13 +51,13 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
 	return value;
 }
 
-/** More repositories, from a JSON file: `[{ "name", "gitUrl", "slug", "base"? }]`. */
+/** More repositories, from a JSON file: `[{ "name", "gitUrl", "slug", "base"?, "image"? }]`. */
 function moreRepos(path: string | undefined): RepoConfig[] {
 	if (path === undefined || path === "") return [];
 	const list = JSON.parse(readFileSync(path, "utf8")) as Partial<RepoConfig>[];
 	return list.map((r, i) => {
 		if (!r.name || !r.gitUrl || !r.slug) throw new Error(`${path}: repository ${i + 1} needs name, gitUrl and slug`);
-		return { name: r.name, gitUrl: r.gitUrl, slug: r.slug, base: r.base ?? "main" };
+		return { name: r.name, gitUrl: r.gitUrl, slug: r.slug, base: r.base ?? "main", ...(r.image ? { image: r.image } : {}) };
 	});
 }
 

@@ -30,9 +30,17 @@ export type Skill = { name: string; description: string; body: string };
  *     ---
  *     repo: storefront
  *     zones: services/checkout, libs/payments
+ *     model: anthropic/claude-sonnet-5-5
  *     ---
  */
-export type ChannelProfile = { instructions?: string; repo?: string; zones: string[]; skills: Skill[] };
+export type ChannelProfile = {
+	instructions?: string;
+	repo?: string;
+	/** `provider/modelId`, for a team that wants a different model than the default. */
+	model?: string;
+	zones: string[];
+	skills: Skill[];
+};
 
 export type Profile = {
 	system: string;
@@ -54,6 +62,7 @@ export function loadProfile(dir: string): Profile {
 			channels.set(entry.name, {
 				...(body.trim() === "" ? {} : { instructions: body.trim() }),
 				...(meta.repo ? { repo: meta.repo } : {}),
+				...(meta.model ? { model: meta.model } : {}),
 				zones,
 				skills: loadSkills(join(channelsDir, entry.name, "skills")),
 			});

@@ -72,6 +72,9 @@ const bridge = new Bridge({
 	channelOffer: (user) => slack.channelOffer(user),
 	search: scout.search,
 	repoFor: scout.repoFor,
+	modelFor: scout.modelFor,
+	download: (url) => slack.download(url),
+	saveAttachment: (id, name, bytes) => workspaces.saveAttachment(id, name, bytes),
 });
 
 await bridge.reattach(Date.now() - 24 * HOUR);

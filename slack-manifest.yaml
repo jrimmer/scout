@@ -19,6 +19,7 @@ oauth_config:
       - channels:read # channel names, for channel profiles
       - channels:manage # create a public channel when someone DMs Scout
       - chat:write
+      - files:read # screenshots and logs people share in threads
       - groups:history # see mentions in private channels, to decline them
       - im:history # see DMs, to decline them
       - mpim:history

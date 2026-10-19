@@ -203,9 +203,22 @@ export async function openScout(options: ScoutOptions) {
 		return repoNamed(named).name;
 	};
 
+	/** A channel's own model, from its profile's `model: provider/modelId`. */
+	const modelFor = (channelName: string): { provider: string; modelId: string } | undefined => {
+		const named = profile.channels.get(channelName)?.model;
+		const [provider, ...rest] = named?.split("/") ?? [];
+		if (named === undefined) return undefined;
+		if (provider === undefined || rest.length === 0 || models.getProvider(provider) === undefined) {
+			console.error(`#${channelName} asks for model ${named}, which isn't available; using the default`);
+			return undefined;
+		}
+		return { provider, modelId: rest.join("/") };
+	};
+
 	return {
 		harness,
 		repoFor,
+		modelFor,
 		threads,
 		pulls,
 		search,

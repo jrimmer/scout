@@ -60,7 +60,7 @@ describe("bridge", () => {
 	});
 
 	beforeEach(async () => {
-		faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+		faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model", input: ["text", "image"] }, { id: "faux-big" }] });
 		const models = createModels();
 		models.setProvider(faux.provider);
 		const profileDir = mkdtempSync(join(tmpdir(), "scout-profile-"));
@@ -201,6 +201,69 @@ describe("bridge", () => {
 		await bridge.onReaction({ channel: "C1", ts: "100.1", name: "thumbsup", user: "UBOB" });
 		await bridge.onMessage(message({ text: `<@${BOT}> stop`, ts: "100.2", threadTs: "100.1" }));
 		assert.equal(surface.sent.length, sent);
+	});
+
+	it("shows Scout shared images and saves other files where its tools can read them", async () => {
+		const saved: string[] = [];
+		const files = new Bridge({
+			harness,
+			threads,
+			surface,
+			botUserId: BOT,
+			nameOf: async () => "ann",
+			agent: { model: { provider: "faux", modelId: "faux-model" } },
+			context,
+			download: async (url) => new TextEncoder().encode(`bytes of ${url}`),
+			saveAttachment: async (id, name) => {
+				saved.push(name);
+				return `/data/threads/t-${id}/attachments/${name}`;
+			},
+		});
+		let seen = "";
+		faux.setResponses([
+			(transcript) => {
+				seen = JSON.stringify(transcript);
+				return fauxAssistantMessage("I see it.");
+			},
+		]);
+		await files.onMessage(
+			message({
+				text: `<@${BOT}> why does this fail?`,
+				files: [
+					{ name: "error.png", mimetype: "image/png", size: 100, url: "https://files/error.png" },
+					{ name: "build.log", mimetype: "text/plain", size: 100, url: "https://files/build.log" },
+					{ name: "dump.bin", mimetype: "application/octet-stream", size: 50 * 1024 * 1024, url: "https://files/dump.bin" },
+				],
+			}),
+		);
+		await harness.waitForIdle(context);
+		assert.deepEqual(saved, ["build.log"]);
+		assert.match(seen, /"type":"image","data":"Ynl0ZXMgb2YgaHR0cHM6Ly9maWxlcy9lcnJvci5wbmc=","mimeType":"image\/png"/);
+		assert.match(seen, /\(attached build\.log, saved at \/data\/threads\/t-\d+\/attachments\/build\.log\)/);
+		assert.match(seen, /\(attached dump\.bin, 50 MB: too big to open\)/);
+	});
+
+	it("uses a channel's own model when its profile names one", async () => {
+		let model = "";
+		const picky = new Bridge({
+			harness,
+			threads,
+			surface,
+			botUserId: BOT,
+			nameOf: async () => "ann",
+			agent: { model: { provider: "faux", modelId: "faux-model" } },
+			context,
+			modelFor: (channel) => (channel === "team" ? { provider: "faux", modelId: "faux-big" } : undefined),
+		});
+		faux.setResponses([
+			(_transcript, _options, _state, used) => {
+				model = used.id;
+				return fauxAssistantMessage("ok");
+			},
+		]);
+		await picky.onMessage(message({}));
+		await harness.waitForIdle(context);
+		assert.equal(model, "faux-big");
 	});
 
 	it("handles a redelivered Slack event once", async () => {

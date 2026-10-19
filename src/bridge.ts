@@ -16,7 +16,17 @@ export type IncomingMessage = {
 	text: string;
 	ts: string;
 	threadTs?: string;
+	/** Files shared with the message. */
+	files?: SharedFile[];
 };
+
+export type SharedFile = { name: string; mimetype: string; size: number; url: string };
+
+/** Images the model looks at directly; at most this big. */
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const IMAGE_LIMIT = 5 * 1024 * 1024;
+/** Other files go into the thread's workspace; at most this big. */
+const FILE_LIMIT = 20 * 1024 * 1024;
 
 export type BridgeOptions = {
 	harness: Harness;
@@ -34,6 +44,12 @@ export type BridgeOptions = {
 	search?: ThreadSearch;
 	/** The repository a channel's threads work in. */
 	repoFor?: (channelName: string) => string;
+	/** A channel's own model, if its profile names one; otherwise `agent`'s. */
+	modelFor?: (channelName: string) => { provider: string; modelId: string } | undefined;
+	/** Download a shared file (Slack needs the bot's token for that). */
+	download?: (url: string) => Promise<Uint8Array>;
+	/** Put a shared file where the thread's tools can read it; returns its path there. */
+	saveAttachment?: (conversationId: number, name: string, bytes: Uint8Array) => Promise<string>;
 };
 
 /** Reactions that stop Scout's work in a thread, on the thread's first message or on Scout's progress message. */
@@ -136,8 +152,10 @@ export class Bridge {
 		});
 		const name = await this.#options.nameOf(message.user);
 		const text = message.text.replaceAll(`<@${this.#options.botUserId}>`, "@Scout").trim();
-		const content = `${name}: ${text}`;
-		const data = { user: message.user, name, text, ts: message.ts };
+		const attached = await this.#attachments(thread.conversationId, message);
+		const said = [`${name}: ${text}`, ...attached.notes].join("\n");
+		const content = attached.images.length === 0 ? said : [{ type: "text" as const, text: said }, ...attached.images];
+		const data = { user: message.user, name, text, ts: message.ts, ...(attached.notes.length > 0 ? { files: attached.notes } : {}) };
 		const requestId = `slack:${message.channel}:${message.ts}`;
 
 		if (how === "note") {
@@ -166,8 +184,43 @@ export class Bridge {
 		});
 	}
 
+	/** Images for the model to see, and notes about the other files: where they are, or why they aren't. */
+	async #attachments(
+		conversationId: number,
+		message: IncomingMessage,
+	): Promise<{ images: { type: "image"; data: string; mimeType: string }[]; notes: string[] }> {
+		const images: { type: "image"; data: string; mimeType: string }[] = [];
+		const notes: string[] = [];
+		const { download, saveAttachment } = this.#options;
+		for (const file of message.files ?? []) {
+			const image = IMAGE_TYPES.has(file.mimetype);
+			const limit = image ? IMAGE_LIMIT : FILE_LIMIT;
+			if (download === undefined || (!image && saveAttachment === undefined)) {
+				notes.push(`(attached ${file.name}, which I can't open here)`);
+			} else if (file.size > limit) {
+				notes.push(`(attached ${file.name}, ${Math.round(file.size / 1024 / 1024)} MB: too big to open)`);
+			} else {
+				try {
+					const bytes = await download(file.url);
+					if (image) {
+						images.push({ type: "image", data: Buffer.from(bytes).toString("base64"), mimeType: file.mimetype });
+						notes.push(`(attached image ${file.name})`);
+					} else {
+						notes.push(`(attached ${file.name}, saved at ${await saveAttachment!(conversationId, file.name, bytes)})`);
+					}
+				} catch (error) {
+					console.error(`couldn't fetch ${file.name}:`, error);
+					notes.push(`(attached ${file.name}, which I couldn't download)`);
+				}
+			}
+		}
+		return { images, notes };
+	}
+
 	async #startThread(key: string, message: IncomingMessage): Promise<ThreadRow> {
-		const { harness, threads, agent, context } = this.#options;
+		const { harness, threads, context } = this.#options;
+		const model = this.#options.modelFor?.(message.channelName);
+		const agent = model === undefined ? this.#options.agent : { ...this.#options.agent, model };
 		const threadTs = message.threadTs ?? message.ts;
 		const conversation = await harness.createConversation(
 			{

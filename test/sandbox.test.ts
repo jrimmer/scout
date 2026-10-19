@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { SandboxEnv, threadPaths } from "../src/sandbox.ts";
+import { SandboxEnv, threadPaths, Workspaces } from "../src/sandbox.ts";
 
 function setup() {
 	const data = realpathSync(mkdtempSync(join(tmpdir(), "scout-sandbox-")));
@@ -49,5 +49,26 @@ describe("SandboxEnv file confinement", () => {
 		const { env, paths } = setup();
 		const dir = await env.createTempFile({ prefix: "out-" }, context);
 		assert.ok(dir.ok && dir.value.startsWith(paths.tmp));
+	});
+});
+
+describe("attachments", () => {
+	it("saves shared files beside the repo, under safe names", async () => {
+		const data = realpathSync(mkdtempSync(join(tmpdir(), "scout-attach-")));
+		const workspaces = new Workspaces({
+			dataDir: data,
+			instance: "t",
+			repos: [{ name: "r", gitUrl: "unused", base: "main" }],
+			sandbox: { image: "unused", network: "none", memory: "1g" },
+			git: { name: "Scout", email: "scout@localhost" },
+		});
+		const bytes = new TextEncoder().encode("log line");
+		const first = await workspaces.saveAttachment(1, "../../etc/build log.txt", bytes);
+		const second = await workspaces.saveAttachment(1, "../../etc/build log.txt", bytes);
+		const root = workspaces.paths(1).root;
+		assert.equal(first, join(root, "attachments", "build_log.txt"));
+		assert.equal(second, join(root, "attachments", "2-build_log.txt"));
+		const env = new SandboxEnv("c", workspaces.paths(1));
+		assert.deepEqual(await env.readTextFile(first, context), { ok: true, value: "log line" });
 	});
 });

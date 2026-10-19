@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord";
 import {
@@ -23,8 +23,8 @@ export type SandboxConfig = {
 	dataDir: string;
 	/** Random per install, so names stay unique if the data directory is ever reset. */
 	instance: string;
-	/** Repositories by name; the first is the default. */
-	repos: { name: string; gitUrl: string; base: string }[];
+	/** Repositories by name; the first is the default. One may bring its own sandbox image. */
+	repos: { name: string; gitUrl: string; base: string; image?: string }[];
 	sandbox: { image: string; network: string; memory: string };
 	git: { name: string; email: string };
 };
@@ -112,7 +112,7 @@ export class Workspaces {
 	}
 
 	/** A repository by name; the default for an empty or unknown name. */
-	repo(name: string | undefined): { name: string; gitUrl: string; base: string } {
+	repo(name: string | undefined): { name: string; gitUrl: string; base: string; image?: string } {
 		return this.#config.repos.find((r) => r.name === name) ?? this.#config.repos[0]!;
 	}
 
@@ -137,7 +137,7 @@ export class Workspaces {
 	async env(conversationId: number, repo?: string): Promise<SandboxEnv> {
 		const paths = await this.prepare(conversationId, repo);
 		const container = containerFor(this.#config.instance, conversationId);
-		await this.#ensureContainer(conversationId, container, paths);
+		await this.#ensureContainer(conversationId, container, paths, this.repo(repo).image ?? this.#config.sandbox.image);
 		return new SandboxEnv(container, paths);
 	}
 
@@ -160,7 +160,7 @@ export class Workspaces {
 		return paths;
 	}
 
-	async #ensureContainer(conversationId: number, name: string, paths: ThreadPaths): Promise<void> {
+	async #ensureContainer(conversationId: number, name: string, paths: ThreadPaths, image: string): Promise<void> {
 		const state = await run("docker", ["inspect", "-f", "{{.State.Running}}", name]).then(
 			(out) => out.stdout.trim(),
 			() => "missing",
@@ -184,9 +184,20 @@ export class Workspaces {
 			"--env", `TMPDIR=${paths.tmp}`,
 			"--volume", `${paths.root}:${paths.root}`,
 			"--workdir", paths.repo,
-			sandbox.image,
+			image,
 			"sleep", "infinity",
 		]);
+	}
+
+	/** Put a file someone shared where the thread's tools can read it: next to the repo, so it never gets committed. */
+	async saveAttachment(conversationId: number, name: string, bytes: Uint8Array): Promise<string> {
+		const dir = join(this.paths(conversationId).root, "attachments");
+		await mkdir(dir, { recursive: true });
+		const safe = basename(name).replace(/[^\w.-]+/g, "_").replace(/^\.+/, "") || "file";
+		let path = join(dir, safe);
+		for (let n = 2; await exists(path); n++) path = join(dir, `${n}-${safe}`);
+		await writeFile(path, bytes);
+		return path;
 	}
 
 	/** Remove a conversation's container and files, for work that is over (a job). */
