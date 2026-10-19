@@ -31,6 +31,11 @@ export type BridgeOptions = {
 	channelOffer?: (user: string) => ChatMessage;
 };
 
+/** Reactions that stop Scout's work in a thread, on the thread's first message or on Scout's progress message. */
+export const STOP_REACTIONS = new Set(["octagonal_sign", "no_entry", "no_entry_sign"]);
+
+const STOP_WORDS = /^\s*(stop|cancel|halt)\b/i;
+
 export const DECLINE_PRIVATE =
 	"I only work in public channels, so everyone can see what we do and learn from it. " +
 	"Mention me in a public channel and I'll pick it up there.";
@@ -75,7 +80,37 @@ export class Bridge {
 		}
 
 		const key = threadKey(message.channel, message.threadTs ?? message.ts);
+		const thread = this.#options.threads.get(key);
+		if (mentions && thread !== undefined && STOP_WORDS.test(this.#withoutMention(message.text))) {
+			await this.#stop(thread, message.user);
+			return;
+		}
 		await this.#serialized(key, () => this.#deliver(key, message, mentions));
+	}
+
+	/** A reaction on a message: a stop sign on a thread's first message or on Scout's progress message stops it. */
+	async onReaction(reaction: { channel: string; ts: string; name: string; user: string }): Promise<void> {
+		if (!STOP_REACTIONS.has(reaction.name)) return;
+		let thread = this.#options.threads.get(threadKey(reaction.channel, reaction.ts));
+		if (thread === undefined) {
+			for (const [conversationId, view] of this.#views) {
+				if (view.runTs === reaction.ts) thread = this.#options.threads.byConversation(conversationId);
+			}
+		}
+		if (thread !== undefined && thread.channel === reaction.channel) await this.#stop(thread, reaction.user);
+	}
+
+	async #stop(thread: ThreadRow, user: string): Promise<void> {
+		const { harness, context } = this.#options;
+		const view = await this.#view(thread);
+		if (!view.busy) return;
+		view.markStopped(await this.#options.nameOf(user));
+		const conversation = await harness.conversation(thread.conversationId as ConversationId, context);
+		await conversation?.abort(context);
+	}
+
+	#withoutMention(text: string): string {
+		return text.replaceAll(`<@${this.#options.botUserId}>`, "").trim();
 	}
 
 	async #deliver(key: string, message: IncomingMessage, mentions: boolean): Promise<void> {

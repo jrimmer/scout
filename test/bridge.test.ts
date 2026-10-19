@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { Type } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { Bridge, DECLINE_PRIVATE, type IncomingMessage } from "../src/bridge.ts";
 import { loadProfile, profileExtension } from "../src/profile.ts";
 import type { ChatMessage, ChatSurface } from "../src/render.ts";
@@ -66,6 +67,15 @@ describe("bridge", () => {
 		writeFileSync(join(profileDir, "channels", "team", "instructions.md"), "We use pnpm.");
 		const registry = createRegistry();
 		registry.install(profileExtension(loadProfile(profileDir), { base: "main", branch: (id) => `scout/t-${id}` }));
+		// A tool that works until it is stopped.
+		const wait = defineTool({
+			name: "wait",
+			description: "Wait",
+			parameters: Type.Object({}),
+			execute: (_args, _api, ctx) =>
+				new Promise((_resolve, reject) => ctx.abortSignal?.addEventListener("abort", () => reject(new Error("stopped")))),
+		});
+		registry.install(defineExtension({ name: "wait", tools: [wait] }));
 		harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
 		threads = new Threads(":memory:");
 		surface = new FakeSurface();
@@ -154,6 +164,37 @@ describe("bridge", () => {
 		await settle(thread.conversationId);
 		assert.match(seen, /bob: ann, lunch\?/);
 		assert.match(seen, /ann: sure/);
+	});
+
+	for (const how of ["message", "reaction"] as const) {
+		it(`stops running work by ${how}`, async () => {
+			faux.setResponses([fauxAssistantMessage([fauxToolCall("wait", {})], { stopReason: "toolUse" })]);
+			await bridge.onMessage(message({ text: `<@${BOT}> take your time` }));
+			const thread = threads.get(threadKey("C1", "100.1"))!;
+			await until(() => bridge.view(thread.conversationId)?.runTs !== undefined && faux.state.callCount === 1);
+			await new Promise((resolve) => setTimeout(resolve, 50)); // the wait tool is running
+
+			if (how === "message") {
+				await bridge.onMessage(message({ user: "UBOB", text: `<@${BOT}> stop`, ts: "100.2", threadTs: "100.1" }));
+			} else {
+				await bridge.onReaction({ channel: "C1", ts: bridge.view(thread.conversationId)!.runTs!, name: "octagonal_sign", user: "UBOB" });
+			}
+			await settle(thread.conversationId);
+			assert.match(surface.texts().at(-1) ?? "", /Stopped by bob\./);
+			assert.equal(faux.state.callCount, 1, "the stop itself is not a request to Scout");
+		});
+	}
+
+	it("ignores a stop when nothing is running, and other reactions", async () => {
+		faux.setResponses([fauxAssistantMessage("done")]);
+		await bridge.onMessage(message({}));
+		const thread = threads.get(threadKey("C1", "100.1"))!;
+		await settle(thread.conversationId);
+		const sent = surface.sent.length;
+		await bridge.onReaction({ channel: "C1", ts: "100.1", name: "octagonal_sign", user: "UBOB" });
+		await bridge.onReaction({ channel: "C1", ts: "100.1", name: "thumbsup", user: "UBOB" });
+		await bridge.onMessage(message({ text: `<@${BOT}> stop`, ts: "100.2", threadTs: "100.1" }));
+		assert.equal(surface.sent.length, sent);
 	});
 
 	it("handles a redelivered Slack event once", async () => {

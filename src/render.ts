@@ -20,6 +20,7 @@ type Run = {
 	text?: string;
 	error?: string;
 	ts?: string;
+	stoppedBy?: string;
 };
 
 /**
@@ -52,6 +53,16 @@ export class ThreadView {
 
 	get busy(): boolean {
 		return this.#run !== undefined;
+	}
+
+	/** The Slack message showing the current run, once posted. */
+	get runTs(): string | undefined {
+		return this.#run?.ts;
+	}
+
+	/** Someone stopped the current run; its message says so when it ends. */
+	markStopped(by: string): void {
+		if (this.#run !== undefined) this.#run.stoppedBy = by;
 	}
 
 	/** Resolves once every Slack call queued so far has finished. */
@@ -148,10 +159,15 @@ export function progressMessage(run: Pick<Run, "startedAt" | "steps" | "note">, 
 	return { text: "Working…", blocks: [{ type: "markdown", text }] };
 }
 
-export function finalMessage(run: Pick<Run, "startedAt" | "steps" | "text" | "error">, now: number): ChatMessage {
+export function finalMessage(
+	run: Pick<Run, "startedAt" | "steps" | "text" | "error" | "stoppedBy">,
+	now: number,
+): ChatMessage {
 	const answer =
-		run.text ??
-		(run.error === undefined ? "Done." : `I ran into a problem and stopped: ${clip(run.error, 500)}`);
+		run.stoppedBy !== undefined
+			? `Stopped by ${run.stoppedBy}.${run.text === undefined ? "" : ` Where I'd got to:\n\n${run.text}`}`
+			: (run.text ??
+				(run.error === undefined ? "Done." : `I ran into a problem and stopped: ${clip(run.error, 500)}`));
 	const steps = run.steps.length;
 	const footer = `${steps} step${steps === 1 ? "" : "s"} · ${duration(now - run.startedAt)}`;
 	return {

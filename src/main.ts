@@ -143,7 +143,10 @@ const bridge = new Bridge({
 
 await bridge.reattach(Date.now() - 24 * HOUR);
 harness.resume();
-await slack.start({ onMessage: (message) => bridge.onMessage(message) });
+await slack.start({
+	onMessage: (message) => bridge.onMessage(message),
+	onReaction: (reaction) => bridge.onReaction(reaction),
+});
 console.log(`scout is listening as <@${slack.botUserId}> (model ${config.model.provider}/${config.model.modelId})`);
 
 async function reflect(day: string): Promise<void> {

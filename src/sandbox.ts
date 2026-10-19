@@ -335,6 +335,12 @@ export class SandboxEnv extends ConfinedEnv {
 		const timed = options?.timeout === undefined ? inner : ["timeout", "-k", "5", `${options.timeout}s`, ...inner];
 		const envFlags = Object.entries(options?.env ?? {}).flatMap(([key, value]) => ["--env", `${key}=${value}`]);
 		const argv = ["docker", "exec", "--workdir", cwd, ...envFlags, this.container, ...timed];
+		// Stopping work stops everything running in the thread's container (all but its idle PID 1).
+		context.abortSignal?.addEventListener(
+			"abort",
+			() => void run("docker", ["exec", this.container, "sh", "-c", "kill -KILL -1"]).catch(() => {}),
+			{ once: true },
+		);
 		// The docker CLI itself runs on the host; it gets the host environment, the container does not. Node's own exec
 		// (not ConfinedEnv's refusal) runs it, and spills long output into this workspace's tmp via createTempDir.
 		const { env: _env, cwd: _cwd, inheritEnv: _inherit, ...rest } = options ?? {};
