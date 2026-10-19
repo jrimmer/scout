@@ -71,6 +71,16 @@ describe("pulls", () => {
 		pulls.close();
 	});
 
+	it("says what models cost each week", () => {
+		const pulls = new Pulls(":memory:");
+		const now = Date.parse("2026-10-19T10:00:00Z");
+		const week = 7 * DAY;
+		assert.match(pulls.weeklyReport("2026-10-05", now - 2 * week, 10) ?? "", /Models cost \$10\.00 so far\.$/);
+		assert.match(pulls.weeklyReport("2026-10-12", now - week, 25.5) ?? "", /Models cost \$15\.50\.$/);
+		assert.match(pulls.weeklyReport("2026-10-19", now, 30) ?? "", /Models cost \$4\.50 \(\$15\.50 the week before\)\.$/);
+		pulls.close();
+	});
+
 	it("names weeks by their Monday", () => {
 		assert.equal(weekOf(new Date(2026, 9, 19)), "2026-10-19");
 		assert.equal(weekOf(new Date(2026, 9, 25)), "2026-10-19");

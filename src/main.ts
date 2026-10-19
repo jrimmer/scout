@@ -108,7 +108,7 @@ const tick = setInterval(() => {
 	}
 	if (new Date(now).getHours() >= config.reflect.hour) void reflect(localDay(new Date(now)));
 	void pullReviewer?.poll().catch((error: unknown) => console.error("pull request reviews failed:", error));
-	void pulls.refresh(config.codeHost).then((decided) => {
+	void pulls.refresh(config.codeHost).then(async (decided) => {
 		// A reflection's proposal was decided: merged retires the notes it covered; rejected keeps them.
 		for (const pull of decided) {
 			const day = pull.kind === "profile" ? threads.reflectionDay(pull.conversationId) : undefined;
@@ -117,7 +117,9 @@ const tick = setInterval(() => {
 		// Mondays, after the reflection hour: how last week went.
 		const today = new Date();
 		if (today.getDay() !== 1 || today.getHours() < config.reflect.hour) return;
-		const text = pulls.weeklyReport(weekOf(today));
+		const usage = await harness.usage(context);
+		const spent = [...Object.values(usage.models), ...Object.values(usage.tools)].reduce((sum, u) => sum + (u.cost?.total ?? 0), 0);
+		const text = pulls.weeklyReport(weekOf(today), Date.now(), spent);
 		if (text !== undefined) announce(text);
 	});
 }, 5 * MINUTE);

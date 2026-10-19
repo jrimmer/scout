@@ -46,7 +46,7 @@ export class Pulls {
 				decided_at INTEGER,
 				checked_at INTEGER NOT NULL DEFAULT 0
 			);
-			CREATE TABLE IF NOT EXISTS reports (week TEXT PRIMARY KEY, sent_at INTEGER NOT NULL);
+			CREATE TABLE IF NOT EXISTS reports (week TEXT PRIMARY KEY, sent_at INTEGER NOT NULL, spent REAL);
 			CREATE TABLE IF NOT EXISTS reviews (
 				slug TEXT NOT NULL,
 				number INTEGER NOT NULL,
@@ -121,11 +121,27 @@ export class Pulls {
 	}
 
 	/** The weekly report, once per `week`; undefined when it was already sent. */
-	weeklyReport(week: string, now = Date.now()): string | undefined {
+	/**
+	 * The weekly report, once per `week`; undefined when it was already sent. `spentSoFar` is Scout's model spend since
+	 * it started, in dollars; the report says how much of it was this week's.
+	 */
+	weeklyReport(week: string, now = Date.now(), spentSoFar?: number): string | undefined {
 		const sent = this.#db.prepare("SELECT 1 FROM reports WHERE week = ?").get(week);
 		if (sent !== undefined) return undefined;
-		this.#db.prepare("INSERT INTO reports (week, sent_at) VALUES (?, ?)").run(week, now);
-		return report(this, now);
+		const last = this.#db.prepare("SELECT spent FROM reports WHERE spent IS NOT NULL ORDER BY week DESC LIMIT 2").all() as {
+			spent: number;
+		}[];
+		this.#db.prepare("INSERT INTO reports (week, sent_at, spent) VALUES (?, ?, ?)").run(week, now, spentSoFar ?? null);
+		const lines = [report(this, now)];
+		if (spentSoFar !== undefined) {
+			const thisWeek = spentSoFar - (last[0]?.spent ?? 0);
+			const before = last.length === 2 ? last[0]!.spent - last[1]!.spent : undefined;
+			lines.push(
+				`Models cost ${dollars(thisWeek)}${last.length === 0 ? " so far" : ""}` +
+					(before === undefined ? "." : ` (${dollars(before)} the week before).`),
+			);
+		}
+		return lines.join(" ");
 	}
 
 	count(where: string, ...args: (string | number)[]): number {
@@ -257,6 +273,10 @@ function report(pulls: Pulls, now: number): string {
 		);
 	}
 	return lines.join(" ");
+}
+
+function dollars(amount: number): string {
+	return `$${amount.toFixed(2)}`;
 }
 
 function compare(now: number, before: number): string {
