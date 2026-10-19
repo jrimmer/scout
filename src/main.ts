@@ -24,6 +24,10 @@ const HOUR = 60 * MINUTE;
 const context = BACKGROUND_CONTEXT;
 const config = loadConfig();
 mkdirSync(config.dataDir, { recursive: true });
+// Every git command the host runs (clone, fetch, push, profile pulls) uses Scout's own key. Containers never see it.
+if (config.git.sshKey !== undefined) {
+	process.env.GIT_SSH_COMMAND = `ssh -i '${config.git.sshKey}' -o IdentitiesOnly=yes -o IdentityAgent=none`;
+}
 
 const models = createModels();
 models.setProvider(anthropicProvider());

@@ -24,7 +24,8 @@ export type Config = {
 	/** Local hour (0-23) for the nightly reflection, and Scout's home channel: proposals and the weekly report. */
 	reflect: { hour: number; channel?: string };
 	sandbox: { image: string; network: string; memory: string };
-	git: { name: string; email: string };
+	/** Scout's commit identity, and the SSH key the host pushes and pulls with: Scout's own, not a person's. */
+	git: { name: string; email: string; sshKey?: string };
 };
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -74,6 +75,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			network: env.SCOUT_SANDBOX_NETWORK ?? "none",
 			memory: env.SCOUT_SANDBOX_MEMORY ?? "4g",
 		},
-		git: { name: env.SCOUT_GIT_NAME ?? "Scout", email: env.SCOUT_GIT_EMAIL ?? "scout@localhost" },
+		git: {
+			name: env.SCOUT_GIT_NAME ?? "Scout",
+			email: env.SCOUT_GIT_EMAIL ?? "scout@localhost",
+			...(env.SCOUT_GIT_SSH_KEY ? { sshKey: resolve(env.SCOUT_GIT_SSH_KEY) } : {}),
+		},
 	};
 }
