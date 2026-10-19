@@ -2,6 +2,7 @@ import type { Context } from "@earendil-works/chord";
 import { type AgentChange, type ConversationId, type Harness, watchEvents } from "@earendil-works/pi-durable";
 import { delivery } from "./etiquette.ts";
 import { ThreadDoc } from "./profile.ts";
+import type { ThreadSearch } from "./search.ts";
 import { type ChatMessage, type ChatSurface, ThreadView } from "./render.ts";
 import { threadKey, type ThreadRow, type Threads } from "./threads.ts";
 
@@ -29,6 +30,8 @@ export type BridgeOptions = {
 	context: Context;
 	/** Offered on a direct message: a public channel for the two of you. */
 	channelOffer?: (user: string) => ChatMessage;
+	/** Where what's said in threads is indexed, for `search_threads`. */
+	search?: ThreadSearch;
 };
 
 /** Reactions that stop Scout's work in a thread, on the thread's first message or on Scout's progress message. */
@@ -152,6 +155,13 @@ export class Bridge {
 			threads.asked(key, message.user);
 		}
 		threads.spoke(key, message.user);
+		this.#options.search?.add({
+			key,
+			conversationId: thread.conversationId,
+			channelName: message.channelName,
+			speaker: name,
+			text,
+		});
 	}
 
 	async #startThread(key: string, message: IncomingMessage): Promise<ThreadRow> {
@@ -188,9 +198,20 @@ export class Bridge {
 			surface,
 			channel: thread.channel,
 			threadTs: thread.threadTs,
-			onRunEnd: () => {
+			onRunEnd: (answer) => {
 				threads.spoke(thread.key, "scout");
 				threads.ranOnce(thread.conversationId);
+				if (answer === undefined || this.#options.search === undefined) return;
+				const search = this.#options.search;
+				void harness.snapshot(ThreadDoc, thread.conversationId as ConversationId, context).then((doc) =>
+					search.add({
+						key: thread.key,
+						conversationId: thread.conversationId,
+						channelName: doc?.channelName ?? "",
+						speaker: "Scout",
+						text: answer,
+					}),
+				);
 			},
 		});
 		this.#views.set(thread.conversationId, view);

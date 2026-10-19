@@ -13,6 +13,7 @@ import { createCodeHostExtension } from "./codehost.ts";
 import { loadConfig } from "./config.ts";
 import { cloneProfile, loadProfile, profileExtension, pullProfile, watchProfile } from "./profile.ts";
 import { Pulls, weekOf } from "./pulls.ts";
+import { searchExtension, ThreadSearch } from "./search.ts";
 import { localDay, Reflector, reflectionExtensions } from "./reflect.ts";
 import { Workspaces } from "./sandbox.ts";
 import { Slack } from "./slack.ts";
@@ -30,6 +31,7 @@ models.setProvider(openaiProvider());
 
 const threads = new Threads(join(config.dataDir, "scout.sqlite"));
 const pulls = new Pulls(join(config.dataDir, "scout.sqlite"));
+const search = new ThreadSearch(join(config.dataDir, "scout.sqlite"));
 const workspaces = new Workspaces({ ...config, instance: instanceId(config.dataDir) });
 const slack = new Slack(config.slack);
 let reflector: Reflector | undefined;
@@ -67,9 +69,11 @@ const workCodeHost = createCodeHostExtension({
 	},
 	onPullRequest: (id, pull) => pulls.opened({ ...pull, kind: "work", conversationId: id }),
 });
+const searchTools = searchExtension(search, threads, (thread) => slack.permalink(thread.channel, thread.threadTs));
 registry.install(profileTools);
 registry.install(codingTools);
 registry.install(workCodeHost);
+registry.install(searchTools);
 
 // Reflection conversations: profile files only, pull requests against the profile repo.
 const reflection = reflectionExtensions(() => profile.reflect);
@@ -136,9 +140,10 @@ const bridge = new Bridge({
 	surface: slack.surface,
 	botUserId: await slack.identify(),
 	nameOf: (user) => slack.nameOf(user),
-	agent: { model: config.model, extensions: [profileTools, codingTools, workCodeHost] },
+	agent: { model: config.model, extensions: [profileTools, codingTools, workCodeHost, searchTools] },
 	context,
 	channelOffer: (user) => slack.channelOffer(user),
+	search,
 });
 
 await bridge.reattach(Date.now() - 24 * HOUR);
@@ -202,6 +207,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		await harness.close(context);
 		threads.close();
 		pulls.close();
+		search.close();
 		process.exit(0);
 	});
 }

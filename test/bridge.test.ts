@@ -10,6 +10,7 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { Bridge, DECLINE_PRIVATE, type IncomingMessage } from "../src/bridge.ts";
 import { loadProfile, profileExtension } from "../src/profile.ts";
+import { ThreadSearch } from "../src/search.ts";
 import type { ChatMessage, ChatSurface } from "../src/render.ts";
 import { threadKey, Threads } from "../src/threads.ts";
 
@@ -46,6 +47,7 @@ describe("bridge", () => {
 	let surface: FakeSurface;
 	let bridge: Bridge;
 	let faux: ReturnType<typeof fauxProvider>;
+	let search: ThreadSearch;
 
 	const message = (overrides: Partial<IncomingMessage>): IncomingMessage => ({
 		channel: "C1",
@@ -79,6 +81,7 @@ describe("bridge", () => {
 		harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
 		threads = new Threads(":memory:");
 		surface = new FakeSurface();
+		search = new ThreadSearch(":memory:");
 		bridge = new Bridge({
 			harness,
 			threads,
@@ -87,6 +90,7 @@ describe("bridge", () => {
 			nameOf: async (user) => (user === "UANN" ? "ann" : "bob"),
 			agent: { model: { provider: "faux", modelId: "faux-model" } },
 			context,
+			search,
 		});
 	});
 
@@ -118,6 +122,8 @@ describe("bridge", () => {
 		assert.match(surface.texts()[1] ?? "", /It runs the tests\./);
 		assert.equal(threads.get(thread.key)?.lastSpeaker, "scout");
 		assert.equal(threads.get(thread.key)?.runs, 1);
+		await until(() => search.search("tests").length > 0);
+		assert.deepEqual(search.search("build").map((h) => [h.key, h.speaker, h.channelName]), [["C1:100.1", "ann", "team"]]);
 	});
 
 	it("puts the speaker and the channel's instructions in front of the model", async () => {

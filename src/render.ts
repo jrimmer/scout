@@ -31,7 +31,7 @@ export class ThreadView {
 	readonly #surface: ChatSurface;
 	readonly #channel: string;
 	readonly #threadTs: string;
-	readonly #onRunEnd: () => void;
+	readonly #onRunEnd: (answer: string | undefined) => void;
 	readonly #now: () => number;
 	#run: Run | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
@@ -41,7 +41,8 @@ export class ThreadView {
 		surface: ChatSurface;
 		channel: string;
 		threadTs: string;
-		onRunEnd?: () => void;
+		/** After the run's final message is in Slack, with Scout's answer when it gave one. */
+		onRunEnd?: (answer: string | undefined) => void;
 		now?: () => number;
 	}) {
 		this.#surface = options.surface;
@@ -137,7 +138,7 @@ export class ThreadView {
 			const message = finalMessage(run, this.#now());
 			if (run.ts === undefined) await this.#surface.post(this.#channel, this.#threadTs, message);
 			else await this.#surface.update(this.#channel, run.ts, message);
-			this.#onRunEnd();
+			this.#onRunEnd(run.stoppedBy === undefined ? run.text : undefined);
 		});
 	}
 
