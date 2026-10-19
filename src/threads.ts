@@ -19,7 +19,6 @@ export type ThreadRow = {
 	/** Whose message Scout last took up as work. */
 	lastAsker: string;
 	runs: number;
-	pullRequests: string[];
 	/** `lastActivity` as of the last nightly reflection that read this thread. */
 	reflectedActivity: number;
 };
@@ -47,7 +46,6 @@ export class Threads {
 				last_speaker TEXT NOT NULL,
 				last_asker TEXT NOT NULL,
 				runs INTEGER NOT NULL DEFAULT 0,
-				pull_requests TEXT NOT NULL DEFAULT '[]',
 				reflected_activity INTEGER NOT NULL DEFAULT 0
 			);
 			CREATE TABLE IF NOT EXISTS reflections (
@@ -91,14 +89,6 @@ export class Threads {
 
 	ranOnce(conversationId: number): void {
 		this.#db.prepare("UPDATE threads SET runs = runs + 1 WHERE conversation_id = ?").run(conversationId);
-	}
-
-	addPullRequest(conversationId: number, url: string): void {
-		const thread = this.byConversation(conversationId);
-		if (thread === undefined || thread.pullRequests.includes(url)) return;
-		this.#db
-			.prepare("UPDATE threads SET pull_requests = ? WHERE conversation_id = ?")
-			.run(JSON.stringify([...thread.pullRequests, url]), conversationId);
 	}
 
 	/** Threads with activity no reflection has read yet. */
@@ -145,7 +135,6 @@ function toThread(row: Record<string, unknown>): ThreadRow {
 		lastSpeaker: String(row.last_speaker),
 		lastAsker: String(row.last_asker),
 		runs: Number(row.runs),
-		pullRequests: JSON.parse(String(row.pull_requests)) as string[],
 		reflectedActivity: Number(row.reflected_activity),
 	};
 }

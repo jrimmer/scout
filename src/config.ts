@@ -21,7 +21,7 @@ export type Config = {
 	 * every night from what happened in its threads. Without it, the profile is just a local directory.
 	 */
 	profileRepo?: { gitUrl: string; base: string; slug: string };
-	/** Local hour (0-23) for the nightly reflection, and a public channel to announce its proposals in. */
+	/** Local hour (0-23) for the nightly reflection, and Scout's home channel: proposals and the weekly report. */
 	reflect: { hour: number; channel?: string };
 	sandbox: { image: string; network: string; memory: string };
 	git: { name: string; email: string };

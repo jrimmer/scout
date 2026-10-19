@@ -14,6 +14,7 @@ import {
 import { createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import type { PullTarget } from "./codehost.ts";
 import { ThreadDoc } from "./profile.ts";
+import type { Pulls } from "./pulls.ts";
 import { ConfinedEnv, Mirror } from "./sandbox.ts";
 import type { ThreadRow, Threads } from "./threads.ts";
 
@@ -46,6 +47,7 @@ const DIGEST_BUDGET = 150_000;
 export type ReflectorOptions = {
 	harness: Harness;
 	threads: Threads;
+	pulls: Pulls;
 	context: Context;
 	dataDir: string;
 	profileRepo: { gitUrl: string; base: string; slug: string };
@@ -143,10 +145,11 @@ export class Reflector {
 			} while (cursor !== undefined);
 			const channel = (await harness.snapshot(ThreadDoc, id, context))?.channelName || thread.channel;
 			const link = await this.#options.threadLink(thread);
+			const pulls = this.#options.pulls.forConversation(thread.conversationId);
 			const header = [
 				`## #${channel}${link === undefined ? "" : ` (${link})`}`,
-				`${thread.runs} run${thread.runs === 1 ? "" : "s"}` +
-					(thread.pullRequests.length > 0 ? `; pull requests: ${thread.pullRequests.join(", ")}` : "; no pull request"),
+				`${thread.runs} run${thread.runs === 1 ? "" : "s"}; ` +
+					(pulls.length === 0 ? "no pull request" : `pull requests: ${pulls.map((p) => `${p.url} (${p.state})`).join(", ")}`),
 			].join("\n");
 			const part = `${header}\n\n${clipMiddle(renderTranscript(entries), THREAD_BUDGET)}`;
 			if (used + part.length > DIGEST_BUDGET) {
@@ -156,7 +159,17 @@ export class Reflector {
 			parts.push(part);
 			used += part.length;
 		}
-		const intro = `Threads with new activity since the last reflection: ${pending.length}.`;
+		const proposals = this.#options.pulls.recent("profile", 10);
+		const outcomes =
+			proposals.length === 0
+				? ""
+				: [
+						"Your recent proposals to this profile, and what people did with them:",
+						...proposals.map((p) => `- ${p.title}: ${p.state} (${p.url})`),
+						"",
+						"",
+					].join("\n");
+		const intro = `${outcomes}Threads with new activity since the last reflection: ${pending.length}.`;
 		const tail = omitted > 0 ? `\n\n(${omitted} more thread${omitted === 1 ? "" : "s"} left out for length.)` : "";
 		return `${intro}\n\n${parts.join("\n\n")}${tail}`;
 	}

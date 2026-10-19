@@ -23,6 +23,8 @@ export type PullTarget = {
 	link?: string;
 };
 
+export type OpenedPull = { url: string; number: number; slug: string; title: string };
+
 export type CodeHostOptions = {
 	/** Extension name; a conversation selects one code host extension. */
 	name: string;
@@ -33,7 +35,7 @@ export type CodeHostOptions = {
 	 * write under `.git` (`ConfinedEnv` with `protectGit`), since this runs git inside the clone on the host.
 	 */
 	commitAll?: boolean;
-	onPullRequest?: (conversationId: number, url: string) => void;
+	onPullRequest?: (conversationId: number, pull: OpenedPull) => void;
 	fetch?: typeof fetch;
 };
 
@@ -72,8 +74,13 @@ export function createCodeHostExtension(options: CodeHostOptions) {
 			await git(["-C", mirror.path, "push", "--quiet", "--force", mirror.gitUrl, `refs/heads/${branch}:refs/heads/${branch}`]);
 
 			const body = target.link === undefined ? args.body : `${args.body}\n\n---\nWorked out in the open: ${target.link}`;
-			const url = await createOrFindPull(options.codeHost, target.slug, doFetch, { title: args.title, body, head: branch, base });
-			options.onPullRequest?.(conversationId, url);
+			const { url, number } = await createOrFindPull(options.codeHost, target.slug, doFetch, {
+				title: args.title,
+				body,
+				head: branch,
+				base,
+			});
+			options.onPullRequest?.(conversationId, { url, number, slug: target.slug, title: args.title });
 			return { output: [{ type: "text", text: `Pull request: ${url} (${ahead} commit${ahead === "1" ? "" : "s"})` }] };
 		},
 	});
@@ -90,7 +97,9 @@ async function commitEverything(dir: string, message: string): Promise<void> {
 
 type PullDraft = { title: string; body: string; head: string; base: string };
 
-async function createOrFindPull(host: CodeHost, slug: string, doFetch: typeof fetch, pull: PullDraft): Promise<string> {
+type Created = { url: string; number: number };
+
+async function createOrFindPull(host: CodeHost, slug: string, doFetch: typeof fetch, pull: PullDraft): Promise<Created> {
 	const headers = {
 		"content-type": "application/json",
 		accept: host.kind === "github" ? "application/vnd.github+json" : "application/json",
@@ -98,16 +107,19 @@ async function createOrFindPull(host: CodeHost, slug: string, doFetch: typeof fe
 	};
 	const pulls = `${host.apiUrl}/repos/${slug}/pulls`;
 	const created = await doFetch(pulls, { method: "POST", headers, body: JSON.stringify(pull) });
-	if (created.ok) return ((await created.json()) as { html_url: string }).html_url;
+	if (created.ok) {
+		const body = (await created.json()) as { html_url: string; number: number };
+		return { url: body.html_url, number: body.number };
+	}
 
 	// Already open for this branch: the push above updated it.
 	if (created.status === 409 || created.status === 422) {
 		const open = await doFetch(`${pulls}?state=open&per_page=100&limit=50`, { headers });
 		if (open.ok) {
-			const existing = ((await open.json()) as { html_url: string; head: { ref: string } }[]).find(
+			const existing = ((await open.json()) as { html_url: string; number: number; head: { ref: string } }[]).find(
 				(candidate) => candidate.head.ref === pull.head,
 			);
-			if (existing !== undefined) return existing.html_url;
+			if (existing !== undefined) return { url: existing.html_url, number: existing.number };
 		}
 	}
 	throw new Error(`Code host refused the pull request (${created.status}): ${(await created.text()).slice(0, 500)}`);

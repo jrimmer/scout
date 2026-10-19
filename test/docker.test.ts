@@ -99,7 +99,7 @@ describe("docker sandbox", { skip: !enabled && "set SCOUT_DOCKER_TESTS=1" }, () 
 			}),
 			fetch: async (url, init) => {
 				requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
-				return new Response(JSON.stringify({ html_url: "http://forge/o/r/pulls/1" }), { status: 201 });
+				return new Response(JSON.stringify({ html_url: "http://forge/o/r/pulls/1", number: 1 }), { status: 201 });
 			},
 		});
 		const tool = extension.tools![0]!;

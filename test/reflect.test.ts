@@ -9,6 +9,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, type EntryRecord, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { createCodeHostExtension } from "../src/codehost.ts";
+import { Pulls } from "../src/pulls.ts";
 import { ThreadDoc } from "../src/profile.ts";
 import { branchForDay, Reflector, reflectionExtensions, renderTranscript } from "../src/reflect.ts";
 import { threadKey, Threads } from "../src/threads.ts";
@@ -56,7 +57,11 @@ describe("nightly reflection", () => {
 	git("-C", seed, "push", "--quiet", remote, "main");
 
 	const threads = new Threads(":memory:");
-	after(() => threads.close());
+	const pulls = new Pulls(":memory:");
+	after(() => {
+		threads.close();
+		pulls.close();
+	});
 
 	it("reads new threads, edits the profile, and proposes it once a day", async () => {
 		const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
@@ -71,9 +76,10 @@ describe("nightly reflection", () => {
 			codeHost: { kind: "github", apiUrl: "https://api.example", token: "t" },
 			commitAll: true,
 			target: (id, ctx) => reflector!.target(id, ctx),
+			onPullRequest: (id, pull) => pulls.opened({ ...pull, kind: "profile", conversationId: id }),
 			fetch: async (url, init) => {
 				requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
-				return new Response(JSON.stringify({ html_url: "https://example/pull/7" }), { status: 201 });
+				return new Response(JSON.stringify({ html_url: "https://example/pull/7", number: 7 }), { status: 201 });
 			},
 		});
 		const registry = createRegistry();
@@ -89,6 +95,7 @@ describe("nightly reflection", () => {
 		reflector = new Reflector({
 			harness,
 			threads,
+			pulls,
 			context,
 			dataDir: join(root, "data"),
 			profileRepo: { gitUrl: remote, base: "main", slug: "team/scout-profile" },
@@ -154,6 +161,8 @@ describe("nightly reflection", () => {
 		assert.deepEqual(requests.map((r) => [r.url, r.body.head, r.body.base]), [
 			["https://api.example/repos/team/scout-profile/pulls", branch, "main"],
 		]);
+
+		assert.equal(pulls.get("https://example/pull/7")?.title, "Teach Scout to deploy");
 
 		// Once per day, and only for threads with something new.
 		assert.equal(await reflector.run("2026-10-19"), undefined);

@@ -12,6 +12,7 @@ import { Bridge } from "./bridge.ts";
 import { createCodeHostExtension } from "./codehost.ts";
 import { loadConfig } from "./config.ts";
 import { cloneProfile, loadProfile, profileExtension, pullProfile, watchProfile } from "./profile.ts";
+import { Pulls, weekOf } from "./pulls.ts";
 import { localDay, Reflector, reflectionExtensions } from "./reflect.ts";
 import { Workspaces } from "./sandbox.ts";
 import { Slack } from "./slack.ts";
@@ -28,6 +29,7 @@ models.setProvider(anthropicProvider());
 models.setProvider(openaiProvider());
 
 const threads = new Threads(join(config.dataDir, "scout.sqlite"));
+const pulls = new Pulls(join(config.dataDir, "scout.sqlite"));
 const workspaces = new Workspaces({ ...config, instance: instanceId(config.dataDir) });
 const slack = new Slack(config.slack);
 let reflector: Reflector | undefined;
@@ -63,7 +65,7 @@ const workCodeHost = createCodeHostExtension({
 			...(link === undefined ? {} : { link }),
 		};
 	},
-	onPullRequest: (id, url) => threads.addPullRequest(id, url),
+	onPullRequest: (id, pull) => pulls.opened({ ...pull, kind: "work", conversationId: id }),
 });
 registry.install(profileTools);
 registry.install(codingTools);
@@ -79,13 +81,10 @@ const profileCodeHost = createCodeHostExtension({
 		if (reflector === undefined) throw new Error("No profile repository is configured.");
 		return reflector.target(id, ctx);
 	},
-	onPullRequest: (_id, url) => {
-		console.log(`reflection proposed ${url}`);
-		if (config.reflect.channel === undefined) return;
-		const text = `I went over yesterday's threads and wrote down what I learned. Could someone review it? ${url}`;
-		slack.surface.post(config.reflect.channel, undefined, { text, blocks: [] }).catch((error: unknown) => {
-			console.error("reflection announcement failed:", error);
-		});
+	onPullRequest: (id, pull) => {
+		pulls.opened({ ...pull, kind: "profile", conversationId: id });
+		console.log(`reflection proposed ${pull.url}`);
+		announce(`I went over yesterday's threads and wrote down what I learned. Could someone review it? ${pull.url}`);
 	},
 });
 registry.install(reflection.reflect);
@@ -119,6 +118,7 @@ if (config.profileRepo !== undefined) {
 	reflector = new Reflector({
 		harness,
 		threads,
+		pulls,
 		context,
 		dataDir: config.dataDir,
 		profileRepo: config.profileRepo,
@@ -171,7 +171,22 @@ const tick = setInterval(() => {
 		pullProfile(config.profileDir).catch((error: unknown) => console.error("profile pull failed:", error));
 	}
 	if (new Date(now).getHours() >= config.reflect.hour) void reflect(localDay(new Date(now)));
+	void pulls.refresh(config.codeHost).then(() => {
+		// Mondays, after the reflection hour: how last week went.
+		const today = new Date();
+		if (today.getDay() !== 1 || today.getHours() < config.reflect.hour) return;
+		const text = pulls.weeklyReport(weekOf(today));
+		if (text !== undefined) announce(text);
+	});
 }, 5 * MINUTE);
+
+/** Say something in Scout's home channel, if it has one. */
+function announce(text: string): void {
+	if (config.reflect.channel === undefined) return;
+	slack.surface.post(config.reflect.channel, undefined, { text, blocks: [] }).catch((error: unknown) => {
+		console.error("announcement failed:", error);
+	});
+}
 
 // `kill -USR2 <pid>` reflects now, if today's reflection hasn't run yet.
 process.on("SIGUSR2", () => void reflect(localDay(new Date())));
@@ -186,6 +201,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		await slack.stop().catch(() => {});
 		await harness.close(context);
 		threads.close();
+		pulls.close();
 		process.exit(0);
 	});
 }
