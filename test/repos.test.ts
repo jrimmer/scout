@@ -9,6 +9,8 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { loadConfig } from "../src/config.ts";
 import { loadProfile, profileExtension } from "../src/profile.ts";
+import { ThreadDoc } from "../src/docs.ts";
+import { LocalDriver } from "../src/drivers/local.ts";
 import { openScout } from "../src/scout.ts";
 
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
@@ -56,18 +58,41 @@ describe("repositories and zones", () => {
 			SCOUT_PROFILE_DIR: profileDir,
 		});
 		assert.deepEqual(config.repos.map((r) => [r.name, r.base]), [["api", "main"], ["web", "develop"]]);
-		const scout = await openScout({ config, storage: new MemoryStorage(), dataDir: config.dataDir, instance: "t", context, models: createModels(), watchProfile: false });
+		const scout = await openScout({
+			config,
+			storage: new MemoryStorage(),
+			dataDir: config.dataDir,
+			instance: "t",
+			context,
+			models: createModels(),
+			watchProfile: false,
+			driver: new LocalDriver({ root: join(root, "sandboxes") }),
+		});
 		assert.equal(scout.repoFor("web-team"), "web");
 		assert.equal(scout.repoFor("anything-else"), "api");
 		assert.equal(scout.repoFor("lost"), "api", "an unknown repository falls back to the default");
 
-		await scout.workspaces.prepare(1, "web");
-		await scout.workspaces.prepare(2, undefined);
-		const repo = (id: number) => scout.workspaces.paths(id).repo;
-		assert.equal(git("-C", repo(1), "remote", "get-url", "origin"), web);
-		assert.equal(git("-C", repo(1), "rev-parse", "--abbrev-ref", "HEAD"), "scout/t-1");
-		assert.equal(git("-C", repo(1), "merge-base", "HEAD", "origin/develop"), git("-C", repo(1), "rev-parse", "origin/develop"));
-		assert.equal(git("-C", repo(2), "remote", "get-url", "origin"), api);
+		const thread = async (repo: string | undefined) =>
+			(
+				await scout.harness.createConversation(
+					{
+						ownership: { kind: "ownerless" },
+						init: async (tx, id) => {
+							if (repo !== undefined) (await tx.doc(ThreadDoc, id)).repo = repo;
+						},
+					},
+					context,
+				)
+			).id;
+		const origin = async (id: number) => {
+			let out = "";
+			await (await scout.workspaces.env(id)).exec("git remote get-url origin; git branch --show-current", { onOutput: (t) => (out += t) }, context);
+			return out.trim().split("\n");
+		};
+		const inWeb = await thread("web");
+		const inDefault = await thread(undefined);
+		assert.deepEqual(await origin(inWeb), [web, `scout/t-${inWeb}`]);
+		assert.deepEqual(await origin(inDefault), [api, `scout/t-${inDefault}`]);
 		await scout.close();
 	});
 

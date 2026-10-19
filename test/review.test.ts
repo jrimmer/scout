@@ -42,12 +42,12 @@ async function setup(options: { maxChangedLines?: number }) {
 		name: "codehost",
 		codeHost: { kind: "forgejo", apiUrl: "http://forge/api/v1", token: "t" },
 		commitAll: true,
-		target: async () => ({ dir: join(work, "repo"), branch: "scout/t-1", base: "main", slug: "o/r", mirror }),
+		target: async () => ({ source: { kind: "dir", dir: join(work, "repo") }, branch: "scout/t-1", base: "main", slug: "o/r", mirror }),
 		...(options.maxChangedLines === undefined ? {} : { maxChangedLines: options.maxChangedLines }),
 		selfReview: (change, api, ctx) =>
 			reviewAsSubtask(
 				api,
-				{ agent: { model, extensions: [reviewer] }, root: work, cwd: change.target.dir, prompt: change.diff, requestId: `review:${change.sha}` },
+				{ agent: { model, extensions: [reviewer] }, workspace: { root: work, cwd: join(work, "repo") }, prompt: change.diff, requestId: `review:${change.sha}` },
 				ctx,
 			),
 		fetch: async (_url, init) => {
@@ -66,7 +66,9 @@ async function setup(options: { maxChangedLines?: number }) {
 			models,
 			registry,
 			env: async (target, ctx) =>
-				(await reviewEnv(target, ctx)) ??
+				(await reviewEnv(target, ctx, async () => {
+					throw new Error("no sandboxes here");
+				})) ??
 				new ConfinedEnv({ id: "work", cwd: join(work, "repo"), root: work, tmp: join(work, "tmp"), protectGit: true }),
 		},
 		context,

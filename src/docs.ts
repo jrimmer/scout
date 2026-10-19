@@ -22,8 +22,11 @@ export const ReflectionDoc = defineDoc<{ day: string; root: string }>({
 	initial: () => ({ day: "", root: "" }),
 });
 
-/** Marks a reviewer conversation, and the workspace it reads. */
-export const ReviewDoc = defineDoc<{ root: string; cwd: string }>({
+/**
+ * Marks a reviewer conversation, and the workspace it reads: a thread's sandbox (`sandbox`, that conversation's id), or
+ * a checkout on this host (`root` and `cwd`).
+ */
+export const ReviewDoc = defineDoc<{ root: string; cwd: string; sandbox?: number }>({
 	kind: "scout.review",
 	version: 1,
 	scope: "conversation",

@@ -11,6 +11,7 @@ import {
 	section,
 } from "@earendil-works/pi-durable";
 import { createReadTool } from "@earendil-works/pi-durable/tools";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { ReviewDoc } from "./docs.ts";
 import { ConfinedEnv } from "./sandbox.ts";
 
@@ -40,10 +41,19 @@ export function reviewExtension(instructions: () => string | undefined) {
 	});
 }
 
-/** The reviewer's environment: the workspace, read through `ConfinedEnv` (and its only tool reads). */
-export async function reviewEnv(target: EnvTarget, context: Context): Promise<ConfinedEnv | undefined> {
+/**
+ * The reviewer's environment: the thread's own sandbox (`sandboxEnv`), or a checkout on this host read through
+ * `ConfinedEnv`. Either way its only tool reads.
+ */
+export async function reviewEnv(
+	target: EnvTarget,
+	context: Context,
+	sandboxEnv: (conversationId: number) => Promise<ExecutionEnv>,
+): Promise<ExecutionEnv | undefined> {
 	const doc = await target.read.snapshot(ReviewDoc, target.conversationId, context);
-	if (doc === undefined || doc.root === "") return undefined;
+	if (doc === undefined) return undefined;
+	if (doc.sandbox !== undefined) return sandboxEnv(doc.sandbox);
+	if (doc.root === "") return undefined;
 	return new ConfinedEnv({ id: `review:${target.conversationId}`, cwd: doc.cwd, root: doc.root, tmp: doc.root, protectGit: true });
 }
 
@@ -58,7 +68,7 @@ export function parseReview(text: string): Review {
  */
 export async function reviewAsSubtask(
 	api: ToolExecutionApi,
-	options: { agent: AgentChange; root: string; cwd: string; prompt: string; requestId: string },
+	options: { agent: AgentChange; workspace: { sandbox: number } | { root: string; cwd: string }; prompt: string; requestId: string },
 	context: Context,
 ): Promise<Review> {
 	const childId = await api.commit(async (tx) => {
@@ -67,8 +77,11 @@ export async function reviewAsSubtask(
 		const created = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
 		await configure(tx, created.id, { ...options.agent, tools: null, modelTools: null });
 		const doc = await tx.doc(ReviewDoc, created.id);
-		doc.root = options.root;
-		doc.cwd = options.cwd;
+		if ("sandbox" in options.workspace) doc.sandbox = options.workspace.sandbox;
+		else {
+			doc.root = options.workspace.root;
+			doc.cwd = options.workspace.cwd;
+		}
 		return created.id;
 	}, context);
 	const child = await api.conversation(childId, context);

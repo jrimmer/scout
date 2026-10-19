@@ -15,7 +15,11 @@ import { Pulls } from "./pulls.ts";
 import { Reflector, reflectionExtensions } from "./reflect.ts";
 import { reviewAsSubtask, reviewEnv, reviewExtension } from "./review.ts";
 import { searchExtension, ThreadSearch } from "./search.ts";
-import { Workspaces } from "./sandbox.ts";
+import { DockerDriver } from "./drivers/docker.ts";
+import { LocalDriver } from "./drivers/local.ts";
+import { SpoondDriver } from "./drivers/spoond.ts";
+import type { SandboxDriver } from "./drivers/types.ts";
+import { Workspaces } from "./workspaces.ts";
 import { type ThreadRow, Threads } from "./threads.ts";
 
 /**
@@ -37,6 +41,8 @@ export type ScoutOptions = {
 	announce?: (text: string) => void;
 	/** Off for one-off jobs. */
 	watchProfile?: boolean;
+	/** Where sandboxes run; by default the one `config.sandbox.driver` names. */
+	driver?: SandboxDriver;
 	/** Model access; by default the Anthropic and OpenAI providers, with keys from the environment. */
 	models?: Models;
 	/** MCP servers already connected; by default, the ones in `config.mcpFile`. */
@@ -44,6 +50,20 @@ export type ScoutOptions = {
 };
 
 export type Scout = Awaited<ReturnType<typeof openScout>>;
+
+function driverFor(config: Config, dataDir: string, instance: string): SandboxDriver {
+	const { sandbox } = config;
+	if (sandbox.driver === "spoond") {
+		// The relay that carries the daemon's stream reads the token from here (see drivers/spoond-relay.ts).
+		process.env.SCOUT_SPOOND_TOKEN = sandbox.spoond!.token;
+		return new SpoondDriver({ url: sandbox.spoond!.url, token: sandbox.spoond!.token });
+	}
+	if (sandbox.driver === "local") {
+		console.error("SCOUT_SANDBOX_DRIVER=local: commands run on this host with no isolation. Never with people you don't fully trust.");
+		return new LocalDriver({ root: join(dataDir, "sandboxes") });
+	}
+	return new DockerDriver({ prefix: `scout-${instance}`, openNetwork: sandbox.dockerNetwork });
+}
 
 function defaultModels(): Models {
 	const models = createModels();
@@ -60,7 +80,18 @@ export async function openScout(options: ScoutOptions) {
 	const pulls = new Pulls(db);
 	const search = new ThreadSearch(db);
 	const memory = new Memory(db);
-	const workspaces = new Workspaces({ ...config, dataDir, instance: options.instance });
+	const workspaces = new Workspaces({
+		dataDir,
+		instance: options.instance,
+		repos: config.repos,
+		driver: options.driver ?? driverFor(config, dataDir, options.instance),
+		sandbox: {
+			image: config.sandbox.image,
+			network: config.sandbox.network,
+			...(config.sandbox.size === undefined ? {} : { size: config.sandbox.size }),
+		},
+		git: config.git,
+	});
 	let reflector: Reflector | undefined;
 	let harness: Harness | undefined;
 
@@ -93,7 +124,11 @@ export async function openScout(options: ScoutOptions) {
 			const link = await options.link?.(id);
 			const repo = await repoOf(id, ctx);
 			return {
-				dir: workspaces.paths(id).repo,
+				source: {
+					kind: "sandbox",
+					status: () => workspaces.status(id),
+					exportBranch: () => workspaces.exportBranch(id),
+				},
 				branch: workspaces.branch(id),
 				base: repo.base,
 				slug: repo.slug,
@@ -108,8 +143,7 @@ export async function openScout(options: ScoutOptions) {
 				api,
 				{
 					agent: reviewerAgent,
-					root: workspaces.paths(api.conversationId).root,
-					cwd: change.target.dir,
+					workspace: { sandbox: api.conversationId },
 					prompt: [`# ${change.title}`, change.body, "```", change.stat, "```", "```diff", change.diff, "```"].join("\n\n"),
 					requestId: `review:${change.sha}`,
 				},
@@ -172,12 +206,15 @@ export async function openScout(options: ScoutOptions) {
 			registry,
 			env: async (target, ctx) =>
 				(await reflector?.env(target, ctx)) ??
-				(await reviewEnv(target, ctx)) ??
-				workspaces.env(target.conversationId, (await target.read.snapshot(ThreadDoc, target.conversationId, ctx))?.repo),
+				(await reviewEnv(target, ctx, (id) => workspaces.env(id))) ??
+				workspaces.env(target.conversationId),
 			onReport: (report) => console.error("harness:", report),
 		},
 		context,
 	);
+
+	const opened = harness;
+	workspaces.repoOf = async (id) => (await opened.snapshot(ThreadDoc, id as ConversationId, context))?.repo;
 
 	if (config.profileRepo !== undefined) {
 		reflector = new Reflector({
@@ -235,6 +272,7 @@ export async function openScout(options: ScoutOptions) {
 		async close(): Promise<void> {
 			stopWatching();
 			await harness.close(context);
+			await workspaces.close();
 			threads.close();
 			pulls.close();
 			search.close();

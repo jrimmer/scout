@@ -14,6 +14,21 @@ export type RepoConfig = {
 	slug: string;
 	/** The sandbox image for this repository's threads, if it needs its own toolchain; else SCOUT_SANDBOX_IMAGE. */
 	image?: string;
+	/** Hosts this repository's sandboxes may reach, on substrates with an egress firewall (spoond). */
+	egress?: string[];
+};
+
+export type SandboxConfig = {
+	/** Where sandboxes run: `docker` on this host, `spoond` microVMs, or `local` (no isolation; tests and laptops). */
+	driver: "docker" | "spoond" | "local";
+	image: string;
+	/** `none`, or `open` for the internet. Repositories with an egress list get just that, where the driver can. */
+	network: "none" | "open";
+	/** Docker: a memory limit like `4g`. spoond: `small`, `medium`, `large` or `xlarge`. */
+	size?: string;
+	/** Docker's network for `open`. */
+	dockerNetwork: string;
+	spoond?: { url: string; token: string };
 };
 
 export type Config = {
@@ -34,7 +49,7 @@ export type Config = {
 	profileRepo?: { gitUrl: string; base: string; slug: string };
 	/** Local hour (0-23) for the nightly reflection, and Scout's home channel: proposals and the weekly report. */
 	reflect: { hour: number; channel?: string };
-	sandbox: { image: string; network: string; memory: string };
+	sandbox: SandboxConfig;
 	/** The read-only dashboard (see dash/server.ts); absent when SCOUT_DASH_ADDR is `off`. */
 	dash?: { addr: string; auth?: { user: string; passwordHash: string } };
 	/** MCP servers whose tools Scout may use (see mcp.ts). */
@@ -53,14 +68,39 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
 	return value;
 }
 
-/** More repositories, from a JSON file: `[{ "name", "gitUrl", "slug", "base"?, "image"? }]`. */
+/** More repositories, from a JSON file: `[{ "name", "gitUrl", "slug", "base"?, "image"?, "egress"? }]`. */
 function moreRepos(path: string | undefined): RepoConfig[] {
 	if (path === undefined || path === "") return [];
 	const list = JSON.parse(readFileSync(path, "utf8")) as Partial<RepoConfig>[];
 	return list.map((r, i) => {
 		if (!r.name || !r.gitUrl || !r.slug) throw new Error(`${path}: repository ${i + 1} needs name, gitUrl and slug`);
-		return { name: r.name, gitUrl: r.gitUrl, slug: r.slug, base: r.base ?? "main", ...(r.image ? { image: r.image } : {}) };
+		return {
+			name: r.name,
+			gitUrl: r.gitUrl,
+			slug: r.slug,
+			base: r.base ?? "main",
+			...(r.image ? { image: r.image } : {}),
+			...(Array.isArray(r.egress) ? { egress: r.egress } : {}),
+		};
 	});
+}
+
+function sandboxConfig(env: NodeJS.ProcessEnv): SandboxConfig {
+	const driver = env.SCOUT_SANDBOX_DRIVER ?? "docker";
+	if (driver !== "docker" && driver !== "spoond" && driver !== "local") {
+		throw new Error("SCOUT_SANDBOX_DRIVER must be docker, spoond or local");
+	}
+	const network = env.SCOUT_SANDBOX_NETWORK ?? "none";
+	if (network !== "none" && network !== "open") throw new Error("SCOUT_SANDBOX_NETWORK must be none or open");
+	const size = env.SCOUT_SANDBOX_SIZE ?? (driver === "docker" ? "4g" : undefined);
+	return {
+		driver,
+		image: env.SCOUT_SANDBOX_IMAGE ?? (driver === "spoond" ? "dev-base" : "scout-sandbox:latest"),
+		network,
+		...(size === undefined ? {} : { size }),
+		dockerNetwork: env.SCOUT_DOCKER_NETWORK ?? "bridge",
+		...(driver === "spoond" ? { spoond: { url: required(env, "SCOUT_SPOOND_URL"), token: required(env, "SCOUT_SPOOND_TOKEN") } } : {}),
+	};
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -70,6 +110,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		gitUrl: required(env, "SCOUT_REPO_URL"),
 		base: env.SCOUT_REPO_BASE ?? "main",
 		slug,
+		...(env.SCOUT_REPO_EGRESS ? { egress: env.SCOUT_REPO_EGRESS.split(",").map((h) => h.trim()).filter(Boolean) } : {}),
 	};
 	const [provider, ...rest] = (env.SCOUT_MODEL ?? "anthropic/claude-opus-5-5").split("/");
 	const modelId = rest.join("/");
@@ -117,11 +158,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 							: {}),
 					},
 				}),
-		sandbox: {
-			image: env.SCOUT_SANDBOX_IMAGE ?? "scout-sandbox:latest",
-			network: env.SCOUT_SANDBOX_NETWORK ?? "none",
-			memory: env.SCOUT_SANDBOX_MEMORY ?? "4g",
-		},
+		sandbox: sandboxConfig(env),
 		git: {
 			name: env.SCOUT_GIT_NAME ?? "Scout",
 			email: env.SCOUT_GIT_EMAIL ?? "scout@localhost",

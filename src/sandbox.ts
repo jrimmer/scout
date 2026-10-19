@@ -19,32 +19,6 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 
 const run = promisify(execFile);
 
-export type SandboxConfig = {
-	dataDir: string;
-	/** Random per install, so names stay unique if the data directory is ever reset. */
-	instance: string;
-	/** Repositories by name; the first is the default. One may bring its own sandbox image. */
-	repos: { name: string; gitUrl: string; base: string; image?: string }[];
-	sandbox: { image: string; network: string; memory: string };
-	git: { name: string; email: string };
-};
-
-/** Where one thread's files live on the host. The container mounts `root` at the same path, so paths agree. */
-export type ThreadPaths = { root: string; repo: string; home: string; tmp: string };
-
-export function threadPaths(dataDir: string, instance: string, conversationId: number): ThreadPaths {
-	const root = join(dataDir, "threads", `${instance}-${conversationId}`);
-	return { root, repo: join(root, "repo"), home: join(root, "home"), tmp: join(root, "tmp") };
-}
-
-export function branchFor(instance: string, conversationId: number): string {
-	return `scout/${instance}-${conversationId}`;
-}
-
-function containerFor(instance: string, conversationId: number): string {
-	return `scout-${instance}-${conversationId}`;
-}
-
 /**
  * A host-owned bare mirror of a remote. Clones made from it are cheap, and pushes go out through it, so the host
  * never runs git inside a clone an agent has written to.
@@ -85,130 +59,6 @@ export class Mirror {
 		if (await exists(join(dir, ".git"))) return;
 		await git(["clone", "--no-hardlinks", "--quiet", "--no-checkout", this.path, dir]);
 		await git(["-C", dir, "checkout", "--quiet", "--detach", commit]);
-	}
-}
-
-/**
- * One workspace per Slack thread: a clone of the repo on its own branch, and a container that runs commands in it.
- *
- * The harness, credentials, and Slack stay on the host. The container gets the thread's directory and nothing else:
- * no host environment, no git credentials, no network unless configured. Pushing and opening pull requests happen
- * on the host (see codehost.ts).
- */
-export class Workspaces {
-	readonly #config: SandboxConfig;
-	readonly #dataDir: string;
-	readonly #prepared = new Map<number, Promise<ThreadPaths>>();
-	readonly #mirrors = new Map<string, Mirror>();
-
-	constructor(config: SandboxConfig) {
-		if (config.repos.length === 0) throw new Error("no repositories configured");
-		this.#config = config;
-		mkdirSync(config.dataDir, { recursive: true });
-		this.#dataDir = realpathSync(config.dataDir);
-		for (const repo of config.repos) {
-			this.#mirrors.set(repo.name, new Mirror(join(this.#dataDir, "mirrors", `${repo.name}.git`), repo.gitUrl));
-		}
-	}
-
-	/** A repository by name; the default for an empty or unknown name. */
-	repo(name: string | undefined): { name: string; gitUrl: string; base: string; image?: string } {
-		return this.#config.repos.find((r) => r.name === name) ?? this.#config.repos[0]!;
-	}
-
-	mirrorFor(name: string | undefined): Mirror {
-		return this.#mirrors.get(this.repo(name).name)!;
-	}
-
-	/** The default repository's mirror. */
-	get mirror(): Mirror {
-		return this.mirrorFor(undefined);
-	}
-
-	paths(conversationId: number): ThreadPaths {
-		return threadPaths(this.#dataDir, this.#config.instance, conversationId);
-	}
-
-	branch(conversationId: number): string {
-		return branchFor(this.#config.instance, conversationId);
-	}
-
-	/** Execution environment for a conversation's tool calls; prepares the workspace on first use. */
-	async env(conversationId: number, repo?: string): Promise<SandboxEnv> {
-		const paths = await this.prepare(conversationId, repo);
-		const container = containerFor(this.#config.instance, conversationId);
-		await this.#ensureContainer(conversationId, container, paths, this.repo(repo).image ?? this.#config.sandbox.image);
-		return new SandboxEnv(container, paths);
-	}
-
-	prepare(conversationId: number, repo?: string): Promise<ThreadPaths> {
-		let prepared = this.#prepared.get(conversationId);
-		if (prepared === undefined) {
-			prepared = this.#prepare(conversationId, repo);
-			prepared.catch(() => this.#prepared.delete(conversationId));
-			this.#prepared.set(conversationId, prepared);
-		}
-		return prepared;
-	}
-
-	async #prepare(conversationId: number, repo: string | undefined): Promise<ThreadPaths> {
-		const paths = this.paths(conversationId);
-		await mkdir(paths.home, { recursive: true });
-		await mkdir(paths.tmp, { recursive: true });
-		const base = this.repo(repo).base;
-		await this.mirrorFor(repo).clone(paths.repo, this.branch(conversationId), base, this.#config.git);
-		return paths;
-	}
-
-	async #ensureContainer(conversationId: number, name: string, paths: ThreadPaths, image: string): Promise<void> {
-		const state = await run("docker", ["inspect", "-f", "{{.State.Running}}", name]).then(
-			(out) => out.stdout.trim(),
-			() => "missing",
-		);
-		if (state === "true") return;
-		if (state === "false") {
-			await run("docker", ["start", name]);
-			return;
-		}
-		const { sandbox } = this.#config;
-		await run("docker", [
-			"run", "--detach", "--name", name,
-			"--label", "scout.conversation=" + conversationId,
-			"--network", sandbox.network,
-			"--memory", sandbox.memory,
-			"--pids-limit", "1024",
-			"--cap-drop", "ALL",
-			"--security-opt", "no-new-privileges",
-			"--user", `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
-			"--env", `HOME=${paths.home}`,
-			"--env", `TMPDIR=${paths.tmp}`,
-			"--volume", `${paths.root}:${paths.root}`,
-			"--workdir", paths.repo,
-			image,
-			"sleep", "infinity",
-		]);
-	}
-
-	/** Put a file someone shared where the thread's tools can read it: next to the repo, so it never gets committed. */
-	async saveAttachment(conversationId: number, name: string, bytes: Uint8Array): Promise<string> {
-		const dir = join(this.paths(conversationId).root, "attachments");
-		await mkdir(dir, { recursive: true });
-		const safe = basename(name).replace(/[^\w.-]+/g, "_").replace(/^\.+/, "") || "file";
-		let path = join(dir, safe);
-		for (let n = 2; await exists(path); n++) path = join(dir, `${n}-${safe}`);
-		await writeFile(path, bytes);
-		return path;
-	}
-
-	/** Remove a conversation's container and files, for work that is over (a job). */
-	async remove(conversationId: number): Promise<void> {
-		await run("docker", ["rm", "--force", containerFor(this.#config.instance, conversationId)]).catch(() => {});
-		await rm(this.paths(conversationId).root, { recursive: true, force: true });
-	}
-
-	/** Stop a thread's container; its files stay, and the next tool call starts it again. */
-	async stop(conversationId: number): Promise<void> {
-		await run("docker", ["stop", "--time", "5", containerFor(this.#config.instance, conversationId)]).catch(() => {});
 	}
 }
 
@@ -350,44 +200,6 @@ export class ConfinedEnv extends NodeExecutionEnv {
 		} catch (error) {
 			return err<string, FileError>(new FileError("unknown", String(error)));
 		}
-	}
-}
-
-/**
- * A thread's workspace: file tools confined to its directory (see `ConfinedEnv`), and every command run in its
- * container. The directory is bind-mounted at the same path, so both sides see the same files at the same paths.
- */
-export class SandboxEnv extends ConfinedEnv {
-	readonly container: string;
-	readonly paths: ThreadPaths;
-
-	constructor(container: string, paths: ThreadPaths) {
-		super({ id: `docker:${container}`, cwd: paths.repo, root: paths.root, tmp: paths.tmp });
-		this.container = container;
-		this.paths = paths;
-	}
-
-	override async exec(
-		command: string | readonly string[],
-		options: ShellExecOptions | undefined,
-		context: Context,
-	): Promise<Result<ShellExecResult, ExecutionError>> {
-		const cwd = resolve(this.cwd, options?.cwd ?? ".");
-		const inner = typeof command === "string" ? ["bash", "-lc", command] : [...command];
-		// Killing the local `docker exec` does not stop the process in the container; a timeout inside it does.
-		const timed = options?.timeout === undefined ? inner : ["timeout", "-k", "5", `${options.timeout}s`, ...inner];
-		const envFlags = Object.entries(options?.env ?? {}).flatMap(([key, value]) => ["--env", `${key}=${value}`]);
-		const argv = ["docker", "exec", "--workdir", cwd, ...envFlags, this.container, ...timed];
-		// Stopping work stops everything running in the thread's container (all but its idle PID 1).
-		context.abortSignal?.addEventListener(
-			"abort",
-			() => void run("docker", ["exec", this.container, "sh", "-c", "kill -KILL -1"]).catch(() => {}),
-			{ once: true },
-		);
-		// The docker CLI itself runs on the host; it gets the host environment, the container does not. Node's own exec
-		// (not ConfinedEnv's refusal) runs it, and spills long output into this workspace's tmp via createTempDir.
-		const { env: _env, cwd: _cwd, inheritEnv: _inherit, ...rest } = options ?? {};
-		return NodeExecutionEnv.prototype.exec.call(this, argv, { ...rest, cwd: this.root, inheritEnv: true }, context);
 	}
 }
 

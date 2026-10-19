@@ -115,7 +115,7 @@ export class Reflector {
 		const doc = await this.#options.harness.snapshot(ReflectionDoc, conversationId as ConversationId, context);
 		if (doc === undefined || doc.root === "") throw new Error("Only a reflection can propose profile changes.");
 		return {
-			dir: join(doc.root, "profile"),
+			source: { kind: "dir", dir: join(doc.root, "profile") },
 			branch: branchForDay(doc.day),
 			base: this.#options.profileRepo.base,
 			slug: this.#options.profileRepo.slug,

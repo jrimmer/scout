@@ -4,20 +4,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { SandboxEnv, threadPaths, Workspaces } from "../src/sandbox.ts";
+import { ConfinedEnv } from "../src/sandbox.ts";
 
 function setup() {
 	const data = realpathSync(mkdtempSync(join(tmpdir(), "scout-sandbox-")));
-	const paths = threadPaths(data, "test", 1);
+	const root = join(data, "threads", "t-1");
+	const paths = { root, repo: join(root, "repo"), tmp: join(root, "tmp") };
 	mkdirSync(paths.repo, { recursive: true });
 	mkdirSync(paths.tmp, { recursive: true });
 	writeFileSync(join(paths.repo, "README.md"), "hello");
 	const secret = join(data, "secret.txt");
 	writeFileSync(secret, "do not read");
-	return { env: new SandboxEnv("scout-test-1", paths), paths, secret };
+	return { env: new ConfinedEnv({ id: "t", cwd: paths.repo, root: paths.root, tmp: paths.tmp, protectGit: true }), paths, secret };
 }
 
-describe("SandboxEnv file confinement", () => {
+describe("ConfinedEnv file confinement", () => {
 	it("reads and writes inside the thread", async () => {
 		const { env } = setup();
 		assert.deepEqual(await env.readTextFile("README.md", context), { ok: true, value: "hello" });
@@ -52,23 +53,13 @@ describe("SandboxEnv file confinement", () => {
 	});
 });
 
-describe("attachments", () => {
-	it("saves shared files beside the repo, under safe names", async () => {
-		const data = realpathSync(mkdtempSync(join(tmpdir(), "scout-attach-")));
-		const workspaces = new Workspaces({
-			dataDir: data,
-			instance: "t",
-			repos: [{ name: "r", gitUrl: "unused", base: "main" }],
-			sandbox: { image: "unused", network: "none", memory: "1g" },
-			git: { name: "Scout", email: "scout@localhost" },
-		});
-		const bytes = new TextEncoder().encode("log line");
-		const first = await workspaces.saveAttachment(1, "../../etc/build log.txt", bytes);
-		const second = await workspaces.saveAttachment(1, "../../etc/build log.txt", bytes);
-		const root = workspaces.paths(1).root;
-		assert.equal(first, join(root, "attachments", "build_log.txt"));
-		assert.equal(second, join(root, "attachments", "2-build_log.txt"));
-		const env = new SandboxEnv("c", workspaces.paths(1));
-		assert.deepEqual(await env.readTextFile(first, context), { ok: true, value: "log line" });
+
+describe("ConfinedEnv with protectGit", () => {
+	it("keeps the agent out of .git, where the host's git would run its hooks", async () => {
+		const { env } = setup();
+		const result = await env.writeFile(".git/hooks/pre-commit", "#!/bin/sh", context);
+		assert.equal(result.ok, false);
+		if (!result.ok) assert.equal(result.error.code, "permission_denied");
+		assert.equal((await env.exec("echo hi", undefined, context)).ok, false, "and runs no commands");
 	});
 });

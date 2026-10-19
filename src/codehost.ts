@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { rm } from "node:fs/promises";
+import { dirname } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
@@ -12,10 +14,15 @@ const run = promisify(execFile);
 
 export type CodeHost = { kind: CodeHostKind; apiUrl: string; token: string };
 
-/** Where a conversation's pull request goes. */
+/** Where a conversation's pull request comes from and goes. */
 export type PullTarget = {
-	/** The clone the agent worked in. */
-	dir: string;
+	/**
+	 * The clone the agent worked in: a directory on this host (the reflection's), or a sandbox that hands its commits
+	 * out as a bundle (see workspaces.ts).
+	 */
+	source:
+		| { kind: "dir"; dir: string }
+		| { kind: "sandbox"; status: () => Promise<string>; exportBranch: () => Promise<string | undefined> };
 	branch: string;
 	base: string;
 	/** `owner/name` on the code host. */
@@ -50,9 +57,9 @@ export type ProposedChange = { target: PullTarget; title: string; body: string; 
 /**
  * Pushing and opening pull requests run on the host, with the host's credentials; the agent never sees them.
  *
- * A thread's clone is written by the agent, so the host does not push from it: its hooks and config are untrusted.
- * Instead the host-owned mirror fetches the branch from it (upload-pack is safe on untrusted repos) and pushes from
- * there.
+ * The agent's clone is untrusted, its hooks and config included, so the host never pushes from it: the host-owned
+ * mirror fetches the commits (from a bundle the sandbox made, or with upload-pack, which is safe on untrusted repos)
+ * and pushes from there.
  */
 export function createCodeHostExtension(options: CodeHostOptions) {
 	const doFetch = options.fetch ?? fetch;
@@ -70,13 +77,23 @@ export function createCodeHostExtension(options: CodeHostOptions) {
 		execute: async (args, api, context) => {
 			const conversationId: number = api.conversationId;
 			const target = await options.target(conversationId, context);
-			const { dir, branch, base, mirror } = target;
+			const { source, branch, base, mirror } = target;
 
-			if (options.commitAll) await commitEverything(dir, args.title);
-			const dirty = await git(["-C", dir, "status", "--porcelain"]);
+			if (options.commitAll && source.kind === "dir") await commitEverything(source.dir, args.title);
+			const dirty = source.kind === "dir" ? await git(["-C", source.dir, "status", "--porcelain"]) : await source.status();
 			if (dirty !== "") throw new Error(`Uncommitted changes; commit them first:\n${dirty}`);
 			await mirror.refresh();
-			await git(["-C", mirror.path, "fetch", "--quiet", "--no-tags", dir, `+HEAD:refs/heads/${branch}`]);
+			if (source.kind === "dir") {
+				await git(["-C", mirror.path, "fetch", "--quiet", "--no-tags", source.dir, `+HEAD:refs/heads/${branch}`]);
+			} else {
+				const bundle = await source.exportBranch();
+				if (bundle === undefined) throw new Error(`No commits on ${branch} beyond ${base} yet.`);
+				try {
+					await git(["-C", mirror.path, "fetch", "--quiet", "--no-tags", bundle, `+HEAD:refs/heads/${branch}`]);
+				} finally {
+					await rm(dirname(bundle), { recursive: true, force: true });
+				}
+			}
 			const ahead = await git(["-C", mirror.path, "rev-list", "--count", `refs/heads/${base}..refs/heads/${branch}`]);
 			if (ahead === "0") throw new Error(`No changes on ${branch} beyond ${base} yet.`);
 

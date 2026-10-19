@@ -26,8 +26,9 @@ if (config.slack.botToken === "" || config.slack.appToken === "") {
 }
 mkdirSync(config.dataDir, { recursive: true });
 useScoutsKey(config.git.sshKey);
+console.log(`sandboxes: ${config.sandbox.driver}, image ${config.sandbox.image}, network ${config.sandbox.network}`);
 if (config.sandbox.network === "none") {
-	console.log("sandbox network: none. Installs and downloads will fail; set SCOUT_SANDBOX_NETWORK=bridge to allow them.");
+	console.log("sandbox network: none. Installs and downloads will fail; set SCOUT_SANDBOX_NETWORK=open, or give repositories an egress list.");
 }
 
 const slack = new Slack(config.slack);
@@ -103,7 +104,7 @@ const tick = setInterval(() => {
 	// Containers are cattle: stop the ones whose threads went quiet; the next tool call starts them again.
 	for (const thread of threads.activeSince(now - 24 * HOUR)) {
 		if (thread.lastActivity < now - HOUR && !bridge.view(thread.conversationId)?.busy) {
-			void workspaces.stop(thread.conversationId);
+			void workspaces.suspend(thread.conversationId);
 		}
 	}
 	if (config.profileRepo !== undefined) {
