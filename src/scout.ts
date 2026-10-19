@@ -3,10 +3,11 @@ import type { Context } from "@earendil-works/chord";
 import { createModels, type Models } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
-import { type AgentChange, createRegistry, Harness, type Storage } from "@earendil-works/pi-durable";
+import { type AgentChange, type ConversationId, createRegistry, Harness, type Storage } from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createCodeHostExtension } from "./codehost.ts";
-import type { Config } from "./config.ts";
+import type { Config, RepoConfig } from "./config.ts";
+import { ThreadDoc } from "./docs.ts";
 import { consolidationExtension, Memory, memoryExtension } from "./memory.ts";
 import { cloneProfile, loadProfile, type Profile, profileExtension, watchProfile } from "./profile.ts";
 import { Pulls } from "./pulls.ts";
@@ -58,14 +59,19 @@ export async function openScout(options: ScoutOptions) {
 	const memory = new Memory(db);
 	const workspaces = new Workspaces({ ...config, dataDir, instance: options.instance });
 	let reflector: Reflector | undefined;
+	let harness: Harness | undefined;
 
 	const models = options.models ?? defaultModels();
 
 	// What Scout knows. With a profile repo, the directory is a clone kept pulled, so merged changes just arrive.
 	if (config.profileRepo !== undefined) await cloneProfile(config.profileDir, config.profileRepo);
 	let profile: Profile = loadProfile(config.profileDir);
+	const repoNamed = (name: string | undefined): RepoConfig => config.repos.find((r) => r.name === name) ?? config.repo;
+	/** The repository a conversation works in, as its thread was started with. */
+	const repoOf = async (id: number, ctx: Context): Promise<RepoConfig> =>
+		repoNamed((await harness?.snapshot(ThreadDoc, id as ConversationId, ctx))?.repo);
 	const workspace = {
-		base: config.repo.base,
+		repo: repoOf,
 		branch: (id: number) => workspaces.branch(id),
 		offline: config.sandbox.network === "none",
 	};
@@ -80,14 +86,15 @@ export async function openScout(options: ScoutOptions) {
 	const workCodeHost = createCodeHostExtension({
 		name: "codehost",
 		codeHost: config.codeHost,
-		target: async (id) => {
+		target: async (id, ctx) => {
 			const link = await options.link?.(id);
+			const repo = await repoOf(id, ctx);
 			return {
 				dir: workspaces.paths(id).repo,
 				branch: workspaces.branch(id),
-				base: config.repo.base,
-				slug: config.repo.slug,
-				mirror: workspaces.mirror,
+				base: repo.base,
+				slug: repo.slug,
+				mirror: workspaces.mirrorFor(repo.name),
 				...(link === undefined ? {} : { link }),
 			};
 		},
@@ -151,13 +158,15 @@ export async function openScout(options: ScoutOptions) {
 					console.log("profile reloaded");
 				});
 
-	const harness = await Harness.open(
+	harness = await Harness.open(
 		options.storage,
 		{
 			models,
 			registry,
 			env: async (target, ctx) =>
-				(await reflector?.env(target, ctx)) ?? (await reviewEnv(target, ctx)) ?? workspaces.env(target.conversationId),
+				(await reflector?.env(target, ctx)) ??
+				(await reviewEnv(target, ctx)) ??
+				workspaces.env(target.conversationId, (await target.read.snapshot(ThreadDoc, target.conversationId, ctx))?.repo),
 			onReport: (report) => console.error("harness:", report),
 		},
 		context,
@@ -178,8 +187,18 @@ export async function openScout(options: ScoutOptions) {
 		});
 	}
 
+	/** The repository a channel's threads work in: its profile's `repo`, if that names one, or the default. */
+	const repoFor = (channelName: string): string => {
+		const named = profile.channels.get(channelName)?.repo;
+		if (named !== undefined && !config.repos.some((r) => r.name === named)) {
+			console.error(`#${channelName} names repository ${named}, which isn't configured; using ${config.repo.name}`);
+		}
+		return repoNamed(named).name;
+	};
+
 	return {
 		harness,
+		repoFor,
 		threads,
 		pulls,
 		search,

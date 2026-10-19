@@ -23,23 +23,38 @@ export type Skill = { name: string; description: string; body: string };
  *
  * The repo's own AGENTS.md files still apply; Scout reads them from the workspace.
  */
+/**
+ * What one channel's team wants Scout to know. `instructions.md` may start with frontmatter naming the repository the
+ * team works in and its zones, the parts of it the team owns:
+ *
+ *     ---
+ *     repo: storefront
+ *     zones: services/checkout, libs/payments
+ *     ---
+ */
+export type ChannelProfile = { instructions?: string; repo?: string; zones: string[]; skills: Skill[] };
+
 export type Profile = {
 	system: string;
 	reflect?: string;
 	review?: string;
 	skills: Skill[];
-	channels: Map<string, { instructions?: string; skills: Skill[] }>;
+	channels: Map<string, ChannelProfile>;
 };
 
 export function loadProfile(dir: string): Profile {
-	const channels = new Map<string, { instructions?: string; skills: Skill[] }>();
+	const channels = new Map<string, ChannelProfile>();
 	const channelsDir = join(dir, "channels");
 	if (existsSync(channelsDir)) {
 		for (const entry of readdirSync(channelsDir, { withFileTypes: true })) {
 			if (!entry.isDirectory()) continue;
-			const instructions = readOptional(join(channelsDir, entry.name, "instructions.md"));
+			const text = readOptional(join(channelsDir, entry.name, "instructions.md"));
+			const { meta, body } = frontmatter(text ?? "");
+			const zones = (meta.zones ?? "").split(",").map((z) => z.trim()).filter(Boolean);
 			channels.set(entry.name, {
-				...(instructions === undefined ? {} : { instructions }),
+				...(body.trim() === "" ? {} : { instructions: body.trim() }),
+				...(meta.repo ? { repo: meta.repo } : {}),
+				zones,
 				skills: loadSkills(join(channelsDir, entry.name, "skills")),
 			});
 		}
@@ -83,7 +98,8 @@ function readOptional(path: string): string | undefined {
 
 /** The profile as an extension. Reinstalling it under the same name swaps it in for every thread's next request. */
 export type WorkspaceFacts = {
-	base: string;
+	/** The conversation's repository: its name and base branch. */
+	repo: (id: ConversationId, context: Context) => Promise<{ name: string; base: string }>;
 	branch: (id: number) => string;
 	/** The sandbox has no network, so downloads fail. */
 	offline?: boolean;
@@ -124,11 +140,13 @@ export function profileExtension(profile: Profile, workspace: WorkspaceFacts) {
 					...skills.map((s) => `- ${s.name}: ${s.description}`),
 				].join("\n");
 			}),
-			section("workspace", (input) =>
-				input.env === undefined
-					? undefined
-					: [
-							`Repository: ${input.env.cwd} (your own clone, on branch ${workspace.branch(input.conversationId)}, from ${workspace.base}).`,
+			section("workspace", async (input, context) => {
+				if (input.env === undefined) return undefined;
+				const repo = await workspace.repo(input.conversationId, context);
+				const zones = profile.channels.get(await channelOf(input.read, input.conversationId, context))?.zones ?? [];
+				return [
+							`Repository ${repo.name}: ${input.env.cwd} (your own clone, on branch ${workspace.branch(input.conversationId)}, from ${repo.base}).`,
+							...(zones.length === 0 ? [] : [`This team mostly works in ${zones.join(", ")}. Start there.`]),
 							"Read AGENTS.md files in the repository before changing code near them.",
 							"Commit with git, then call open_pull_request. Nobody else can see your changes until you do.",
 							...(workspace.offline
@@ -138,8 +156,8 @@ export function profileExtension(profile: Profile, workspace: WorkspaceFacts) {
 											"Scout can turn the network on or add the dependencies to the sandbox image.",
 									]
 								: []),
-						].join("\n"),
-			),
+						].join("\n");
+			}),
 		],
 	});
 }

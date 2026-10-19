@@ -32,6 +32,8 @@ export type BridgeOptions = {
 	channelOffer?: (user: string) => ChatMessage;
 	/** Where what's said in threads is indexed, for `search_threads`. */
 	search?: ThreadSearch;
+	/** The repository a channel's threads work in. */
+	repoFor?: (channelName: string) => string;
 };
 
 /** Reactions that stop Scout's work in a thread, on the thread's first message or on Scout's progress message. */
@@ -176,6 +178,8 @@ export class Bridge {
 					doc.channel = message.channel;
 					doc.channelName = message.channelName;
 					doc.threadTs = threadTs;
+					const repo = this.#options.repoFor?.(message.channelName);
+					if (repo !== undefined) doc.repo = repo;
 				},
 			},
 			context,

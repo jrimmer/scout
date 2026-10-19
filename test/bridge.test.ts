@@ -68,7 +68,7 @@ describe("bridge", () => {
 		mkdirSync(join(profileDir, "channels", "team"), { recursive: true });
 		writeFileSync(join(profileDir, "channels", "team", "instructions.md"), "We use pnpm.");
 		const registry = createRegistry();
-		registry.install(profileExtension(loadProfile(profileDir), { base: "main", branch: (id) => `scout/t-${id}` }));
+		registry.install(profileExtension(loadProfile(profileDir), { repo: async () => ({ name: "r", base: "main" }), branch: (id) => `scout/t-${id}` }));
 		// A tool that works until it is stopped.
 		const wait = defineTool({
 			name: "wait",

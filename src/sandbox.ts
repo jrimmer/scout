@@ -23,7 +23,8 @@ export type SandboxConfig = {
 	dataDir: string;
 	/** Random per install, so names stay unique if the data directory is ever reset. */
 	instance: string;
-	repo: { gitUrl: string; base: string };
+	/** Repositories by name; the first is the default. */
+	repos: { name: string; gitUrl: string; base: string }[];
 	sandbox: { image: string; network: string; memory: string };
 	git: { name: string; email: string };
 };
@@ -98,13 +99,30 @@ export class Workspaces {
 	readonly #config: SandboxConfig;
 	readonly #dataDir: string;
 	readonly #prepared = new Map<number, Promise<ThreadPaths>>();
-	readonly mirror: Mirror;
+	readonly #mirrors = new Map<string, Mirror>();
 
 	constructor(config: SandboxConfig) {
+		if (config.repos.length === 0) throw new Error("no repositories configured");
 		this.#config = config;
 		mkdirSync(config.dataDir, { recursive: true });
 		this.#dataDir = realpathSync(config.dataDir);
-		this.mirror = new Mirror(join(this.#dataDir, "mirror.git"), config.repo.gitUrl);
+		for (const repo of config.repos) {
+			this.#mirrors.set(repo.name, new Mirror(join(this.#dataDir, "mirrors", `${repo.name}.git`), repo.gitUrl));
+		}
+	}
+
+	/** A repository by name; the default for an empty or unknown name. */
+	repo(name: string | undefined): { name: string; gitUrl: string; base: string } {
+		return this.#config.repos.find((r) => r.name === name) ?? this.#config.repos[0]!;
+	}
+
+	mirrorFor(name: string | undefined): Mirror {
+		return this.#mirrors.get(this.repo(name).name)!;
+	}
+
+	/** The default repository's mirror. */
+	get mirror(): Mirror {
+		return this.mirrorFor(undefined);
 	}
 
 	paths(conversationId: number): ThreadPaths {
@@ -116,28 +134,29 @@ export class Workspaces {
 	}
 
 	/** Execution environment for a conversation's tool calls; prepares the workspace on first use. */
-	async env(conversationId: number): Promise<SandboxEnv> {
-		const paths = await this.prepare(conversationId);
+	async env(conversationId: number, repo?: string): Promise<SandboxEnv> {
+		const paths = await this.prepare(conversationId, repo);
 		const container = containerFor(this.#config.instance, conversationId);
 		await this.#ensureContainer(conversationId, container, paths);
 		return new SandboxEnv(container, paths);
 	}
 
-	prepare(conversationId: number): Promise<ThreadPaths> {
+	prepare(conversationId: number, repo?: string): Promise<ThreadPaths> {
 		let prepared = this.#prepared.get(conversationId);
 		if (prepared === undefined) {
-			prepared = this.#prepare(conversationId);
+			prepared = this.#prepare(conversationId, repo);
 			prepared.catch(() => this.#prepared.delete(conversationId));
 			this.#prepared.set(conversationId, prepared);
 		}
 		return prepared;
 	}
 
-	async #prepare(conversationId: number): Promise<ThreadPaths> {
+	async #prepare(conversationId: number, repo: string | undefined): Promise<ThreadPaths> {
 		const paths = this.paths(conversationId);
 		await mkdir(paths.home, { recursive: true });
 		await mkdir(paths.tmp, { recursive: true });
-		await this.mirror.clone(paths.repo, this.branch(conversationId), this.#config.repo.base, this.#config.git);
+		const base = this.repo(repo).base;
+		await this.mirrorFor(repo).clone(paths.repo, this.branch(conversationId), base, this.#config.git);
 		return paths;
 	}
 

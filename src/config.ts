@@ -1,7 +1,18 @@
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 export type CodeHostKind = "forgejo" | "github";
+
+/** A repository Scout works in. `name` is what channel profiles refer to it by. */
+export type RepoConfig = {
+	name: string;
+	/** Clone/push URL the host can reach with its own credentials. The sandbox never gets them. */
+	gitUrl: string;
+	base: string;
+	/** `owner/name` on the code host. */
+	slug: string;
+};
 
 export type Config = {
 	slack: { botToken: string; appToken: string };
@@ -9,13 +20,10 @@ export type Config = {
 	model: { provider: string; modelId: string };
 	dataDir: string;
 	profileDir: string;
-	repo: {
-		/** Clone/push URL the host can reach with its own credentials. The sandbox never gets them. */
-		gitUrl: string;
-		base: string;
-		/** `owner/name` on the code host. */
-		slug: string;
-	};
+	/** The default repository: threads in channels whose profile names no other work here. */
+	repo: RepoConfig;
+	/** Every repository, the default first. */
+	repos: RepoConfig[];
 	codeHost: { kind: CodeHostKind; apiUrl: string; token: string };
 	/**
 	 * The repository `profileDir` is a clone of. With it, Scout keeps its profile pulled and proposes changes to it
@@ -39,7 +47,24 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
 	return value;
 }
 
+/** More repositories, from a JSON file: `[{ "name", "gitUrl", "slug", "base"? }]`. */
+function moreRepos(path: string | undefined): RepoConfig[] {
+	if (path === undefined || path === "") return [];
+	const list = JSON.parse(readFileSync(path, "utf8")) as Partial<RepoConfig>[];
+	return list.map((r, i) => {
+		if (!r.name || !r.gitUrl || !r.slug) throw new Error(`${path}: repository ${i + 1} needs name, gitUrl and slug`);
+		return { name: r.name, gitUrl: r.gitUrl, slug: r.slug, base: r.base ?? "main" };
+	});
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+	const slug = required(env, "SCOUT_REPO_SLUG");
+	const repo: RepoConfig = {
+		name: env.SCOUT_REPO_NAME ?? slug.split("/").pop() ?? slug,
+		gitUrl: required(env, "SCOUT_REPO_URL"),
+		base: env.SCOUT_REPO_BASE ?? "main",
+		slug,
+	};
 	const [provider, ...rest] = (env.SCOUT_MODEL ?? "anthropic/claude-opus-5-5").split("/");
 	const modelId = rest.join("/");
 	if (provider === undefined || modelId === "") throw new Error("SCOUT_MODEL must look like provider/modelId");
@@ -53,11 +78,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		model: { provider, modelId },
 		dataDir: resolve(env.SCOUT_DATA_DIR ?? "data"),
 		profileDir: resolve(env.SCOUT_PROFILE_DIR ?? "profile"),
-		repo: {
-			gitUrl: required(env, "SCOUT_REPO_URL"),
-			base: env.SCOUT_REPO_BASE ?? "main",
-			slug: required(env, "SCOUT_REPO_SLUG"),
-		},
+		repo,
+		repos: [repo, ...moreRepos(env.SCOUT_REPOS_FILE).filter((r) => r.name !== repo.name)],
 		codeHost: {
 			kind,
 			apiUrl: (env.SCOUT_CODEHOST_API ?? (kind === "github" ? "https://api.github.com" : "")).replace(/\/$/, ""),

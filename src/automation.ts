@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type ConversationId, type SubmissionId } from "@earendil-works/pi-durable";
 import type { CodeHost } from "./codehost.ts";
-import type { Config } from "./config.ts";
+import type { Config, RepoConfig } from "./config.ts";
 import { ReviewDoc } from "./docs.ts";
 import type { ReviewRow } from "./pulls.ts";
 import { diffOf } from "./review.ts";
@@ -49,12 +49,15 @@ export class PullReviewer {
 		if (this.#polling) return;
 		this.#polling = true;
 		try {
-			const { slug } = this.#config.repo;
-			const open = (await this.#api(`/repos/${slug}/pulls?state=open&per_page=50&limit=50`)) as OpenPull[];
-			for (const pull of open) {
-				if (!(pull.labels ?? []).some((label) => label.name === this.#label)) continue;
-				if (this.#scout.pulls.review(slug, pull.number, pull.head.sha) !== undefined) continue;
-				await this.#start(pull);
+			for (const repo of this.#config.repos) {
+				const open = (await this.#api(`/repos/${repo.slug}/pulls?state=open&per_page=50&limit=50`)) as OpenPull[];
+				for (const pull of open) {
+					if (!(pull.labels ?? []).some((label) => label.name === this.#label)) continue;
+					if (this.#scout.pulls.review(repo.slug, pull.number, pull.head.sha) !== undefined) continue;
+					await this.#start(repo, pull).catch((error: unknown) =>
+						console.error(`couldn't start reviewing ${pull.html_url}:`, error),
+					);
+				}
 			}
 			for (const review of this.#scout.pulls.unpostedReviews()) {
 				const key = `${review.slug}#${review.number}@${review.sha}`;
@@ -69,10 +72,10 @@ export class PullReviewer {
 		}
 	}
 
-	async #start(pull: OpenPull): Promise<void> {
+	async #start(repo: RepoConfig, pull: OpenPull): Promise<void> {
 		const { harness, workspaces, pulls } = this.#scout;
-		const { slug } = this.#config.repo;
-		const mirror = workspaces.mirror;
+		const { slug } = repo;
+		const mirror = workspaces.mirrorFor(repo.name);
 		await mirror.refresh();
 		const root = join(this.#config.dataDir, "reviews", `${slug.replace("/", "-")}-${pull.number}-${pull.head.sha.slice(0, 12)}`);
 		const cwd = join(root, "repo");

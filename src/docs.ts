@@ -3,7 +3,7 @@ import { defineDoc } from "@earendil-works/pi-durable";
 /** Documents Scout keeps on its conversations, next to the transcript. */
 
 /** Which Slack thread a conversation is. Written when the thread's conversation is created. */
-export const ThreadDoc = defineDoc<{ channel: string; channelName: string; threadTs: string }>({
+export const ThreadDoc = defineDoc<{ channel: string; channelName: string; threadTs: string; repo?: string }>({
 	kind: "scout.thread",
 	version: 1,
 	scope: "conversation",

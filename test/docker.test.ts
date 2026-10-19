@@ -31,7 +31,7 @@ describe("docker sandbox", { skip: !enabled && "set SCOUT_DOCKER_TESTS=1" }, () 
 	const workspaces = new Workspaces({
 		dataDir,
 		instance: `t${process.pid}`,
-		repo: { gitUrl: remote, base: "main" },
+		repos: [{ name: "r", gitUrl: remote, base: "main" }],
 		sandbox: { image: process.env.SCOUT_SANDBOX_IMAGE ?? "scout-sandbox:latest", network: "none", memory: "1g" },
 		git: { name: "Scout", email: "scout@localhost" },
 	});

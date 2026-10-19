@@ -71,6 +71,7 @@ const bridge = new Bridge({
 	context,
 	channelOffer: (user) => slack.channelOffer(user),
 	search: scout.search,
+	repoFor: scout.repoFor,
 });
 
 await bridge.reattach(Date.now() - 24 * HOUR);

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type ConversationId, MemoryStorage, watchEvents } from "@earendil-works/pi-durable";
 import { loadConfig, useScoutsKey } from "./config.ts";
+import { ThreadDoc } from "./docs.ts";
 import { describeStep } from "./render.ts";
 import { openScout, type Scout } from "./scout.ts";
 
@@ -12,6 +13,7 @@ import { openScout, type Scout } from "./scout.ts";
  * and pull requests, so a job's output is reviewed like anything else Scout does.
  *
  *     npm run job -- "Bump typescript to the latest 7.x and fix what breaks"
+ *     npm run job -- --repo storefront "Fix the flaky cart test"
  *
  * Prints progress to stderr and the answer to stdout; exits 1 if the work did not finish.
  */
@@ -19,10 +21,17 @@ export async function runJob(
 	scout: Scout,
 	prompt: string,
 	io: { progress: (line: string) => void },
+	options: { repo?: string } = {},
 ): Promise<{ ok: boolean; answer: string; pullRequests: string[] }> {
 	const context = BACKGROUND_CONTEXT;
 	const conversation = await scout.harness.createConversation(
-		{ ownership: { kind: "ownerless" }, agent: scout.workAgent },
+		{
+			ownership: { kind: "ownerless" },
+			agent: scout.workAgent,
+			init: async (tx, id) => {
+				if (options.repo !== undefined) (await tx.doc(ThreadDoc, id)).repo = options.repo;
+			},
+		},
 		context,
 	);
 	const events = await watchEvents(scout.harness, conversation.id as ConversationId, context);
@@ -55,12 +64,19 @@ export async function runJob(
 }
 
 if (import.meta.main) {
-	const prompt = process.argv.slice(2).join(" ").trim();
+	const args = process.argv.slice(2);
+	const repoFlag = args.indexOf("--repo");
+	const repo = repoFlag === -1 ? undefined : args.splice(repoFlag, 2)[1];
+	const prompt = args.join(" ").trim();
 	if (prompt === "") {
-		console.error('usage: npm run job -- "what to do"');
+		console.error('usage: npm run job -- [--repo name] "what to do"');
 		process.exit(2);
 	}
 	const config = loadConfig();
+	if (repo !== undefined && !config.repos.some((r) => r.name === repo)) {
+		console.error(`no repository named ${repo}; configured: ${config.repos.map((r) => r.name).join(", ")}`);
+		process.exit(2);
+	}
 	useScoutsKey(config.git.sshKey);
 	const scout = await openScout({
 		config,
@@ -70,7 +86,7 @@ if (import.meta.main) {
 		context: BACKGROUND_CONTEXT,
 		watchProfile: false,
 	});
-	const result = await runJob(scout, prompt, { progress: (line) => console.error(`• ${line}`) });
+	const result = await runJob(scout, prompt, { progress: (line) => console.error(`• ${line}`) }, repo === undefined ? {} : { repo });
 	await scout.close();
 	console.log(result.answer);
 	for (const url of result.pullRequests) console.log(url);
