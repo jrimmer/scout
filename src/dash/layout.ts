@@ -129,6 +129,18 @@ function spendLines(s: Snapshot): Line[] {
 	];
 	if (s.spend.byModel.length === 0) lines.push({ left: [{ text: "· no model calls yet", style: "dim" }] });
 	for (const m of s.spend.byModel.slice(0, 5)) lines.push({ left: [{ text: m.model, style: "id" }], right: [{ text: dollars(m.cost) }] });
+	const week = s.spend.week ?? [];
+	if (week.length > 0) {
+		lines.push("rule", { left: [{ text: "this week, by channel", style: "dim" }] });
+		for (const c of week.slice(0, 5)) {
+			const over = c.budget !== undefined && c.cost >= c.budget;
+			const near = c.budget !== undefined && c.cost >= c.budget * 0.8;
+			lines.push({
+				left: [{ text: `#${c.channel || "jobs and reviews"}`, style: "id" }],
+				right: [{ text: c.budget === undefined ? dollars(c.cost) : `${dollars(c.cost)} of ${dollars(c.budget)}`, style: over ? "bad" : near ? "warn" : "text" }],
+			});
+		}
+	}
 	return lines;
 }
 

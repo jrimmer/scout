@@ -8,6 +8,7 @@ import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-wo
 import type { CodeHostKind } from "./config.ts";
 import { ReviewsDoc } from "./docs.ts";
 import { diffOf, type Review } from "./review.ts";
+import { secretsInDiff } from "./scan.ts";
 import type { Mirror } from "./sandbox.ts";
 
 const run = promisify(execFile);
@@ -98,6 +99,13 @@ export function createCodeHostExtension(options: CodeHostOptions) {
 			if (ahead === "0") throw new Error(`No changes on ${branch} beyond ${base} yet.`);
 
 			const { stat, diff, lines } = await diffOf(mirror.path, `refs/heads/${base}`, `refs/heads/${branch}`);
+			const leaked = secretsInDiff(diff);
+			if (leaked.length > 0) {
+				throw new Error(
+					`This change adds what looks like a credential: ${leaked.map((l) => `${l.kind} in ${l.file}`).join(", ")}. ` +
+						"Take it out (and out of the branch's history), then try again. If it's a placeholder, make it obviously fake.",
+				);
+			}
 			const max = options.maxChangedLines;
 			if (max !== undefined && lines > max) {
 				throw new Error(

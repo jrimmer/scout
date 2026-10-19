@@ -1,0 +1,120 @@
+# Running Scout
+
+Everything here is optional beyond the basics in the README; `.env.example` lists every setting.
+
+## Sandboxes
+
+Each thread works in its own sandbox. `SCOUT_SANDBOX_DRIVER` picks where:
+
+| Driver | What it is | Isolation |
+|---|---|---|
+| `docker` (default) | A container per thread on this host; work in a named volume | No capabilities, no new privileges, a non-root user, no host mounts but the read-only daemon |
+| `spoond` | A Firecracker microVM per thread, leased from spoond | A VM. Persistent: idle threads suspend, checkpoints survive the host |
+| `local` | A directory on this host | None. For tests and laptops only |
+
+In all three, Scout runs a pi-env daemon inside the sandbox and does every file operation and command through it, so
+nothing a thread writes reaches Scout's host. Git moves in and out as bundles, so no sandbox holds credentials.
+
+**Network.** `SCOUT_SANDBOX_NETWORK` is `none` (default) or `open`. A repository can instead list the hosts its
+sandboxes may reach (`egress` in `SCOUT_REPOS_FILE`, or `SCOUT_REPO_EGRESS` for the default repository). Only
+substrates with an egress firewall can enforce a list: spoond can (its `restricted` policy and allowlist), Docker
+can't, and Scout falls back to the default network there and says so.
+
+**spoond.** Set `SCOUT_SPOOND_URL` and `SCOUT_SPOOND_TOKEN`. The image (`SCOUT_SANDBOX_IMAGE`, default `dev-base`)
+needs git; `SCOUT_SANDBOX_SIZE` is a spoond size class. Scout reaches each lease's daemon over spoond's stream
+WebSocket and keeps that connection only while tools run (it closes after two idle minutes). spoond limits concurrent
+streams per account, so its limit bounds how many threads can be *working* at once; set Scout's concurrency limits
+(below) under it.
+
+## Model gateway
+
+`SCOUT_GATEWAY_URL` sends model calls to a gateway (Bifrost, LiteLLM, Cloudflare AI Gateway) instead of the provider,
+with `SCOUT_GATEWAY_KEY` and any `SCOUT_GATEWAY_HEADERS` (JSON) on every request. Model names don't change. spoond's
+gateway serves only OpenAI's API and needs a lease id, so it isn't a good fit for Scout's own calls.
+
+## Backups: Litestream
+
+Both databases (`pi.sqlite`, conversations; `scout.sqlite`, everything else) are SQLite in WAL mode.
+`deploy/litestream.yml` replicates them continuously to object storage, and `deploy/scout.service` restores them
+before start and runs Scout under Litestream.
+
+To move to a new host: install Scout and Litestream, set `LITESTREAM_REPLICA_URL` and its credentials, and start the
+service. The restore runs first, and Pi Durable resumes every unfinished run where it stopped. Sandboxes are not
+backed up. Docker workspaces are re-cloned (uncommitted work in them is lost); spoond leases survive on spoond.
+
+## Secrets
+
+Any secret can be a reference instead of a value:
+
+| Form | Reads |
+|---|---|
+| `NAME_FILE=/path` | a file (Docker or Kubernetes secrets), for the secret names in `src/secrets.ts` |
+| `NAME=file:/path` | a file |
+| `NAME=cred:name` | a systemd credential (`LoadCredential=name:/path`) |
+| `NAME=op://vault/item/field` | 1Password, via the `op` CLI and `OP_SERVICE_ACCOUNT_TOKEN` |
+
+`kill -HUP <pid>` reads them all again. The code host token, the gateway key and spoond's token take effect at once;
+Slack tokens and MCP servers' credentials need a restart.
+
+## Telemetry
+
+- **Traces**: `SCOUT_OTLP_ENDPOINT` (an OTLP/HTTP endpoint ending in `/v1/traces`) and `SCOUT_OTLP_HEADERS` (JSON).
+  Each run is a trace: a `scout.run` span with a child span for each model call (model, tokens, cost) and each tool
+  call.
+- **Metrics**: Prometheus text at `/metrics` on the dashboard's listener: model requests, tokens, spend, tool calls,
+  runs, and gauges for working threads, open pull requests, unreviewed notes, problems, this week's spend and open
+  sandbox connections. With `SCOUT_METRICS_TOKEN` it takes that bearer token; otherwise the dashboard's login.
+
+## Who may ask for work
+
+`SCOUT_REQUESTER_CHECK=enforce` means a person may start or steer work in a repository only if they can change it
+themselves:
+- `SCOUT_PEOPLE_FILE` maps Slack user IDs to code host logins: `{ "U0123ABC": "alice" }`.
+- Scout asks the code host for each person's permission on the repository, and caches the answer for ten minutes.
+- `SCOUT_ALLOWED_USERGROUP` can also limit requests to one Slack user group.
+
+Everyone can still talk in threads. Their words are kept as context, and Scout tells them why it isn't acting on them.
+
+## Budgets and limits
+
+`SCOUT_LIMITS_FILE`, owned by whoever runs Scout. It isn't in the profile, which Scout itself proposes changes to.
+
+```json
+{
+  "weekly": { "total": 500, "perChannel": 50, "channels": { "data-team": 200 } },
+  "perRun": { "maxToolCalls": 150, "maxCost": 10 },
+  "concurrency": { "total": 8, "perChannel": 2 }
+}
+```
+
+- **Weekly budgets** are dollars per calendar week, from Monday. Past a budget, new requests in that channel are
+  declined until Monday.
+- **Concurrency limits** queue requests: Scout says so, and starts them in order as runs finish. The queue survives
+  restarts.
+- **Per-run limits** stop a runaway request. Scout is told to summarize and ask before going on.
+
+Spend comes from a ledger of every model response. Prices are pi-ai's catalog prices, unless `SCOUT_PRICES_FILE`
+overrides them (dollars per million tokens):
+
+```json
+{ "anthropic/claude-opus-5-5": { "input": 5, "output": 25, "cacheRead": 0.5, "cacheWrite": 6.25 } }
+```
+
+The dashboard shows this week's spend by channel against each budget.
+
+## Audit trail and retention
+
+Every request, stop, refusal, tool call, blocked call, pull request (opened and decided), note (kept and forgotten),
+reflection and automated review is in an append-only table in `scout.sqlite`:
+- Tool calls are recorded by name and arguments, never output, and anything that looks like a credential is redacted.
+- The database refuses updates and deletes.
+- Export with `npm run audit -- --since 2026-10-01 [--until …] [--kind tool]`, as JSON lines.
+
+`SCOUT_RETENTION_DAYS` deletes what quiet threads leave behind after that many days: the sandbox, its files and
+attachments, its words in the search index, and notes that stopped applying. The audit trail is kept.
+
+Transcripts in `pi.sqlite` are not deleted yet: Pi Durable has no way to delete a conversation.
+
+Before any pull request, its diff is scanned for credentials (private keys, AWS, GitHub, Slack, Anthropic, OpenAI,
+Google and Stripe keys, tokens, passwords in URLs). Scout is sent back to remove any it finds. Notes are scanned the
+same way.

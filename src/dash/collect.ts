@@ -26,7 +26,12 @@ export type Snapshot = {
 		notes: MemoryNote[];
 	};
 	reviews?: { label: string; latest: { slug: string; number: number; sha: string; posted: boolean }[] };
-	spend: { total: number; byModel: { model: string; cost: number }[] };
+	spend: {
+		total: number;
+		byModel: { model: string; cost: number }[];
+		/** This week, by channel, against its budget if it has one. */
+		week?: { channel: string; cost: number; budget?: number }[];
+	};
 	history: { working: number[]; spendPerHour: number[] };
 };
 
@@ -55,6 +60,8 @@ export type Sources = {
 	channelOf(conversationId: number): Promise<string>;
 	/** Model spend since start, by `provider/model`, in dollars. */
 	spend(): Promise<Record<string, number>>;
+	/** This week's spend by channel, with budgets. */
+	week?(): { channel: string; cost: number; budget?: number }[];
 	alerts(): { message: string; since: number }[];
 };
 
@@ -147,6 +154,7 @@ export class Collector {
 				byModel: Object.entries(byModel)
 					.map(([model, cost]) => ({ model, cost }))
 					.sort((a, b) => b.cost - a.cost),
+				...(s.week === undefined ? {} : { week: s.week() }),
 			},
 			history: { working: [...this.#working], spendPerHour: [...this.#spendPerHour] },
 		};

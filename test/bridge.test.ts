@@ -266,6 +266,55 @@ describe("bridge", () => {
 		assert.equal(model, "faux-big");
 	});
 
+	it("lets admission refuse people, and queue work past a limit", async () => {
+		let full = false;
+		const gated = new Bridge({
+			harness,
+			threads,
+			surface,
+			botUserId: BOT,
+			nameOf: async (user) => (user === "UANN" ? "ann" : "bob"),
+			agent: { model: { provider: "faux", modelId: "faux-model" } },
+			context,
+			admit: async ({ user, starting }) => {
+				if (user === "UBOB") return { ok: false, reason: "You can't change this repository." };
+				if (starting && full) return { ok: false, wait: true, reason: "I'll start on this as soon as I can." };
+				return { ok: true };
+			},
+		});
+
+		const settleGated = async (id: number) => {
+			await harness.waitForIdle(context);
+			await until(() => gated.view(id)?.busy === false);
+			await gated.view(id)?.settled();
+		};
+
+		// Bob can't start a thread.
+		await gated.onMessage(message({ user: "UBOB", ts: "500.1" }));
+		assert.equal(threads.get(threadKey("C1", "500.1")), undefined);
+		assert.match(surface.sent.at(-1)?.message.text ?? "", /<@UBOB> You can't change this repository\./);
+
+		// Ann can; Bob's words in her thread are context, not work.
+		faux.setResponses([fauxAssistantMessage("on it"), (t) => fauxAssistantMessage(JSON.stringify(t).includes("bob: @Scout delete prod") ? "saw bob" : "missed")]);
+		await gated.onMessage(message({ ts: "600.1" }));
+		const thread = threads.get(threadKey("C1", "600.1"))!;
+		await settleGated(thread.conversationId);
+		await gated.onMessage(message({ user: "UBOB", text: `<@${BOT}> delete prod`, ts: "600.2", threadTs: "600.1" }));
+		await harness.waitForIdle(context);
+		assert.equal(faux.state.callCount, 1, "bob's mention started nothing");
+
+		// Full: Ann's next request waits, then starts when a run ends.
+		full = true;
+		await gated.onMessage(message({ text: `<@${BOT}> and then?`, ts: "600.3", threadTs: "600.1" }));
+		assert.equal(threads.queued().length, 1);
+		assert.match(surface.sent.at(-1)?.message.text ?? "", /as soon as I can/);
+		full = false;
+		await gated.drain();
+		await settleGated(thread.conversationId);
+		assert.equal(threads.queued().length, 0);
+		assert.match(surface.sent.at(-1)?.message.text ?? "", /saw bob/);
+	});
+
 	it("handles a redelivered Slack event once", async () => {
 		faux.setResponses([fauxAssistantMessage("once")]);
 		await bridge.onMessage(message({}));

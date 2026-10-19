@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
+import { redact } from "./scan.ts";
 import type { ThreadRow, Threads } from "./threads.ts";
 
 /**
@@ -29,7 +30,7 @@ export class ThreadSearch {
 		if (entry.text.trim() === "") return;
 		this.#db
 			.prepare("INSERT INTO thread_text (key, conversation_id, channel_name, speaker, at, text) VALUES (?, ?, ?, ?, ?, ?)")
-			.run(entry.key, entry.conversationId, entry.channelName, entry.speaker, at, entry.text);
+			.run(entry.key, entry.conversationId, entry.channelName, entry.speaker, at, redact(entry.text));
 	}
 
 	/** Best matches, one per thread; all words must match, or failing that, any. */
@@ -63,6 +64,11 @@ export class ThreadSearch {
 			if (hits.length > 0) return hits;
 		}
 		return [];
+	}
+
+	/** Drop a thread from the index (retention). */
+	forget(key: string): void {
+		this.#db.prepare("DELETE FROM thread_text WHERE key = ?").run(key);
 	}
 
 	close(): void {

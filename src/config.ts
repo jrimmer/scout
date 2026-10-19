@@ -51,6 +51,25 @@ export type Config = {
 	/** Local hour (0-23) for the nightly reflection, and Scout's home channel: proposals and the weekly report. */
 	reflect: { hour: number; channel?: string };
 	sandbox: SandboxConfig;
+	/** Governance (see pricing.ts, limits.ts, permissions.ts, retention.ts, telemetry.ts). All optional. */
+	governance: {
+		/** Local model prices, dollars per million tokens. */
+		pricesFile?: string;
+		/** Budgets, per-run limits and concurrency. */
+		limitsFile?: string;
+		/** `enforce`: only people who can change a repository may ask for work in it. */
+		requesterCheck: "off" | "enforce";
+		/** Slack user ID → code host login, for the requester check. */
+		peopleFile?: string;
+		/** Only this Slack user group may ask for work. */
+		allowedUserGroup?: string;
+		/** Delete what quiet threads leave behind after this many days. */
+		retentionDays?: number;
+		/** OTLP/HTTP traces endpoint (…/v1/traces), and headers for it. */
+		otlp?: { endpoint: string; headers?: Record<string, string> };
+		/** Bearer token for /metrics on the dashboard listener; without it, /metrics uses the dashboard's login. */
+		metricsToken?: string;
+	};
 	/** Model calls through a gateway (see gateway.ts), when SCOUT_GATEWAY_URL is set. */
 	gateway?: GatewayConfig;
 	/** The read-only dashboard (see dash/server.ts); absent when SCOUT_DASH_ADDR is `off`. */
@@ -151,6 +170,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
 		...(env.SCOUT_REVIEW_LABEL ? { reviewLabel: env.SCOUT_REVIEW_LABEL } : {}),
 		...(env.SCOUT_MCP_FILE ? { mcpFile: resolve(env.SCOUT_MCP_FILE) } : {}),
+		governance: {
+			...(env.SCOUT_PRICES_FILE ? { pricesFile: resolve(env.SCOUT_PRICES_FILE) } : {}),
+			...(env.SCOUT_LIMITS_FILE ? { limitsFile: resolve(env.SCOUT_LIMITS_FILE) } : {}),
+			requesterCheck: env.SCOUT_REQUESTER_CHECK === "enforce" ? "enforce" : "off",
+			...(env.SCOUT_PEOPLE_FILE ? { peopleFile: resolve(env.SCOUT_PEOPLE_FILE) } : {}),
+			...(env.SCOUT_ALLOWED_USERGROUP ? { allowedUserGroup: env.SCOUT_ALLOWED_USERGROUP } : {}),
+			...(env.SCOUT_RETENTION_DAYS ? { retentionDays: Number(env.SCOUT_RETENTION_DAYS) } : {}),
+			...(env.SCOUT_OTLP_ENDPOINT
+				? {
+						otlp: {
+							endpoint: env.SCOUT_OTLP_ENDPOINT,
+							...(env.SCOUT_OTLP_HEADERS ? { headers: JSON.parse(env.SCOUT_OTLP_HEADERS) as Record<string, string> } : {}),
+						},
+					}
+				: {}),
+			...(env.SCOUT_METRICS_TOKEN ? { metricsToken: env.SCOUT_METRICS_TOKEN } : {}),
+		},
 		...(env.SCOUT_GATEWAY_URL
 			? {
 					gateway: {

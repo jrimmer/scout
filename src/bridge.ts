@@ -1,6 +1,8 @@
 import type { Context } from "@earendil-works/chord";
 import { type AgentChange, type ConversationId, type Harness, watchEvents } from "@earendil-works/pi-durable";
+import type { Audit } from "./audit.ts";
 import { delivery } from "./etiquette.ts";
+import type { Admission } from "./limits.ts";
 import { ThreadDoc } from "./docs.ts";
 import type { ThreadSearch } from "./search.ts";
 import { type ChatMessage, type ChatSurface, ThreadView } from "./render.ts";
@@ -50,7 +52,17 @@ export type BridgeOptions = {
 	download?: (url: string) => Promise<Uint8Array>;
 	/** Put a shared file where the thread's tools can read it; returns its path there. */
 	saveAttachment?: (conversationId: number, name: string, bytes: Uint8Array) => Promise<string>;
+	/**
+	 * May this person's message start (`starting`) or steer work? Requester permissions, budgets and concurrency
+	 * (permissions.ts, limits.ts). Refused, the message is kept as context and Scout says why; told to wait, the
+	 * request is queued until a run ends.
+	 */
+	admit?: (request: { user: string; channelName: string; repo?: string; starting: boolean }) => Promise<Admission>;
+	audit?: Audit;
 };
+
+/** Say the same refusal to the same person in the same thread at most this often. */
+const REFUSAL_QUIET_MS = 60 * 60 * 1000;
 
 /** Reactions that stop Scout's work in a thread, on the thread's first message or on Scout's progress message. */
 export const STOP_REACTIONS = new Set(["octagonal_sign", "no_entry", "no_entry_sign"]);
@@ -70,7 +82,9 @@ export const DECLINE_PRIVATE =
 export class Bridge {
 	readonly #options: BridgeOptions;
 	readonly #views = new Map<number, ThreadView>();
-	readonly #locks = new Map<string, Promise<void>>();
+	readonly #locks = new Map<string, Promise<unknown>>();
+	readonly #refused = new Map<string, number>();
+	#draining = false;
 
 	constructor(options: BridgeOptions) {
 		this.#options = options;
@@ -114,7 +128,24 @@ export class Bridge {
 			await this.#stop(thread, message.user);
 			return;
 		}
-		await this.#serialized(key, () => this.#deliver(key, message, mentions));
+		await this.#serialized(key, () => this.#deliver(key, message, mentions, false));
+	}
+
+	/** Start queued requests that may start now, oldest first; stop at the first that still has to wait. */
+	async drain(): Promise<void> {
+		if (this.#draining) return;
+		this.#draining = true;
+		try {
+			for (const item of this.#options.threads.queued()) {
+				const message = item.message as IncomingMessage;
+				const mentions = message.text.includes(`<@${this.#options.botUserId}>`);
+				const outcome = await this.#serialized(item.key, () => this.#deliver(item.key, message, mentions, true));
+				if (outcome === "waiting") return;
+				this.#options.threads.dequeue(item.id);
+			}
+		} finally {
+			this.#draining = false;
+		}
 	}
 
 	/** A reaction on a message: a stop sign on a thread's first message or on Scout's progress message stops it. */
@@ -134,6 +165,7 @@ export class Bridge {
 		const view = await this.#view(thread);
 		if (!view.busy) return;
 		view.markStopped(await this.#options.nameOf(user));
+		this.#options.audit?.record("stop", { actor: user, conversationId: thread.conversationId, channel: thread.channel });
 		const conversation = await harness.conversation(thread.conversationId as ConversationId, context);
 		await conversation?.abort(context);
 	}
@@ -142,22 +174,64 @@ export class Bridge {
 		return text.replaceAll(`<@${this.#options.botUserId}>`, "").trim();
 	}
 
-	async #deliver(key: string, message: IncomingMessage, mentions: boolean): Promise<void> {
+	async #admit(message: IncomingMessage, starting: boolean): Promise<Admission> {
+		if (this.#options.admit === undefined) return { ok: true };
+		const repo = this.#options.repoFor?.(message.channelName);
+		return this.#options.admit({ user: message.user, channelName: message.channelName, ...(repo === undefined ? {} : { repo }), starting });
+	}
+
+	/** Tell someone why their message didn't start work, once in a while, in their thread. */
+	async #refuse(message: IncomingMessage, threadTs: string, reason: string, conversationId?: number): Promise<void> {
+		const key = `${message.channel}:${threadTs}:${message.user}:${reason}`;
+		const last = this.#refused.get(key);
+		this.#options.audit?.record("refused", {
+			actor: message.user,
+			...(conversationId === undefined ? {} : { conversationId }),
+			channel: message.channelName,
+			detail: { reason, ts: message.ts },
+		});
+		if (last !== undefined && Date.now() - last < REFUSAL_QUIET_MS) return;
+		this.#refused.set(key, Date.now());
+		await this.#options.surface.post(message.channel, threadTs, plain(`<@${message.user}> ${reason}`));
+	}
+
+	async #deliver(key: string, message: IncomingMessage, mentions: boolean, queued: boolean): Promise<"done" | "waiting"> {
 		const { harness, threads, context } = this.#options;
+		const threadTs = message.threadTs ?? message.ts;
 		let thread = threads.get(key);
 		if (thread === undefined) {
-			if (!mentions) return;
+			if (!mentions) return "done";
+			const admission = await this.#admit(message, true);
+			if (!admission.ok && admission.wait !== true) {
+				await this.#refuse(message, threadTs, admission.reason);
+				return "done";
+			}
 			thread = await this.#startThread(key, message);
 		}
 		const conversation = await harness.conversation(thread.conversationId as ConversationId, context);
 		if (conversation === undefined) throw new Error(`conversation ${thread.conversationId} is missing`);
 		const view = await this.#view(thread);
 
-		const how = delivery({
+		let how = delivery({
 			mentionsScout: mentions,
 			followsScout: thread.lastSpeaker === "scout" && thread.lastAsker === message.user,
 			busy: view.busy,
 		});
+		if (how !== "note") {
+			const starting = !view.busy;
+			const admission = await this.#admit(message, starting);
+			if (!admission.ok) {
+				if (admission.wait === true && starting) {
+					if (!queued) {
+						threads.enqueue(key, message);
+						await this.#refuse(message, threadTs, admission.reason, thread.conversationId);
+					}
+					return "waiting";
+				}
+				await this.#refuse(message, threadTs, admission.reason, thread.conversationId);
+				how = "note";
+			}
+		}
 		const name = await this.#options.nameOf(message.user);
 		const text = message.text.replaceAll(`<@${this.#options.botUserId}>`, "@Scout").trim();
 		const attached = await this.#attachments(thread.conversationId, message);
@@ -183,6 +257,12 @@ export class Bridge {
 			threads.asked(key, message.user);
 		}
 		threads.spoke(key, message.user);
+		this.#options.audit?.record("request", {
+			actor: message.user,
+			conversationId: thread.conversationId,
+			channel: message.channelName,
+			detail: { as: how, ts: message.ts, text: text.slice(0, 200), ...(attached.notes.length > 0 ? { files: attached.notes.length } : {}) },
+		});
 		this.#options.search?.add({
 			key,
 			conversationId: thread.conversationId,
@@ -190,6 +270,7 @@ export class Bridge {
 			speaker: name,
 			text,
 		});
+		return "done";
 	}
 
 	/** Images for the model to see, and notes about the other files: where they are, or why they aren't. */
@@ -268,6 +349,7 @@ export class Bridge {
 			onRunEnd: (answer) => {
 				threads.spoke(thread.key, "scout");
 				threads.ranOnce(thread.conversationId);
+				void this.drain().catch((error: unknown) => console.error("starting queued requests failed:", error));
 				if (answer === undefined || this.#options.search === undefined) return;
 				const search = this.#options.search;
 				void harness.snapshot(ThreadDoc, thread.conversationId as ConversationId, context).then((doc) =>
@@ -289,13 +371,13 @@ export class Bridge {
 	}
 
 	/** Messages in one thread are handled one at a time, in arrival order. */
-	async #serialized(key: string, work: () => Promise<void>): Promise<void> {
+	async #serialized<T>(key: string, work: () => Promise<T>): Promise<T> {
 		const previous = this.#locks.get(key) ?? Promise.resolve();
 		const next = previous.then(work);
 		const settled = next.catch(() => {});
 		this.#locks.set(key, settled);
 		try {
-			await next;
+			return await next;
 		} finally {
 			if (this.#locks.get(key) === settled) this.#locks.delete(key);
 		}

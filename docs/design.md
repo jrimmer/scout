@@ -47,7 +47,17 @@ one-off:   job.ts ─▶ the same agent, no Slack, nothing kept
 | `src/bridge.ts` | Slack thread ↔ conversation. Starts threads on mentions, follows them after, stops on request, declines private places. |
 | `src/etiquette.ts` | What a thread message does: start work, steer running work, or note it for later. |
 | `src/render.ts` | One Slack message per run: posted at start, edited with progress, replaced by the answer. |
-| `src/sandbox.ts` | Per-thread clone and container; mirrors; file tools confined to a directory. |
+| `src/workspaces.ts` | A sandbox per thread from a driver, its clone of the repository, and git in and out as bundles. |
+| `src/drivers/` | Where sandboxes run: `docker`, `spoond` (microVM leases, with `spoond-relay.ts`), `local`. |
+| `src/sandbox.ts` | Host-owned git mirrors, and file tools confined to a directory on this host (reflections). |
+| `src/gateway.ts` | Model calls through a gateway, under the usual model names. |
+| `src/observe.ts` | Hooks that see every model call and tool call in every conversation, for the observers below. |
+| `src/telemetry.ts` | OTLP traces and Prometheus counters. |
+| `src/audit.ts` | The append-only audit trail, and its export. |
+| `src/limits.ts`, `src/pricing.ts` | The spend ledger, prices, weekly budgets, per-run limits, concurrency. |
+| `src/permissions.ts` | Only people who can change a repository may ask for work in it. |
+| `src/secrets.ts`, `src/scan.ts` | Secret references and rotation; credential scanning and redaction. |
+| `src/retention.ts` | What quiet threads leave behind, deleted after a while. |
 | `src/codehost.ts` | `open_pull_request`, run on the host with host credentials, after a size check and self-review. |
 | `src/review.ts` | The reviewer: a conversation that can only read, used before pull requests and for automation. |
 | `src/profile.ts` | `profile/` as an extension, reloaded on change; kept pulled when it's a repository. |
@@ -83,15 +93,14 @@ one-off:   job.ts ─▶ the same agent, no Slack, nothing kept
 - **One message per run, rendered from one place**, driven by the harness's event stream. Duplicate replies were
   what made Slack hard last time; this way there's nothing to deduplicate. Redelivered Slack events are absorbed by
   using the Slack message ID as the submission's `requestId`.
-- **Isolation, not allowlists.** The agent gets a real shell, in a container that has nothing worth stealing:
-  - It runs as the host user, with no capabilities and no network by default.
-  - Only the thread's directory is mounted.
-  - It gets no host environment and no credentials.
-
-  File tools run on the host but resolve every path, symlinks included, against the thread's directory.
+- **Isolation, not allowlists; sandboxes are drivers.** The agent gets a real shell, in a sandbox with nothing worth
+  stealing. A driver (Docker, spoond microVMs, or none for tests) provides the sandbox and a way to start a pi-env
+  daemon in it; every file operation and command goes through that daemon. Nothing a thread writes reaches Scout's
+  host, and git crosses as bundles, so no sandbox holds credentials or reaches the code host. Network is none, open,
+  or a per-repository egress list where the substrate can enforce one (spoond).
 - **Credentials stay on the host.** Pushes, pull requests and MCP tools all run on the host.
   - The thread's repo is written by the agent, so the host never runs git inside it: its hooks and config are
-    untrusted. A host-owned mirror fetches the branch from it and pushes.
+    untrusted. The sandbox hands its commits out as a bundle; a host-owned mirror fetches them and pushes.
   - Scout should have its own code host account and SSH key (`SCOUT_GIT_SSH_KEY`), so its work is its own and
     people review it like anyone else's.
 - **Second look before people look.** Tobi's worry about agents is "slop grenades": output sent to colleagues who
@@ -120,6 +129,10 @@ one-off:   job.ts ─▶ the same agent, no Slack, nothing kept
   The reflection has file tools only, with no shell, and can't touch `.git`. The host commits on its behalf, with
   hooks off. It runs as an ordinary Pi Durable conversation, so it is checkpointed like everything else and
   exactly-once per day.
+- **Governance is observation, not a second agent.** One hook extension sees every model call and tool call in every
+  conversation. The audit trail, the spend ledger, per-run limits, counters and traces are observers of it. Budgets,
+  concurrency and requester permissions are checked where a message would start or steer work. Limits live in a
+  file the operator owns, not in the profile Scout proposes changes to.
 - **One agent, three ways in**, as in Aquifer: interactive (Slack threads), automation (labelled pull requests) and
   job (`npm run job`). They share the session model, workspaces and tools; each is a few dozen lines of front door.
 - **One process, SQLite, Socket Mode.**
@@ -143,17 +156,16 @@ The first Scout (`scout-legacy`, archived) had about 82k lines of Go for roughly
 
 ## Known gaps
 
-- **Symlink race.** The file tools check the path, then use it. A process in the container that swaps a symlink in
-  between could redirect a host-side read or write. The fix is to run the file tools in the container too.
-- **Stopping kills everything in the thread's container**, not just the stopped command. Fine while one thread has
-  one container.
-- **No sandbox network by default.** Repos that download dependencies need `SCOUT_SANDBOX_NETWORK`, or an image
-  with the dependencies baked in. Scout is told when it's offline, so it says so instead of looking broken.
+- **Transcripts aren't deleted by retention.** Pi Durable has no way to delete a conversation; they stay in
+  `pi.sqlite` and its backups.
+- **No sandbox network by default.** Repos that download dependencies need `SCOUT_SANDBOX_NETWORK=open`, an egress
+  list on spoond, or an image with the dependencies baked in. Scout is told when it's offline.
+- **spoond limits streams per account**, so its limit bounds how many threads can work at once. Scout holds a stream
+  only while tools run; spoond could remove the need with a stateless file and process API (see the issues).
 - **Automation can't review pull requests from forks** unless the code host mirrors their heads
   (`refs/pull/*/head`); the review is skipped with a log line.
-- **Attachments are ignored.**
-- **Two open profile proposals can conflict.** The reflection sees which earlier proposals merged or closed, but
-  not their review comments.
+- **Two open profile proposals can conflict.** The reflection sees which earlier proposals merged or closed, and
+  reviewers' comments, but doesn't rebase one onto another.
 
 ## Now, next, later
 

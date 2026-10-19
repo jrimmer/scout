@@ -20,6 +20,8 @@ export type DashOptions = {
 	auth?: { user: string; passwordHash: string };
 	collector: Collector;
 	intervalMs?: number;
+	/** Prometheus metrics at /metrics: with a token, only for that bearer token; without, behind the dashboard's login. */
+	metrics?: { token?: string; render: () => Promise<string> };
 };
 
 const STATIC_DIR = join(dirname(fileURLToPath(import.meta.url)), "static");
@@ -62,6 +64,16 @@ export async function startDashboard(options: DashOptions): Promise<{ port: numb
 	const server = createServer((req, res) => {
 		const path = new URL(req.url ?? "/", "http://dash").pathname;
 		if (path === "/healthz") return reply(res, 200, "text/plain", "ok");
+		if (path === "/metrics" && options.metrics !== undefined) {
+			const { token, render } = options.metrics;
+			const allowed = token === undefined ? authorized(req, options.auth) : safeEqual(req.headers.authorization ?? "", `Bearer ${token}`);
+			if (!allowed) return reply(res, 401, "text/plain", "unauthorized");
+			void render().then(
+				(text) => reply(res, 200, "text/plain; version=0.0.4", text),
+				(error: unknown) => reply(res, 500, "text/plain", String(error)),
+			);
+			return;
+		}
 		if (!authorized(req, options.auth)) {
 			res.writeHead(401, { "www-authenticate": 'Basic realm="scout", charset="UTF-8"' });
 			return res.end();

@@ -10,7 +10,9 @@ import {
 	defineTool,
 	section,
 } from "@earendil-works/pi-durable";
+import type { Audit } from "./audit.ts";
 import { ReflectionDoc, ThreadDoc } from "./docs.ts";
+import { findSecrets } from "./scan.ts";
 
 /**
  * River's memory is "constantly learning and un-learning". The profile is the slow, reviewed half of that; this is the
@@ -93,6 +95,15 @@ export class Memory {
 		else this.#db.prepare("UPDATE memories SET retire_with = NULL WHERE retire_with = ?").run(day);
 	}
 
+	/** Delete notes that stopped applying (retired, or expired unreviewed) before `before`. */
+	purge(before: number): number {
+		return Number(
+			this.#db
+				.prepare("DELETE FROM memories WHERE created_at < ? AND (retired_at IS NOT NULL OR (retire_with IS NULL AND created_at < ?))")
+				.run(before, Date.now() - NOTE_LIFETIME_MS).changes,
+		);
+	}
+
 	close(): void {
 		this.#db.close();
 	}
@@ -103,7 +114,7 @@ async function channelOf(read: DocumentReader, conversationId: ConversationId, c
 }
 
 /** `remember`, `forget`, and the notes section, for thread conversations. */
-export function memoryExtension(memory: Memory) {
+export function memoryExtension(memory: Memory, audit?: Audit) {
 	const remember = defineTool({
 		name: "remember",
 		description:
@@ -114,8 +125,11 @@ export function memoryExtension(memory: Memory) {
 			note: Type.String({ description: "One or two sentences, specific enough to act on" }),
 		}),
 		execute: async (args, api, context) => {
+			const secrets = findSecrets(args.note);
+			if (secrets.length > 0) throw new Error(`That note looks like it holds a credential (${secrets[0]!.kind}); keep it out of notes.`);
 			const channel = await channelOf(api, api.conversationId, context);
 			const id = memory.remember(channel, args.note);
+			audit?.record("note_kept", { actor: "scout", conversationId: api.conversationId, channel, detail: { id, note: args.note } });
 			return { output: [{ type: "text", text: `Noted as [${id}].` }] };
 		},
 	});
@@ -123,8 +137,9 @@ export function memoryExtension(memory: Memory) {
 		name: "forget",
 		description: "Retire a note that turned out to be wrong or no longer holds. Say why in the thread.",
 		parameters: Type.Object({ id: Type.Number() }),
-		execute: async (args) => {
+		execute: async (args, api) => {
 			const forgotten = memory.forget(args.id);
+			if (forgotten) audit?.record("note_forgotten", { actor: "scout", conversationId: api.conversationId, detail: { id: args.id } });
 			return { output: [{ type: "text", text: forgotten ? `Forgot [${args.id}].` : `No note [${args.id}].` }] };
 		},
 	});

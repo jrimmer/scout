@@ -1,0 +1,26 @@
+# Scout as a systemd service, with Litestream restoring state before start and replicating it while running.
+# Install: copy to /etc/systemd/system/, set WorkingDirectory and the paths, then `systemctl enable --now scout`.
+[Unit]
+Description=Scout
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=scout
+WorkingDirectory=/opt/scout
+EnvironmentFile=/opt/scout/.env
+Environment=SCOUT_DATA_DIR=/var/lib/scout
+# Secrets can come from systemd credentials instead of the environment file (see docs/operations.md):
+# LoadCredential=slack-bot-token:/etc/scout/credentials/slack-bot-token
+ExecStartPre=/usr/bin/litestream restore -config /opt/scout/deploy/litestream.yml -if-db-not-exists -if-replica-exists /var/lib/scout/pi.sqlite
+ExecStartPre=/usr/bin/litestream restore -config /opt/scout/deploy/litestream.yml -if-db-not-exists -if-replica-exists /var/lib/scout/scout.sqlite
+ExecStart=/usr/bin/litestream replicate -config /opt/scout/deploy/litestream.yml -exec "/usr/bin/node src/main.ts"
+# kill -USR2 reflects now; Litestream passes signals to Scout.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

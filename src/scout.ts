@@ -6,6 +6,12 @@ import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createCodeHostExtension } from "./codehost.ts";
 import type { Config, RepoConfig } from "./config.ts";
 import { modelsFor } from "./gateway.ts";
+import { Audit } from "./audit.ts";
+import { type Admission, Limits, loadLimits, SpendLedger } from "./limits.ts";
+import { observeExtension, type Observer } from "./observe.ts";
+import { loadPeople, Permissions } from "./permissions.ts";
+import { Pricing } from "./pricing.ts";
+import { Counters, Tracer } from "./telemetry.ts";
 import { closeMcp, connectMcp, loadMcpConfig, type McpConnection, mcpExtension } from "./mcp.ts";
 import { ThreadDoc } from "./docs.ts";
 import { consolidationExtension, Memory, memoryExtension } from "./memory.ts";
@@ -46,6 +52,9 @@ export type ScoutOptions = {
 	models?: Models;
 	/** MCP servers already connected; by default, the ones in `config.mcpFile`. */
 	mcp?: McpConnection[];
+	/** Members of a Slack user group, for `governance.allowedUserGroup`. */
+	groupMembers?: (group: string) => Promise<Set<string>>;
+	fetch?: typeof fetch;
 };
 
 export type Scout = Awaited<ReturnType<typeof openScout>>;
@@ -102,9 +111,34 @@ export async function openScout(options: ScoutOptions) {
 		offline: config.sandbox.network === "none",
 	};
 
+	// Governance: every conversation's model calls and tool calls pass the observers (observe.ts).
+	const { governance } = config;
+	const pricing = Pricing.load(governance.pricesFile);
+	const audit = new Audit(db);
+	const spend = new SpendLedger(db, pricing);
+	const limits = new Limits(loadLimits(governance.limitsFile), spend, pricing);
+	const counters = new Counters(pricing);
+	const tracer = governance.otlp === undefined ? undefined : new Tracer({ ...governance.otlp, pricing });
+	const permissions = new Permissions({
+		config: {
+			mode: governance.requesterCheck,
+			people: loadPeople(governance.peopleFile),
+			...(governance.allowedUserGroup === undefined ? {} : { userGroup: governance.allowedUserGroup }),
+		},
+		codeHost: config.codeHost,
+		...(options.groupMembers === undefined || governance.allowedUserGroup === undefined
+			? {}
+			: { groupMembers: () => options.groupMembers!(governance.allowedUserGroup!) }),
+		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+	});
+	const observers: Observer[] = [audit, limits, spend, counters, ...(tracer === undefined ? [] : [tracer])];
+	const observe = observeExtension(observers, (event, reason) =>
+		audit.record("blocked", { actor: "scout", conversationId: event.conversationId, channel: event.channel, detail: { tool: event.name, reason } }),
+	);
+
 	const registry = createRegistry();
 	const reviewer = reviewExtension(() => profile.review);
-	const reviewerAgent: AgentChange = { model: config.model, extensions: [reviewer] };
+	const reviewerAgent: AgentChange = { model: config.model, extensions: [reviewer, observe] };
 
 	// Thread conversations: the profile, coding tools in the thread's container, pull requests against the work repo.
 	const profileTools = profileExtension(profile, workspace);
@@ -128,7 +162,10 @@ export async function openScout(options: ScoutOptions) {
 				...(link === undefined ? {} : { link }),
 			};
 		},
-		onPullRequest: (id, pull) => pulls.opened({ ...pull, kind: "work", conversationId: id }),
+		onPullRequest: (id, pull) => {
+			pulls.opened({ ...pull, kind: "work", conversationId: id });
+			audit.record("pull_opened", { actor: "scout", conversationId: id, detail: { url: pull.url, title: pull.title } });
+		},
 		maxChangedLines: config.maxPullLines,
 		selfReview: (change, api, ctx) =>
 			reviewAsSubtask(
@@ -143,7 +180,7 @@ export async function openScout(options: ScoutOptions) {
 			),
 	});
 	const searchTools = searchExtension(search, threads, options.threadLink ?? (async () => undefined));
-	const memoryTools = memoryExtension(memory);
+	const memoryTools = memoryExtension(memory, audit);
 
 	// Reflection conversations: profile files only, pull requests against the profile repo.
 	const reflection = reflectionExtensions(() => profile.reflect);
@@ -157,6 +194,7 @@ export async function openScout(options: ScoutOptions) {
 		},
 		onPullRequest: (id, pull) => {
 			pulls.opened({ ...pull, kind: "profile", conversationId: id });
+			audit.record("pull_opened", { actor: "scout", conversationId: id, detail: { url: pull.url, title: pull.title, profile: true } });
 			console.log(`reflection proposed ${pull.url}`);
 			announce(`I went over yesterday's threads and wrote down what I learned. Could someone review it? ${pull.url}`);
 		},
@@ -178,6 +216,7 @@ export async function openScout(options: ScoutOptions) {
 		profileCodeHost,
 		consolidation,
 		mcpTools,
+		observe,
 	]) {
 		registry.install(extension);
 	}
@@ -219,7 +258,7 @@ export async function openScout(options: ScoutOptions) {
 			dataDir,
 			profileRepo: config.profileRepo,
 			git: config.git,
-			agent: { model: config.model, extensions: [reflection.reflect, reflection.files, profileCodeHost, consolidation] },
+			agent: { model: config.model, extensions: [reflection.reflect, reflection.files, profileCodeHost, consolidation, observe] },
 			threadLink: options.threadLink ?? (async () => undefined),
 		});
 	}
@@ -245,9 +284,27 @@ export async function openScout(options: ScoutOptions) {
 		return { provider, modelId: rest.join("/") };
 	};
 
+	/**
+	 * May this request go ahead? The requester's access to the repository first (if enforced), then, for work that
+	 * would start a run, budgets and concurrency. `working` is the runs going now, by channel.
+	 */
+	const admitter =
+		(working: () => Promise<{ channel: string }[]>) =>
+		async (request: { user: string; channelName: string; repo?: string; starting: boolean }): Promise<Admission> => {
+			const allowed = await permissions.admit(request.user, repoNamed(request.repo).slug);
+			if (!allowed.ok || !request.starting) return allowed;
+			return limits.admit(request.channelName, await working());
+		};
+
 	return {
 		harness,
 		repoFor,
+		admitter,
+		audit,
+		spend,
+		limits,
+		counters,
+		pricing,
 		modelFor,
 		threads,
 		pulls,
@@ -258,7 +315,7 @@ export async function openScout(options: ScoutOptions) {
 		/** What a thread (or a job) runs with. */
 		workAgent: {
 			model: config.model,
-			extensions: [profileTools, codingTools, workCodeHost, searchTools, memoryTools, mcpTools],
+			extensions: [profileTools, codingTools, workCodeHost, searchTools, memoryTools, mcpTools, observe],
 		} satisfies AgentChange,
 		reviewerAgent,
 		async close(): Promise<void> {
@@ -269,6 +326,9 @@ export async function openScout(options: ScoutOptions) {
 			pulls.close();
 			search.close();
 			memory.close();
+			await tracer?.close();
+			audit.close();
+			spend.close();
 			await closeMcp(mcp);
 		},
 	};

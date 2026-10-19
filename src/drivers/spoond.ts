@@ -15,7 +15,8 @@ import type { NetworkPolicy, SandboxDriver, SandboxHandle, SandboxSpec } from ".
 export type SpoondOptions = {
 	/** The lease API, e.g. `https://spoond.lan:8890`. */
 	url: string;
-	token: string;
+	/** A function reads it per request, so a rotated token applies at once. */
+	token: string | (() => string);
 	fetch?: typeof fetch;
 	/** Seconds a quiet lease runs before spoond suspends it. */
 	idleSuspend?: number;
@@ -131,7 +132,7 @@ export class SpoondDriver implements SandboxDriver {
 			const response = await this.#fetch(`${this.#options.url}${path}`, {
 				method,
 				headers: {
-					authorization: `Bearer ${this.#options.token}`,
+					authorization: `Bearer ${typeof this.#options.token === "function" ? this.#options.token() : this.#options.token}`,
 					...(typeof body === "string" ? { "content-type": "application/json" } : {}),
 				},
 				...(body === undefined ? {} : { body }),

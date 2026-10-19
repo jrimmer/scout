@@ -135,6 +135,12 @@ export class Slack {
 		return new Uint8Array(await response.arrayBuffer());
 	}
 
+	/** Members of a Slack user group (needs usergroups:read). */
+	async groupMembers(group: string): Promise<Set<string>> {
+		const members = await this.app.client.usergroups.users.list({ usergroup: group });
+		return new Set(members.users ?? []);
+	}
+
 	async nameOf(user: string): Promise<string> {
 		const cached = this.#names.get(user);
 		if (cached !== undefined) return cached;

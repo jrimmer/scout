@@ -11,6 +11,9 @@ import { startDashboard } from "./dash/server.ts";
 import { ThreadDoc } from "./docs.ts";
 import { Health } from "./health.ts";
 import { loadConfig, useScoutsKey } from "./config.ts";
+import { weekStart } from "./limits.ts";
+import { applyRetention } from "./retention.ts";
+import { resolveSecrets, rotate } from "./secrets.ts";
 import { pullProfile } from "./profile.ts";
 import { weekOf } from "./pulls.ts";
 import { localDay } from "./reflect.ts";
@@ -20,6 +23,8 @@ import { Slack } from "./slack.ts";
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
 const context = BACKGROUND_CONTEXT;
+// Secrets first: references (op://, file:, cred:, NAME_FILE) become values before anything reads them.
+const secretSources = await resolveSecrets();
 const config = loadConfig();
 if (config.slack.botToken === "" || config.slack.appToken === "") {
 	throw new Error("SLACK_BOT_TOKEN and SLACK_APP_TOKEN are not set (see .env.example)");
@@ -54,8 +59,18 @@ const scout = await openScout({
 	},
 	threadLink: (thread) => slack.permalink(thread.channel, thread.threadTs),
 	announce,
+	groupMembers: (group) => slack.groupMembers(group),
 });
-const { harness, threads, pulls, memory, workspaces, reflector } = scout;
+const { harness, threads, pulls, memory, workspaces, reflector, audit } = scout;
+const channelNames = new Map<number, string>();
+async function channelOf(id: number): Promise<string> {
+	let name = channelNames.get(id);
+	if (name === undefined) {
+		name = (await harness.snapshot(ThreadDoc, id as never, context))?.channelName || "?";
+		channelNames.set(id, name);
+	}
+	return name;
+}
 harness.closed.then((end) => {
 	if (end.reason === "failed") {
 		console.error("harness failed; exiting so the supervisor restarts us:", end.error);
@@ -80,6 +95,8 @@ const bridge = new Bridge({
 	channelOffer: (user) => slack.channelOffer(user),
 	search: scout.search,
 	repoFor: scout.repoFor,
+	audit,
+	admit: scout.admitter(async () => Promise.all(bridge.working().map(async (w) => ({ channel: await channelOf(w.conversationId) })))),
 	modelFor: scout.modelFor,
 	download: (url) => slack.download(url),
 	saveAttachment: (id, name, bytes) => workspaces.saveAttachment(id, name, bytes),
@@ -96,7 +113,10 @@ console.log(`scout is listening as <@${slack.botUserId}> (model ${config.model.p
 async function reflect(day: string): Promise<void> {
 	if (reflector === undefined) return;
 	const started = await health.watch("reflect", "the nightly reflection failed", () => reflector.run(day));
-	if (started !== undefined) console.log(`reflecting on ${started.threads} thread(s) for ${day}`);
+	if (started !== undefined) {
+		console.log(`reflecting on ${started.threads} thread(s) for ${day}`);
+		audit.record("reflection", { actor: "scout", conversationId: started.conversationId, detail: { day, threads: started.threads } });
+	}
 }
 
 const tick = setInterval(() => {
@@ -115,21 +135,40 @@ const tick = setInterval(() => {
 	void health.watch("pulls", "checking pull requests failed", () => pulls.refresh(config.codeHost)).then(async (decided = []) => {
 		// A reflection's proposal was decided: merged retires the notes it covered; rejected keeps them.
 		for (const pull of decided) {
+			audit.record("pull_decided", { actor: "code host", conversationId: pull.conversationId, detail: { url: pull.url, state: pull.state } });
 			const day = pull.kind === "profile" ? threads.reflectionDay(pull.conversationId) : undefined;
 			if (day !== undefined) memory.proposalDecided(day, pull.state === "merged");
 		}
 		// Mondays, after the reflection hour: how last week went.
 		const today = new Date();
 		if (today.getDay() !== 1 || today.getHours() < config.reflect.hour) return;
-		const usage = await harness.usage(context);
-		const spent = [...Object.values(usage.models), ...Object.values(usage.tools)].reduce((sum, u) => sum + (u.cost?.total ?? 0), 0);
-		const text = pulls.weeklyReport(weekOf(today), Date.now(), spent);
+		const text = pulls.weeklyReport(weekOf(today), Date.now(), scout.spend.spent(0));
 		if (text !== undefined) announce(text);
 	});
+	// What quiet threads leave behind, past the retention period.
+	const retentionDays = config.governance.retentionDays;
+	if (retentionDays !== undefined) {
+		void health.watch("retention", "deleting old thread files failed", () =>
+			applyRetention({ days: retentionDays, threads, workspaces, search: scout.search, memory, audit }),
+		);
+	}
 }, 5 * MINUTE);
 
+// `kill -HUP <pid>` reads secrets again. The code host token, the gateway key and spoond's token apply at once; Slack
+// tokens and MCP servers' credentials need a restart.
+process.on("SIGHUP", async () => {
+	try {
+		const changed = await rotate(secretSources);
+		config.codeHost.token = process.env.SCOUT_CODEHOST_TOKEN ?? config.codeHost.token;
+		if (config.gateway !== undefined && process.env.SCOUT_GATEWAY_KEY !== undefined) config.gateway.key = process.env.SCOUT_GATEWAY_KEY;
+		console.log(changed.length === 0 ? "secrets: nothing changed" : `secrets rotated: ${changed.join(", ")}`);
+		if (changed.some((name) => name.startsWith("SLACK_"))) console.log("Slack tokens changed: restart Scout to use them");
+	} catch (error) {
+		console.error("rotating secrets failed:", error);
+	}
+});
+
 // The dashboard: read-only, on its own address (loopback unless it has a password).
-const channelNames = new Map<number, string>();
 const dashboard =
 	config.dash === undefined
 		? undefined
@@ -147,20 +186,30 @@ const dashboard =
 					pulls,
 					memory,
 					working: () => bridge.working(),
-					channelOf: async (id) => {
-						let name = channelNames.get(id);
-						if (name === undefined) {
-							name = (await harness.snapshot(ThreadDoc, id as never, context))?.channelName || "?";
-							channelNames.set(id, name);
-						}
-						return name;
-					},
-					spend: async () => {
-						const usage = await harness.usage(context);
-						return Object.fromEntries(Object.entries(usage.models).map(([model, u]) => [model, u.cost?.total ?? 0]));
-					},
+					channelOf,
+					spend: async () => scout.spend.byModel(0),
+					week: () =>
+						scout.spend.byChannel(weekStart(new Date())).map((c) => {
+							const budget = scout.limits.budgetFor(c.channel);
+							return { ...c, ...(budget === undefined ? {} : { budget }) };
+						}),
 					alerts: () => health.list(),
 				}),
+				metrics: {
+					...(config.governance.metricsToken === undefined ? {} : { token: config.governance.metricsToken }),
+					render: async () => {
+						const working = bridge.working().length;
+						return scout.counters.prometheus({
+							scout_working_threads: { help: "Threads Scout is working in now.", value: working },
+							scout_threads_last_day: { help: "Threads with activity in the last day.", value: threads.countSince(Date.now() - 24 * HOUR) },
+							scout_open_pull_requests: { help: "Scout's pull requests still open.", value: pulls.count("kind = 'work' AND state = 'open'") },
+							scout_unreviewed_notes: { help: "Notes not yet folded into the profile.", value: memory.active().length },
+							scout_problems: { help: "Things that need a person (see the dashboard).", value: health.list().length },
+							scout_spend_week_dollars: { help: "Model spend this week.", value: scout.spend.spent(weekStart(new Date())) },
+							scout_sandbox_connections: { help: "Sandbox daemon connections open.", value: workspaces.connected },
+						});
+					},
+				},
 			});
 if (config.dash !== undefined) console.log(`dashboard on http://${config.dash.addr}/`);
 

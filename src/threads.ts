@@ -49,7 +49,14 @@ export class Threads {
 				last_asker TEXT NOT NULL,
 				runs INTEGER NOT NULL DEFAULT 0,
 				reflected_activity INTEGER NOT NULL DEFAULT 0,
-				run_ts TEXT
+				run_ts TEXT,
+				purged_at INTEGER
+			);
+			CREATE TABLE IF NOT EXISTS queue (
+				id INTEGER PRIMARY KEY,
+				key TEXT NOT NULL,
+				message TEXT NOT NULL,
+				at INTEGER NOT NULL
 			);
 			CREATE TABLE IF NOT EXISTS reflections (
 				day TEXT PRIMARY KEY,
@@ -100,8 +107,33 @@ export class Threads {
 		this.#db.prepare("UPDATE threads SET last_speaker = ?, last_activity = ? WHERE key = ?").run(speaker, now, key);
 	}
 
+	/** Requests waiting for a concurrency limit, oldest first. */
+	enqueue(key: string, message: unknown, now = Date.now()): void {
+		this.#db.prepare("INSERT INTO queue (key, message, at) VALUES (?, ?, ?)").run(key, JSON.stringify(message), now);
+	}
+
+	queued(): { id: number; key: string; message: unknown; at: number }[] {
+		return this.#db
+			.prepare("SELECT * FROM queue ORDER BY id")
+			.all()
+			.map((r) => ({ id: Number(r.id), key: String(r.key), message: JSON.parse(String(r.message)) as unknown, at: Number(r.at) }));
+	}
+
+	dequeue(id: number): void {
+		this.#db.prepare("DELETE FROM queue WHERE id = ?").run(id);
+	}
+
 	runMessage(key: string, ts: string | undefined): void {
 		this.#db.prepare("UPDATE threads SET run_ts = ? WHERE key = ?").run(ts ?? null, key);
+	}
+
+	/** Threads quiet since before `before` whose files haven't been deleted yet (retention). */
+	unpurgedBefore(before: number): ThreadRow[] {
+		return this.#db.prepare("SELECT * FROM threads WHERE last_activity < ? AND purged_at IS NULL").all(before).map(toThread);
+	}
+
+	purged(key: string, now = Date.now()): void {
+		this.#db.prepare("UPDATE threads SET purged_at = ? WHERE key = ?").run(now, key);
 	}
 
 	asked(key: string, user: string): void {

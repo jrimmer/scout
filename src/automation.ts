@@ -132,6 +132,11 @@ export class PullReviewer {
 			body: `**Scout's review** of \`${review.sha.slice(0, 7)}\` (asked for with the \`${this.#label}\` label)\n\n${text}`,
 		});
 		pulls.reviewPosted(review);
+		this.#scout.audit.record("review_posted", {
+			actor: "scout",
+			conversationId: review.conversationId,
+			detail: { pull: `${review.slug}#${review.number}`, sha: review.sha },
+		});
 	}
 
 	async #api(path: string, body?: unknown): Promise<unknown> {
