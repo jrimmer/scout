@@ -35,6 +35,8 @@ export class ThreadView {
 	readonly #threadTs: string;
 	readonly #onRunEnd: (answer: string | undefined) => void;
 	readonly #now: () => number;
+	readonly #onRunMessage: (ts: string | undefined) => void;
+	#resumeTs: string | undefined;
 	#run: Run | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#queue: Promise<void> = Promise.resolve();
@@ -45,8 +47,14 @@ export class ThreadView {
 		threadTs: string;
 		/** After the run's final message is in Slack, with Scout's answer when it gave one. */
 		onRunEnd?: (answer: string | undefined) => void;
+		/** The Slack message of a run in progress before a restart, to keep editing instead of posting another. */
+		resumeTs?: string;
+		/** A run's message was posted (its ts), or the run ended (undefined): remember it across restarts. */
+		onRunMessage?: (ts: string | undefined) => void;
 		now?: () => number;
 	}) {
+		this.#resumeTs = options.resumeTs;
+		this.#onRunMessage = options.onRunMessage ?? (() => {});
 		this.#surface = options.surface;
 		this.#channel = options.channel;
 		this.#threadTs = options.threadTs;
@@ -115,8 +123,16 @@ export class ThreadView {
 	#start(): void {
 		const run: Run = { startedAt: this.#now(), steps: [] };
 		this.#run = run;
+		const resumed = this.#resumeTs;
+		this.#resumeTs = undefined;
 		this.#enqueue(async () => {
+			if (resumed !== undefined) {
+				run.ts = resumed;
+				await this.#surface.update(this.#channel, resumed, progressMessage(run, this.#now()));
+				return;
+			}
 			run.ts = await this.#surface.post(this.#channel, this.#threadTs, progressMessage(run, this.#now()));
+			this.#onRunMessage(run.ts);
 		});
 	}
 
@@ -143,6 +159,7 @@ export class ThreadView {
 			const message = finalMessage(run, this.#now());
 			if (run.ts === undefined) await this.#surface.post(this.#channel, this.#threadTs, message);
 			else await this.#surface.update(this.#channel, run.ts, message);
+			this.#onRunMessage(undefined);
 			this.#onRunEnd(run.stoppedBy === undefined ? run.text : undefined);
 		});
 	}

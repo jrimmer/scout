@@ -21,6 +21,8 @@ export type ThreadRow = {
 	runs: number;
 	/** `lastActivity` as of the last nightly reflection that read this thread. */
 	reflectedActivity: number;
+	/** The Slack message showing the run in progress, if one is. */
+	runTs?: string;
 };
 
 export function threadKey(channel: string, threadTs: string): string {
@@ -46,7 +48,8 @@ export class Threads {
 				last_speaker TEXT NOT NULL,
 				last_asker TEXT NOT NULL,
 				runs INTEGER NOT NULL DEFAULT 0,
-				reflected_activity INTEGER NOT NULL DEFAULT 0
+				reflected_activity INTEGER NOT NULL DEFAULT 0,
+				run_ts TEXT
 			);
 			CREATE TABLE IF NOT EXISTS reflections (
 				day TEXT PRIMARY KEY,
@@ -81,6 +84,10 @@ export class Threads {
 
 	spoke(key: string, speaker: string, now = Date.now()): void {
 		this.#db.prepare("UPDATE threads SET last_speaker = ?, last_activity = ? WHERE key = ?").run(speaker, now, key);
+	}
+
+	runMessage(key: string, ts: string | undefined): void {
+		this.#db.prepare("UPDATE threads SET run_ts = ? WHERE key = ?").run(ts ?? null, key);
 	}
 
 	asked(key: string, user: string): void {
@@ -142,5 +149,6 @@ function toThread(row: Record<string, unknown>): ThreadRow {
 		lastAsker: String(row.last_asker),
 		runs: Number(row.runs),
 		reflectedActivity: Number(row.reflected_activity),
+		...(typeof row.run_ts === "string" ? { runTs: row.run_ts } : {}),
 	};
 }

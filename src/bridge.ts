@@ -255,6 +255,8 @@ export class Bridge {
 			surface,
 			channel: thread.channel,
 			threadTs: thread.threadTs,
+			...(thread.runTs === undefined ? {} : { resumeTs: thread.runTs }),
+			onRunMessage: (ts) => threads.runMessage(thread.key, ts),
 			onRunEnd: (answer) => {
 				threads.spoke(thread.key, "scout");
 				threads.ranOnce(thread.conversationId);

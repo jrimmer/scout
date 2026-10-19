@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { delivery } from "../src/etiquette.ts";
 import { frontmatter } from "../src/profile.ts";
-import { describeStep, finalMessage, progressMessage } from "../src/render.ts";
+import { type ChatMessage, describeStep, finalMessage, progressMessage, ThreadView } from "../src/render.ts";
 import { slackChannelName } from "../src/slack.ts";
 
 describe("render", () => {
@@ -54,5 +54,29 @@ describe("helpers", () => {
 	it("makes valid channel names", () => {
 		assert.equal(slackChannelName("Jason Rimmer_scout"), "jason-rimmer_scout");
 		assert.equal(slackChannelName("Zoë_scout"), "zoe_scout");
+	});
+});
+
+describe("thread view", () => {
+	it("keeps editing a run's message after a restart instead of posting another", async () => {
+		const calls: string[] = [];
+		const surface = {
+			post: async (_c: string, _t: string | undefined, _m: ChatMessage) => {
+				calls.push("post");
+				return "new";
+			},
+			update: async (_c: string, ts: string, _m: ChatMessage) => {
+				calls.push(`update ${ts}`);
+			},
+		};
+		const remembered: (string | undefined)[] = [];
+		const view = new ThreadView({ surface, channel: "C", threadTs: "1", resumeTs: "old", onRunMessage: (ts) => remembered.push(ts) });
+		view.handle([{ type: "snapshot", run: {} } as never]);
+		view.handle([{ type: "run_end", inputs: [] }]);
+		await view.settled();
+		view.handle([{ type: "run_start", inputs: [] }]);
+		await view.settled();
+		assert.deepEqual(calls, ["update old", "update old", "post"]);
+		assert.deepEqual(remembered, [undefined, "new"]);
 	});
 });
