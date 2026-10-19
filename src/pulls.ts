@@ -179,6 +179,57 @@ function toReview(row: Record<string, unknown>): ReviewRow {
 	};
 }
 
+const FEEDBACK_LIMIT = 3_000;
+
+type Comment = { body?: string | null; user?: { login?: string } | null; path?: string; state?: string };
+
+/**
+ * What people said on a pull request: review summaries, line comments, and the discussion, without Scout's own. This
+ * is the most specific feedback Scout gets, so the nightly reflection reads it.
+ */
+export async function feedbackOn(
+	host: CodeHost,
+	pull: Pick<PullRow, "slug" | "number">,
+	self: string | undefined,
+	doFetch: typeof fetch = fetch,
+): Promise<string[]> {
+	const get = async (path: string): Promise<Comment[]> => {
+		const response = await doFetch(`${host.apiUrl}/repos/${pull.slug}${path}`, { headers: headersFor(host) });
+		return response.ok ? ((await response.json()) as Comment[]) : [];
+	};
+	const [reviews, lineComments, discussion] = await Promise.all([
+		get(`/pulls/${pull.number}/reviews`),
+		get(`/pulls/${pull.number}/comments`),
+		get(`/issues/${pull.number}/comments`),
+	]);
+	const lines: string[] = [];
+	const add = (comment: Comment, where: string) => {
+		const body = comment.body?.trim() ?? "";
+		const who = comment.user?.login ?? "someone";
+		if (body === "" || (self !== undefined && who === self) || body.startsWith("**Scout's review**")) return;
+		lines.push(`${who}${where}: ${body.replace(/\s+/g, " ")}`);
+	};
+	for (const review of reviews) add(review, review.state ? ` (${review.state.toLowerCase().replace(/_/g, " ")})` : "");
+	for (const comment of lineComments) add(comment, comment.path ? ` on ${comment.path}` : "");
+	for (const comment of discussion) add(comment, "");
+	let used = 0;
+	return lines.filter((line) => (used += line.length) <= FEEDBACK_LIMIT);
+}
+
+/** The code host account a token belongs to: Scout's own, if it has one. */
+export async function whoAmI(host: CodeHost, doFetch: typeof fetch = fetch): Promise<string | undefined> {
+	const response = await doFetch(`${host.apiUrl}/user`, { headers: headersFor(host) }).catch(() => undefined);
+	if (response === undefined || !response.ok) return undefined;
+	return ((await response.json()) as { login?: string }).login;
+}
+
+function headersFor(host: CodeHost): Record<string, string> {
+	return {
+		accept: host.kind === "github" ? "application/vnd.github+json" : "application/json",
+		authorization: host.kind === "github" ? `Bearer ${host.token}` : `token ${host.token}`,
+	};
+}
+
 function report(pulls: Pulls, now: number): string {
 	const week = pulls.rate(now - 7 * DAY, now);
 	const before = pulls.rate(now - 14 * DAY, now - 7 * DAY);
@@ -214,12 +265,7 @@ function compare(now: number, before: number): string {
 }
 
 async function fetchState(host: CodeHost, pull: PullRow, doFetch: typeof fetch): Promise<PullState> {
-	const response = await doFetch(`${host.apiUrl}/repos/${pull.slug}/pulls/${pull.number}`, {
-		headers: {
-			accept: host.kind === "github" ? "application/vnd.github+json" : "application/json",
-			authorization: host.kind === "github" ? `Bearer ${host.token}` : `token ${host.token}`,
-		},
-	});
+	const response = await doFetch(`${host.apiUrl}/repos/${pull.slug}/pulls/${pull.number}`, { headers: headersFor(host) });
 	if (!response.ok) throw new Error(`code host answered ${response.status}`);
 	const body = (await response.json()) as { state: string; merged?: boolean };
 	if (body.merged === true) return "merged";

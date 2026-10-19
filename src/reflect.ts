@@ -14,7 +14,8 @@ import { createEditTool, createReadTool, createWriteTool } from "@earendil-works
 import type { PullTarget } from "./codehost.ts";
 import { ReflectionDoc, ThreadDoc } from "./docs.ts";
 import { describeNotes, type Memory } from "./memory.ts";
-import type { Pulls } from "./pulls.ts";
+import type { CodeHost } from "./codehost.ts";
+import { feedbackOn, type PullRow, type Pulls, whoAmI } from "./pulls.ts";
 import { ConfinedEnv, Mirror } from "./sandbox.ts";
 import type { ThreadRow, Threads } from "./threads.ts";
 
@@ -40,6 +41,9 @@ export type ReflectorOptions = {
 	pulls: Pulls;
 	/** Notes kept during threads, for the reflection to fold into the profile. */
 	memory?: Memory;
+	/** Where to read what people said on Scout's pull requests. */
+	codeHost?: CodeHost;
+	fetch?: typeof fetch;
 	context: Context;
 	dataDir: string;
 	profileRepo: { gitUrl: string; base: string; slug: string };
@@ -119,8 +123,21 @@ export class Reflector {
 		};
 	}
 
+	/** What people said on these pull requests, as indented lines under each. */
+	async #withFeedback(pulls: readonly PullRow[], self: string | undefined): Promise<string> {
+		const { codeHost, fetch: doFetch } = this.#options;
+		const parts: string[] = [];
+		for (const pull of pulls) {
+			const said =
+				codeHost === undefined ? [] : await feedbackOn(codeHost, pull, self, doFetch).catch((): string[] => []);
+			parts.push(`- ${pull.title}: ${pull.state} (${pull.url})${said.map((line) => `\n  - ${line}`).join("")}`);
+		}
+		return parts.join("\n");
+	}
+
 	async digest(pending: readonly ThreadRow[]): Promise<string> {
 		const { harness, context } = this.#options;
+		const self = this.#options.codeHost === undefined ? undefined : await whoAmI(this.#options.codeHost, this.#options.fetch);
 		const parts: string[] = [];
 		let used = 0;
 		let omitted = 0;
@@ -141,7 +158,7 @@ export class Reflector {
 			const header = [
 				`## #${channel}${link === undefined ? "" : ` (${link})`}`,
 				`${thread.runs} run${thread.runs === 1 ? "" : "s"}; ` +
-					(pulls.length === 0 ? "no pull request" : `pull requests: ${pulls.map((p) => `${p.url} (${p.state})`).join(", ")}`),
+					(pulls.length === 0 ? "no pull request" : `pull requests, and what reviewers said:\n${await this.#withFeedback(pulls, self)}`),
 			].join("\n");
 			const part = `${header}\n\n${clipMiddle(renderTranscript(entries), THREAD_BUDGET)}`;
 			if (used + part.length > DIGEST_BUDGET) {
@@ -155,12 +172,7 @@ export class Reflector {
 		const outcomes =
 			proposals.length === 0
 				? ""
-				: [
-						"Your recent proposals to this profile, and what people did with them:",
-						...proposals.map((p) => `- ${p.title}: ${p.state} (${p.url})`),
-						"",
-						"",
-					].join("\n");
+				: `Your recent proposals to this profile, what people did with them, and what they said:\n${await this.#withFeedback(proposals, self)}\n\n`;
 		const notes = describeNotes(this.#options.memory?.active() ?? []);
 		const intro =
 			`${outcomes}${notes === "" ? "" : `${notes}\n\n`}` +

@@ -102,6 +102,22 @@ describe("nightly reflection", () => {
 			threads,
 			pulls,
 			memory,
+			codeHost: { kind: "github", apiUrl: "https://api.example", token: "t" },
+			fetch: async (url) => {
+				const path = new URL(String(url)).pathname;
+				const replies: Record<string, unknown> = {
+					"/user": { login: "scout-bot" },
+					"/repos/team/app/pulls/3/reviews": [{ user: { login: "bob" }, state: "CHANGES_REQUESTED", body: "Use ./bin/deploy" }],
+					"/repos/team/app/pulls/3/comments": [{ user: { login: "bob" }, path: "deploy.sh", body: "not\n  make deploy" }],
+					"/repos/team/app/issues/3/comments": [
+						{ user: { login: "scout-bot" }, body: "Fixed." },
+						{ user: { login: "ann" }, body: "thanks!" },
+					],
+					"/repos/team/scout-profile/pulls/1/reviews": [{ user: { login: "cat" }, state: "COMMENTED", body: "Too vague; name the command." }],
+				};
+				const reply = replies[path];
+				return new Response(JSON.stringify(reply ?? []), { status: reply === undefined && path === "/user" ? 404 : 200 });
+			},
 			context,
 			dataDir: join(root, "data"),
 			profileRepo: { gitUrl: remote, base: "main", slug: "team/scout-profile" },
@@ -133,6 +149,8 @@ describe("nightly reflection", () => {
 			)
 		).wait(context);
 		threads.spoke(threadKey("C1", "1.0"), "scout", Date.now() + 1);
+		pulls.opened({ url: "https://example/team/app/pulls/3", number: 3, slug: "team/app", kind: "work", conversationId: thread.id, title: "Deploy fix" });
+		pulls.opened({ url: "https://example/pull/1", number: 1, slug: "team/scout-profile", kind: "profile", conversationId: 99, title: "Earlier lesson" }, 1);
 		const note = memory.remember("deploys", "Deploys go through ./bin/deploy.");
 
 		let digest = "";
@@ -161,6 +179,12 @@ describe("nightly reflection", () => {
 		assert.match(digest, /#deploys \(https:\/\/slack\/archives\/C1\/p1\)/);
 		assert.match(digest, /ann: deploy please/);
 		assert.match(digest, /→ bash make deploy/);
+		assert.match(digest, /- Deploy fix: open \(https:\/\/example\/team\/app\/pulls\/3\)/);
+		assert.match(digest, /- bob \(changes requested\): Use \.\/bin\/deploy/);
+		assert.match(digest, /- bob on deploy\.sh: not make deploy/);
+		assert.match(digest, /- ann: thanks!/);
+		assert.doesNotMatch(digest, /Fixed\./, "Scout's own comments are left out");
+		assert.match(digest, /- Earlier lesson: open \(https:\/\/example\/pull\/1\)\\n  - cat \(commented\): Too vague; name the command\./);
 		assert.match(digest, /✗ bash:/, "the failed step is in the digest");
 		assert.match(digest, /Scout: I couldn't run the deploy\./);
 		assert.match(digest, /Learn from the threads\./);

@@ -185,6 +185,7 @@ export async function openScout(options: ScoutOptions) {
 			threads,
 			pulls,
 			memory,
+			codeHost: config.codeHost,
 			context,
 			dataDir,
 			profileRepo: config.profileRepo,
