@@ -155,15 +155,13 @@ The first Scout (`scout-legacy`, archived) had about 82k lines of Go for roughly
 - **Two open profile proposals can conflict.** The reflection sees which earlier proposals merged or closed, but
   not their review comments.
 
-## Next
+## Now, next, later
 
-- **Run it for real.** Nothing here has met a live Slack workspace, a real model, or Docker on this machine. The
-  first week will say more than more features would.
-- **Watch for Earendil's Pi Slack bot.** If it lands, adopt what fits for the Slack plumbing, and keep the profile,
-  sandbox, review and learning loop.
-- **Learn from review comments**, not just merged or closed: the most specific feedback Scout gets is on its pull
-  requests.
-- **Run the file tools in the container** to close the symlink race.
+The plan lives in the repository's issues, labelled `now`, `next` and `later`. The `enterprise` label marks what a
+larger organization would need: Aquifer's scale-out (sandbox plane, gateway, telemetry, session cells, profile
+bundles), plus permissions, egress, secrets, audit, budgets, SSO and availability. Each `later` issue says what the
+middle ground is short of Shopify scale. Several lean on spoond, which already provides most of a sandbox plane and an
+LLM gateway.
 
 ## Maybe later
 
