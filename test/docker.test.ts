@@ -87,12 +87,16 @@ describe("docker sandbox", { skip: !enabled && "set SCOUT_DOCKER_TESTS=1" }, () 
 
 		const requests: { url: string; body: unknown }[] = [];
 		const extension = createCodeHostExtension({
-			dataDir,
-			repo: { gitUrl: remote, base: "main", slug: "o/r" },
+			name: "codehost",
 			codeHost: { kind: "forgejo", apiUrl: "http://forge/api/v1", token: "t" },
-			paths: (id) => workspaces.paths(id),
-			branch: (id) => workspaces.branch(id),
-			threadLink: async () => "https://slack/thread",
+			target: async (id) => ({
+				dir: workspaces.paths(id).repo,
+				branch: workspaces.branch(id),
+				base: "main",
+				slug: "o/r",
+				mirror: workspaces.mirror,
+				link: "https://slack/thread",
+			}),
 			fetch: async (url, init) => {
 				requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
 				return new Response(JSON.stringify({ html_url: "http://forge/o/r/pulls/1" }), { status: 201 });

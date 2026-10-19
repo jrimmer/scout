@@ -16,6 +16,13 @@ export type Config = {
 		slug: string;
 	};
 	codeHost: { kind: CodeHostKind; apiUrl: string; token: string };
+	/**
+	 * The repository `profileDir` is a clone of. With it, Scout keeps its profile pulled and proposes changes to it
+	 * every night from what happened in its threads. Without it, the profile is just a local directory.
+	 */
+	profileRepo?: { gitUrl: string; base: string; slug: string };
+	/** Local hour (0-23) for the nightly reflection, and a public channel to announce its proposals in. */
+	reflect: { hour: number; channel?: string };
 	sandbox: { image: string; network: string; memory: string };
 	git: { name: string; email: string };
 };
@@ -48,6 +55,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			kind,
 			apiUrl: (env.SCOUT_CODEHOST_API ?? (kind === "github" ? "https://api.github.com" : "")).replace(/\/$/, ""),
 			token: required(env, "SCOUT_CODEHOST_TOKEN"),
+		},
+		...(env.SCOUT_PROFILE_REPO_URL
+			? {
+					profileRepo: {
+						gitUrl: env.SCOUT_PROFILE_REPO_URL,
+						base: env.SCOUT_PROFILE_REPO_BASE ?? "main",
+						slug: required(env, "SCOUT_PROFILE_REPO_SLUG"),
+					},
+				}
+			: {}),
+		reflect: {
+			hour: Number(env.SCOUT_REFLECT_HOUR ?? 3),
+			...(env.SCOUT_REFLECT_CHANNEL ? { channel: env.SCOUT_REFLECT_CHANNEL } : {}),
 		},
 		sandbox: {
 			image: env.SCOUT_SANDBOX_IMAGE ?? "scout-sandbox:latest",

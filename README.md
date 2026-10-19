@@ -8,6 +8,8 @@ from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
   restarts, and anyone in the thread can redirect the work.
 - Each thread gets its own clone and Docker container. Credentials never enter it.
 - What Scout knows lives in `profile/` as files: a system prompt, skills, and per-channel instructions.
+- Every night Scout reads its threads and opens a pull request against its profile with what it learned. Merge it,
+  and every thread gets it (set `SCOUT_PROFILE_REPO_URL`; see `.env.example`).
 
 ## Run it
 

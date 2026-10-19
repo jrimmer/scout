@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord";
 import {
-	type ExecutionError,
+	ExecutionError,
 	FileError,
 	type Result,
 	type ShellExecOptions,
@@ -45,6 +45,42 @@ function containerFor(instance: string, conversationId: number): string {
 }
 
 /**
+ * A host-owned bare mirror of a remote. Clones made from it are cheap, and pushes go out through it, so the host
+ * never runs git inside a clone an agent has written to.
+ */
+export class Mirror {
+	readonly path: string;
+	readonly gitUrl: string;
+	#queue: Promise<void> = Promise.resolve();
+
+	constructor(path: string, gitUrl: string) {
+		this.path = path;
+		this.gitUrl = gitUrl;
+	}
+
+	/** Fetch from the remote, or create the mirror. Serialized: one fetch at a time. */
+	refresh(): Promise<void> {
+		const next = this.#queue.then(async () => {
+			if (await exists(this.path)) await git(["-C", this.path, "fetch", "--quiet", "--prune", "origin"]);
+			else await git(["clone", "--mirror", "--quiet", this.gitUrl, this.path]);
+		});
+		this.#queue = next.catch(() => {});
+		return next;
+	}
+
+	/** A fresh clone on a new branch from `base`, unless `dir` already holds one. */
+	async clone(dir: string, branch: string, base: string, identity: { name: string; email: string }): Promise<void> {
+		if (await exists(join(dir, ".git"))) return;
+		await this.refresh();
+		await git(["clone", "--no-hardlinks", "--quiet", this.path, dir]);
+		await git(["-C", dir, "remote", "set-url", "origin", this.gitUrl]);
+		await git(["-C", dir, "checkout", "--quiet", "-b", branch, `origin/${base}`]);
+		await git(["-C", dir, "config", "user.name", identity.name]);
+		await git(["-C", dir, "config", "user.email", identity.email]);
+	}
+}
+
+/**
  * One workspace per Slack thread: a clone of the repo on its own branch, and a container that runs commands in it.
  *
  * The harness, credentials, and Slack stay on the host. The container gets the thread's directory and nothing else:
@@ -55,12 +91,13 @@ export class Workspaces {
 	readonly #config: SandboxConfig;
 	readonly #dataDir: string;
 	readonly #prepared = new Map<number, Promise<ThreadPaths>>();
-	#mirror: Promise<void> = Promise.resolve();
+	readonly mirror: Mirror;
 
 	constructor(config: SandboxConfig) {
 		this.#config = config;
 		mkdirSync(config.dataDir, { recursive: true });
 		this.#dataDir = realpathSync(config.dataDir);
+		this.mirror = new Mirror(join(this.#dataDir, "mirror.git"), config.repo.gitUrl);
 	}
 
 	paths(conversationId: number): ThreadPaths {
@@ -93,28 +130,8 @@ export class Workspaces {
 		const paths = this.paths(conversationId);
 		await mkdir(paths.home, { recursive: true });
 		await mkdir(paths.tmp, { recursive: true });
-		if (await exists(join(paths.repo, ".git"))) return paths;
-
-		await this.#refreshMirror();
-		const mirror = join(this.#dataDir, "mirror.git");
-		const { gitUrl, base } = this.#config.repo;
-		await git(["clone", "--no-hardlinks", "--quiet", mirror, paths.repo]);
-		await git(["-C", paths.repo, "remote", "set-url", "origin", gitUrl]);
-		await git(["-C", paths.repo, "checkout", "--quiet", "-b", this.branch(conversationId), `origin/${base}`]);
-		await git(["-C", paths.repo, "config", "user.name", this.#config.git.name]);
-		await git(["-C", paths.repo, "config", "user.email", this.#config.git.email]);
+		await this.mirror.clone(paths.repo, this.branch(conversationId), this.#config.repo.base, this.#config.git);
 		return paths;
-	}
-
-	/** A local mirror makes each thread's clone cheap. Serialized: one fetch at a time. */
-	#refreshMirror(): Promise<void> {
-		const mirror = join(this.#dataDir, "mirror.git");
-		const next = this.#mirror.then(async () => {
-			if (await exists(mirror)) await git(["-C", mirror, "fetch", "--quiet", "--prune", "origin"]);
-			else await git(["clone", "--mirror", "--quiet", this.#config.repo.gitUrl, mirror]);
-		});
-		this.#mirror = next.catch(() => {});
-		return next;
 	}
 
 	async #ensureContainer(conversationId: number, name: string, paths: ThreadPaths): Promise<void> {
@@ -153,37 +170,30 @@ export class Workspaces {
 }
 
 /**
- * Runs every command in the thread's container and confines file tools to the thread's directory.
- *
- * File reads and writes happen on the host against the bind-mounted directory (same path inside and out), so they
- * must not reach anything else on the host: every path is resolved, symlinks included, and checked against `root`.
+ * File tools on the host, confined to one directory: every path is resolved, symlinks included, and checked against
+ * `root`. With `protectGit`, nothing under a `.git` directory can be touched either, so a host that later runs git
+ * in this directory runs none of the agent's hooks or config. It runs no commands; see `SandboxEnv` for that.
  */
-export class SandboxEnv extends NodeExecutionEnv {
+export class ConfinedEnv extends NodeExecutionEnv {
 	override readonly id: string;
-	readonly container: string;
-	readonly paths: ThreadPaths;
+	readonly root: string;
+	readonly tmp: string;
+	readonly #protectGit: boolean;
 
-	constructor(container: string, paths: ThreadPaths) {
-		super({ cwd: paths.repo });
-		this.id = `docker:${container}`;
-		this.container = container;
-		this.paths = paths;
+	constructor(options: { id: string; cwd: string; root: string; tmp: string; protectGit?: boolean }) {
+		super({ cwd: options.cwd });
+		this.id = options.id;
+		this.root = options.root;
+		this.tmp = options.tmp;
+		this.#protectGit = options.protectGit ?? false;
 	}
 
 	override async exec(
-		command: string | readonly string[],
-		options: ShellExecOptions | undefined,
-		context: Context,
+		_command: string | readonly string[],
+		_options: ShellExecOptions | undefined,
+		_context: Context,
 	): Promise<Result<ShellExecResult, ExecutionError>> {
-		const cwd = resolve(this.cwd, options?.cwd ?? ".");
-		const inner = typeof command === "string" ? ["bash", "-lc", command] : [...command];
-		// Killing the local `docker exec` does not stop the process in the container; a timeout inside it does.
-		const timed = options?.timeout === undefined ? inner : ["timeout", "-k", "5", `${options.timeout}s`, ...inner];
-		const envFlags = Object.entries(options?.env ?? {}).flatMap(([key, value]) => ["--env", `${key}=${value}`]);
-		const argv = ["docker", "exec", "--workdir", cwd, ...envFlags, this.container, ...timed];
-		// The docker CLI itself runs on the host; it gets the host environment, the container does not.
-		const { env: _env, cwd: _cwd, inheritEnv: _inherit, ...rest } = options ?? {};
-		return super.exec(argv, { ...rest, cwd: this.paths.root, inheritEnv: true }, context);
+		return err(new ExecutionError("shell_unavailable", "There is no shell here; use the file tools."));
 	}
 
 	async #confine(path: string): Promise<Result<string, FileError>> {
@@ -194,9 +204,13 @@ export class SandboxEnv extends NodeExecutionEnv {
 			try {
 				const real = await realpath(existing);
 				const full = suffix === "" ? real : join(real, suffix);
-				const rel = relative(this.paths.root, full);
-				if (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) return ok(full);
-				return err(new FileError("permission_denied", `Outside this thread's workspace: ${path}`, path));
+				const rel = relative(this.root, full);
+				const inside = rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+				if (!inside) return err(new FileError("permission_denied", `Outside this workspace: ${path}`, path));
+				if (this.#protectGit && rel.split(sep).includes(".git")) {
+					return err(new FileError("permission_denied", `Git's own files are off limits: ${path}`, path));
+				}
+				return ok(full);
 			} catch {
 				const parent = dirname(existing);
 				if (parent === existing) return err(new FileError("not_found", `No such path: ${path}`, path));
@@ -286,13 +300,45 @@ export class SandboxEnv extends NodeExecutionEnv {
 		}
 		return super.watch(confined, onChange, context);
 	}
-	/** Temp files (spilled command output too) go in the thread's directory, where the file tools can read them. */
+	/** Temp files (spilled command output too) go inside the workspace, where the file tools can read them. */
 	override async createTempDir(prefix: string | undefined, _context: Context) {
 		try {
-			return ok<string, FileError>(await mkdtemp(join(this.paths.tmp, prefix ?? "tmp-")));
+			return ok<string, FileError>(await mkdtemp(join(this.tmp, prefix ?? "tmp-")));
 		} catch (error) {
 			return err<string, FileError>(new FileError("unknown", String(error)));
 		}
+	}
+}
+
+/**
+ * A thread's workspace: file tools confined to its directory (see `ConfinedEnv`), and every command run in its
+ * container. The directory is bind-mounted at the same path, so both sides see the same files at the same paths.
+ */
+export class SandboxEnv extends ConfinedEnv {
+	readonly container: string;
+	readonly paths: ThreadPaths;
+
+	constructor(container: string, paths: ThreadPaths) {
+		super({ id: `docker:${container}`, cwd: paths.repo, root: paths.root, tmp: paths.tmp });
+		this.container = container;
+		this.paths = paths;
+	}
+
+	override async exec(
+		command: string | readonly string[],
+		options: ShellExecOptions | undefined,
+		context: Context,
+	): Promise<Result<ShellExecResult, ExecutionError>> {
+		const cwd = resolve(this.cwd, options?.cwd ?? ".");
+		const inner = typeof command === "string" ? ["bash", "-lc", command] : [...command];
+		// Killing the local `docker exec` does not stop the process in the container; a timeout inside it does.
+		const timed = options?.timeout === undefined ? inner : ["timeout", "-k", "5", `${options.timeout}s`, ...inner];
+		const envFlags = Object.entries(options?.env ?? {}).flatMap(([key, value]) => ["--env", `${key}=${value}`]);
+		const argv = ["docker", "exec", "--workdir", cwd, ...envFlags, this.container, ...timed];
+		// The docker CLI itself runs on the host; it gets the host environment, the container does not. Node's own exec
+		// (not ConfinedEnv's refusal) runs it, and spills long output into this workspace's tmp via createTempDir.
+		const { env: _env, cwd: _cwd, inheritEnv: _inherit, ...rest } = options ?? {};
+		return NodeExecutionEnv.prototype.exec.call(this, argv, { ...rest, cwd: this.root, inheritEnv: true }, context);
 	}
 }
 

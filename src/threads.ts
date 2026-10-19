@@ -20,6 +20,8 @@ export type ThreadRow = {
 	lastAsker: string;
 	runs: number;
 	pullRequests: string[];
+	/** `lastActivity` as of the last nightly reflection that read this thread. */
+	reflectedActivity: number;
 };
 
 export function threadKey(channel: string, threadTs: string): string {
@@ -45,7 +47,13 @@ export class Threads {
 				last_speaker TEXT NOT NULL,
 				last_asker TEXT NOT NULL,
 				runs INTEGER NOT NULL DEFAULT 0,
-				pull_requests TEXT NOT NULL DEFAULT '[]'
+				pull_requests TEXT NOT NULL DEFAULT '[]',
+				reflected_activity INTEGER NOT NULL DEFAULT 0
+			);
+			CREATE TABLE IF NOT EXISTS reflections (
+				day TEXT PRIMARY KEY,
+				conversation_id INTEGER NOT NULL,
+				threads TEXT NOT NULL
 			);
 		`);
 	}
@@ -93,6 +101,33 @@ export class Threads {
 			.run(JSON.stringify([...thread.pullRequests, url]), conversationId);
 	}
 
+	/** Threads with activity no reflection has read yet. */
+	unreflected(): ThreadRow[] {
+		return this.#db.prepare("SELECT * FROM threads WHERE last_activity > reflected_activity").all().map(toThread);
+	}
+
+	reflection(day: string): { conversationId: number; threads: string[] } | undefined {
+		const row = this.#db.prepare("SELECT * FROM reflections WHERE day = ?").get(day);
+		if (row === undefined) return undefined;
+		return { conversationId: Number(row.conversation_id), threads: JSON.parse(String(row.threads)) as string[] };
+	}
+
+	/** Record a day's reflection and mark what it read, in one transaction. */
+	reflected(day: string, conversationId: number, read: readonly ThreadRow[]): void {
+		this.#db.exec("BEGIN");
+		try {
+			this.#db
+				.prepare("INSERT INTO reflections (day, conversation_id, threads) VALUES (?, ?, ?)")
+				.run(day, conversationId, JSON.stringify(read.map((t) => t.key)));
+			const mark = this.#db.prepare("UPDATE threads SET reflected_activity = ? WHERE key = ?");
+			for (const thread of read) mark.run(thread.lastActivity, thread.key);
+			this.#db.exec("COMMIT");
+		} catch (error) {
+			this.#db.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
 	close(): void {
 		this.#db.close();
 	}
@@ -111,5 +146,6 @@ function toThread(row: Record<string, unknown>): ThreadRow {
 		lastAsker: String(row.last_asker),
 		runs: Number(row.runs),
 		pullRequests: JSON.parse(String(row.pull_requests)) as string[],
+		reflectedActivity: Number(row.reflected_activity),
 	};
 }

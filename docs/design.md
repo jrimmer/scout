@@ -32,6 +32,9 @@ Slack (Socket Mode) ─▶ slack.ts ─▶ bridge.ts ──submit──▶ Pi Du
         └────── render.ts ◀──events────┘                       ├─ profile.ts    system prompt, channel profile, skills
                                                                ├─ coding tools  read/write/edit/bash ─▶ sandbox.ts (Docker, per thread)
                                                                └─ codehost.ts   push + pull request, on the host
+
+nightly: reflect.ts ─▶ reflection conversation (profile files only) ─▶ pull request on the profile repo
+         people review and merge ─▶ Scout pulls its profile ─▶ every thread's next request
 ```
 
 | File | Role |
@@ -41,7 +44,8 @@ Slack (Socket Mode) ─▶ slack.ts ─▶ bridge.ts ──submit──▶ Pi Du
 | `src/render.ts` | One Slack message per run: posted at start, edited with progress, replaced by the answer. |
 | `src/sandbox.ts` | Per-thread clone and container. File tools confined to the thread's directory. |
 | `src/codehost.ts` | `open_pull_request`, run on the host with host credentials. |
-| `src/profile.ts` | `profile/` as an extension, reloaded on change. |
+| `src/profile.ts` | `profile/` as an extension, reloaded on change; kept pulled when it's a repository. |
+| `src/reflect.ts` | The nightly learning loop: digest the day's threads, propose profile changes. |
 | `src/threads.ts` | Thread ↔ conversation map, plus per-thread stats (River's `river_sessions`). |
 | `src/main.ts` | Wiring. The only place concrete things are put together. |
 
@@ -75,6 +79,20 @@ Slack (Socket Mode) ─▶ slack.ts ─▶ bridge.ts ──submit──▶ Pi Du
   - `profile/system.md`, `profile/skills/`, `profile/channels/<name>/`.
   - The repository's own AGENTS.md files still apply.
   - Edits reach every thread at its next request.
+- **Scout drafts its own lessons; people merge them.** This is the learning loop:
+  - Every night, a reflection conversation reads each thread with new activity: who asked what, what Scout did,
+    which steps failed, and how it ended.
+  - It edits a clone of the profile repository, then opens a pull request explaining each change with the thread
+    it came from.
+  - Scout keeps its live profile pulled, so a merged change reaches the next request in every thread.
+  - How it reflects is itself profile data (`reflect.md`), so the team can tune how Scout learns.
+
+  This copies how River's merge rate went from 36% to 77% without a model change: people noticed where it got
+  stuck and wrote down what it should have known. Scout drafts that writing, and people review it.
+
+  The reflection has file tools only, with no shell, and can't touch `.git`. The host commits on its behalf, with
+  hooks off. It runs as an ordinary Pi Durable conversation, so it is checkpointed like everything else and
+  exactly-once per day.
 - **One process, SQLite, Socket Mode.**
   - No tunnel, no Postgres, no job queue.
   - Pi Durable has one storage owner per process, which suits a team-sized deployment.
@@ -105,18 +123,33 @@ The first Scout (`scout-legacy`, archived) had about 82k lines of Go for roughly
   with the dependencies baked in.
 - **Progress after a restart.** A run that resumes after a restart posts a new progress message instead of editing
   the old one.
+- **The reflection only sees new threads.** It doesn't know which of its earlier proposals were merged or
+  rejected, and two open proposals can conflict. Telling it would make it learn from review too.
 
 ## Next
 
-1. **Learning loop.** A nightly job reads the day's threads and opens a pull request against the profile:
-   - new or better skills, and channel instructions;
-   - notes Scout left for "the next person".
+What the research describes that Scout doesn't do yet, roughly in order of value:
 
-   This is where River's merge-rate gains came from.
-2. **Memory**: things Scout should remember, and forget, across threads, also as reviewable files.
-3. **More tools** through MCP (Pi 1.0 supports it): the data warehouse, traces, CI status.
-4. **Stop control**, multiple repositories, and attachments.
-5. **Watch for Earendil's Pi Slack bot.** If it lands, adopt what fits for the Slack plumbing and keep the profile,
+1. **Measure the merge rate.** River's headline number is the share of its pull requests that merge (36% → 77%).
+   Scout records its pull request URLs per thread; poll their state and report the rate weekly. Without it, we
+   can't tell whether the learning loop works. Tell the reflection which of its own proposals merged, too.
+2. **Stop control.** A reaction or "@Scout stop" calls `conversation.abort()`. Small, and people expect it.
+3. **Search past threads.** "The next person who has the same question does not have to ask it." Give Scout a
+   tool over its own transcripts, so it can point at the thread where something was solved before.
+4. **Tools beyond code**, through MCP (Pi 1.0 supports it): the data warehouse, production traces, CI status.
+   Each runs on the host with its own credentials, like `open_pull_request` (Aquifer's credentials proxy), never in
+   the sandbox.
+5. **Memory between nightly reflections.** Tobi says River's memory is "constantly learning and un-learning". The
+   nightly loop covers the slow, reviewed part. A small per-channel memory Scout can update during a thread (and
+   that the reflection consolidates) would cover the fast part.
+6. **Self-review before a pull request.** Tobi's worry is "slop grenades": output sent for review that nobody
+   read closely. A reviewer pass in its own conversation (Pi Durable's `28-reviewer` example) before
+   `open_pull_request`, plus a size limit on what Scout will propose.
+7. **Other modes.** Aquifer runs the same session model as *automation*, such as a pull request review woken by a
+   webhook, and as *job*, for CI and batch work. Both are new profiles on the same machinery, not new platforms.
+8. **Multiple repositories and zones.** River knows which "zones" of the monorepo a channel's team owns. Map
+   channels to repositories, or monorepo paths, in the channel profile.
+9. **Watch for Earendil's Pi Slack bot.** If it lands, adopt what fits for the Slack plumbing and keep the profile,
    sandbox and learning loop.
 
 ## Maybe later

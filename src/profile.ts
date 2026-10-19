@@ -1,4 +1,6 @@
+import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, watch } from "node:fs";
+import { promisify } from "node:util";
 import { basename, join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/chord";
@@ -21,6 +23,7 @@ export type Skill = { name: string; description: string; body: string };
  *
  *     profile/
  *       system.md                       who Scout is and how it works with people
+ *       reflect.md                      how Scout reviews its own threads each night (see reflect.ts)
  *       skills/<name>.md                know-how, loaded on demand (frontmatter: description)
  *       channels/<channel-name>/
  *         instructions.md               what this channel's team wants Scout to know
@@ -30,6 +33,7 @@ export type Skill = { name: string; description: string; body: string };
  */
 export type Profile = {
 	system: string;
+	reflect?: string;
 	skills: Skill[];
 	channels: Map<string, { instructions?: string; skills: Skill[] }>;
 };
@@ -47,7 +51,13 @@ export function loadProfile(dir: string): Profile {
 			});
 		}
 	}
-	return { system: readOptional(join(dir, "system.md")) ?? "", skills: loadSkills(join(dir, "skills")), channels };
+	const reflect = readOptional(join(dir, "reflect.md"));
+	return {
+		system: readOptional(join(dir, "system.md")) ?? "",
+		...(reflect === undefined ? {} : { reflect }),
+		skills: loadSkills(join(dir, "skills")),
+		channels,
+	};
 }
 
 function loadSkills(dir: string): Skill[] {
@@ -77,7 +87,14 @@ function readOptional(path: string): string | undefined {
 }
 
 /** The profile as an extension. Reinstalling it under the same name swaps it in for every thread's next request. */
-export function profileExtension(profile: Profile, workspace: { base: string; branch: (id: number) => string }) {
+export type WorkspaceFacts = {
+	base: string;
+	branch: (id: number) => string;
+	/** The sandbox has no network, so downloads fail. */
+	offline?: boolean;
+};
+
+export function profileExtension(profile: Profile, workspace: WorkspaceFacts) {
 	const channelOf = async (read: DocumentReader, conversationId: ConversationId, context: Context) =>
 		(await read.snapshot(ThreadDoc, conversationId, context))?.channelName ?? "";
 	const skillsFor = (channelName: string) => [...(profile.channels.get(channelName)?.skills ?? []), ...profile.skills];
@@ -119,10 +136,35 @@ export function profileExtension(profile: Profile, workspace: { base: string; br
 							`Repository: ${input.env.cwd} (your own clone, on branch ${workspace.branch(input.conversationId)}, from ${workspace.base}).`,
 							"Read AGENTS.md files in the repository before changing code near them.",
 							"Commit with git, then call open_pull_request. Nobody else can see your changes until you do.",
+							...(workspace.offline
+								? [
+										"The sandbox has no network: installing packages and anything else that downloads will fail. " +
+											"Work with what is installed. If that blocks you, say so plainly in the thread; whoever runs " +
+											"Scout can turn the network on or add the dependencies to the sandbox image.",
+									]
+								: []),
 						].join("\n"),
 			),
 		],
 	});
+}
+
+const run = promisify(execFile);
+
+/**
+ * When the profile is a repository, `dir` is a clone the host keeps up to date: merged changes, including the ones
+ * the nightly reflection proposed, reach Scout without a deploy. Only the host writes here.
+ */
+export async function cloneProfile(dir: string, repo: { gitUrl: string; base: string }): Promise<void> {
+	if (existsSync(join(dir, ".git"))) return;
+	if (existsSync(dir) && readdirSync(dir).length > 0) {
+		throw new Error(`${dir} exists but is not a clone of ${repo.gitUrl}; move it or point SCOUT_PROFILE_DIR elsewhere`);
+	}
+	await run("git", ["clone", "--quiet", "--branch", repo.base, repo.gitUrl, dir]);
+}
+
+export async function pullProfile(dir: string): Promise<void> {
+	await run("git", ["-C", dir, "pull", "--quiet", "--ff-only"], { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
 }
 
 /** Watch the profile directory and call `onChange` with a fresh profile after edits settle. */
