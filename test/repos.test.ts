@@ -47,6 +47,19 @@ describe("repositories and zones", () => {
 		assert.deepEqual(channel, { instructions: "We ship on Tuesdays.", repo: "web", zones: ["apps/storefront", "libs/ui"], skills: [] });
 	});
 
+	it("takes the default repository's snapshot from SCOUT_REPO_SNAPSHOT", () => {
+		const env = {
+			SCOUT_REPO_URL: api,
+			SCOUT_REPO_SLUG: "team/api",
+			SCOUT_CODEHOST_TOKEN: "t",
+			SCOUT_CODEHOST_API: "http://forge/api/v1",
+		};
+		const config = loadConfig({ ...env, SCOUT_REPO_SNAPSHOT: "scout/node24" });
+		assert.equal(config.repo.snapshot, "scout/node24");
+		assert.equal(config.repos[0]?.snapshot, "scout/node24", "the default repository is first in repos");
+		assert.equal(loadConfig(env).repo.snapshot, undefined, "no snapshot unless it is named");
+	});
+
 	it("starts each channel's threads in its repository", async () => {
 		const config = loadConfig({
 			SCOUT_REPO_URL: api,
