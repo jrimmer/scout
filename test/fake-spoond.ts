@@ -11,7 +11,7 @@ import type { Duplex } from "node:stream";
  * `ranges: false`, like spoond before 3.11), and the stream WebSocket in binary mode, which runs the uploaded pi-env
  * daemon. Guest paths are host paths (the driver's `home` points into a temporary directory).
  */
-export type FakeLease = { id: string; holder: string; state: string; body: Record<string, unknown> };
+export type FakeLease = { id: string; holder: string; holder_url?: string; state: string; body: Record<string, unknown> };
 
 type Stream = { kept: Buffer; base: number; dropped: { bytes: number; newlines: number; ends_with_newline: boolean } };
 type FakeJob = { child: ChildProcess; state: "running" | "exited"; exit: number | null; out: Stream; err: Stream; cap: number; exited: Promise<void> };
@@ -44,7 +44,8 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 		if (id === undefined && req.method === "GET") return json(200, { sandboxes: leases.size === 0 ? null : [...leases.values()].map(({ body: _, ...l }) => l) });
 		if (id === undefined && req.method === "POST") {
 			const created = JSON.parse(body.toString()) as Record<string, unknown>;
-			const lease = { id: `lease${next++}`, holder: String(created.holder), state: "running", body: created };
+			const lease: FakeLease = { id: `lease${next++}`, holder: String(created.holder), state: "running", body: created };
+			if (typeof created.holder_url === "string") lease.holder_url = created.holder_url;
 			leases.set(lease.id, lease);
 			return json(201, { id: lease.id, holder: lease.holder });
 		}
@@ -56,6 +57,12 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 			return;
 		}
 		if (rest === "keepalive") return json(200, { id: lease.id });
+		if (rest === "holder" && req.method === "PUT") {
+			const label = JSON.parse(body.toString()) as { holder: string; holder_url: string };
+			lease.holder = label.holder;
+			lease.holder_url = label.holder_url;
+			return json(200, { id: lease.id, ...label, ok: true });
+		}
 		if (rest === "suspend") {
 			lease.state = "suspended";
 			return json(200, { id: lease.id, status: "suspended" });

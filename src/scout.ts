@@ -294,6 +294,15 @@ export async function openScout(options: ScoutOptions) {
 	const opened = harness;
 	workspaces.repoOf = async (id) => (await opened.snapshot(ThreadDoc, id as ConversationId, context))?.repo;
 	workspaces.baseOf = async (id) => (await opened.snapshot(ThreadDoc, id as ConversationId, context))?.base;
+	workspaces.describe = async (id) => {
+		const first = search.first(id);
+		const thread = threads.byConversation(id);
+		const link = thread === undefined ? undefined : await options.threadLink?.(thread);
+		return {
+			...(first === undefined ? {} : { about: `#${first.channelName}: ${slackPlain(first.text)}` }),
+			...(link === undefined ? {} : { link }),
+		};
+	};
 
 	if (config.profileRepo !== undefined) {
 		reflector = new Reflector({
@@ -427,4 +436,16 @@ function sourceReader(source: string, codeHost: Config["codeHost"], doFetch: typ
 		if (!response.ok) throw new Error(`the directory at ${source} answered ${response.status}`);
 		return response.text();
 	};
+}
+
+/** Slack's markup as plain words: `<@U…>` mentions dropped, `<#C…|name>` as `#name`, links as their text. */
+function slackPlain(text: string): string {
+	return text
+		.replace(/^@Scout\b/, "")
+		.replace(/<@[^>]+>/g, "")
+		.replace(/<#[^|>]+\|([^>]+)>/g, "#$1")
+		.replace(/<[^|>]+\|([^>]+)>/g, "$1")
+		.replace(/<([^>]+)>/g, "$1")
+		.replace(/\s+/g, " ")
+		.trim();
 }

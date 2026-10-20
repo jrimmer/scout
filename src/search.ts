@@ -66,6 +66,14 @@ export class ThreadSearch {
 		return [];
 	}
 
+	/** The first thing said in a conversation's thread (what it was started with), and where. */
+	first(conversationId: number): { channelName: string; text: string } | undefined {
+		const row = this.#db
+			.prepare("SELECT channel_name, text FROM thread_text WHERE conversation_id = ? ORDER BY CAST(at AS INTEGER), rowid LIMIT 1")
+			.get(conversationId) as Record<string, unknown> | undefined;
+		return row === undefined ? undefined : { channelName: String(row.channel_name), text: String(row.text) };
+	}
+
 	/** Drop a thread from the index (retention). */
 	forget(key: string): void {
 		this.#db.prepare("DELETE FROM thread_text WHERE key = ?").run(key);

@@ -37,7 +37,7 @@ export type SpoondOptions = {
 export type SpoondRequest = (method: string, path: string, init?: RequestOptions) => Promise<Response>;
 type RequestOptions = { body?: string | Uint8Array<ArrayBuffer>; headers?: Record<string, string>; signal?: AbortSignal };
 
-type Lease = { id: string; holder?: string; state?: string };
+type Lease = { id: string; holder?: string; holder_url?: string; state?: string };
 
 const SIZES = new Set(["small", "medium", "large", "xlarge"]);
 const RELAY = fileURLToPath(new URL("./spoond-relay.ts", import.meta.url));
@@ -64,7 +64,10 @@ export class SpoondDriver implements SandboxDriver {
 			lease = undefined;
 		}
 		if (lease === undefined) lease = await this.#create(key, spec);
-		else await this.#api("POST", `/api/leases/${lease.id}/keepalive`, { ttl: 0 });
+		else {
+			await this.#api("POST", `/api/leases/${lease.id}/keepalive`, { ttl: 0 });
+			await this.#relabel(lease, key, spec);
+		}
 		const home = this.#options.home ?? "/root";
 		if (this.#options.transport === "rest") {
 			const leaseId = lease.id;
@@ -98,7 +101,17 @@ export class SpoondDriver implements SandboxDriver {
 	async #find(key: string): Promise<Lease | undefined> {
 		// An owner with no leases gets `"sandboxes": null`.
 		const { sandboxes } = (await this.#api("GET", "/api/leases")) as { sandboxes: Lease[] | null };
-		return sandboxes?.find((s) => s.holder === holder(key));
+		// `scout:<key>` alone, or followed by what the thread is about.
+		return sandboxes?.find((s) => s.holder === holder(key) || s.holder?.startsWith(`${holder(key)} `) === true);
+	}
+
+	/** A lease from before its thread could be described, or whose link changed: label it as a new one would be. */
+	async #relabel(lease: Lease, key: string, spec: SandboxSpec): Promise<void> {
+		if (spec.about === undefined) return;
+		const label = { holder: holder(key, spec.about), holder_url: holderUrl(spec.link) ?? "" };
+		if (lease.holder === label.holder && (lease.holder_url ?? "") === label.holder_url) return;
+		// Only a label: never worth failing the work over.
+		await this.#api("PUT", `/api/leases/${lease.id}/holder`, label).catch(() => {});
 	}
 
 	async #create(key: string, spec: SandboxSpec): Promise<Lease> {
@@ -110,7 +123,8 @@ export class SpoondDriver implements SandboxDriver {
 			...(spec.size !== undefined && SIZES.has(spec.size) ? { size: spec.size } : {}),
 			network_policy: spec.network.mode === "none" ? "none" : spec.network.mode === "open" ? "internet" : "restricted",
 			...(spec.network.mode === "allow" ? { egress_allowlist: spec.network.hosts } : {}),
-			holder: holder(key),
+			holder: holder(key, spec.about),
+			...(holderUrl(spec.link) === undefined ? {} : { holder_url: holderUrl(spec.link) }),
 			comment: Object.entries(spec.labels)
 				.map(([k, v]) => `${k}=${v}`)
 				.join(" ")
@@ -190,6 +204,19 @@ async function busy(response: Response): Promise<boolean> {
 	return answer.code === "lease_busy";
 }
 
-function holder(key: string): string {
-	return `scout:${key}`;
+/**
+ * `scout:<key>`, then what the thread is about, so a person reading spoond's leases can tell them apart. spoond takes
+ * at most 128 printable characters.
+ */
+function holder(key: string, about?: string): string {
+	const base = `scout:${key}`;
+	const words = [...(about ?? "").replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim()];
+	if (words.length === 0) return base;
+	const room = 128 - base.length - 1;
+	return `${base} ${words.length <= room ? words.join("") : `${words.slice(0, room - 1).join("")}…`}`;
+}
+
+/** The thread's link, when spoond will take it (an http(s) URL of at most 512 characters). */
+function holderUrl(link: string | undefined): string | undefined {
+	return link !== undefined && /^https?:\/\/\S+$/.test(link) && link.length <= 512 ? link : undefined;
 }

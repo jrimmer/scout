@@ -88,6 +88,41 @@ describe("spoond driver", () => {
 		}
 	});
 
+	it("names a lease for its thread, so people can tell leases apart, and still finds older ones", async () => {
+		const about = `#app-dev: ${"fix the flaky login test, it fails about one run in five ".repeat(4)}`;
+		workspaces.describe = async (id) => (id === 3 ? { about, link: "https://example.slack.com/archives/C1/p100" } : {});
+		try {
+			await workspaces.env(3);
+			const lease = [...spoond.leases.values()].find((l) => l.holder.startsWith("scout:t-3 "));
+			assert.ok(lease !== undefined, "a lease named for its thread");
+			assert.ok(lease.holder.startsWith("scout:t-3 #app-dev: fix the flaky login test"), lease.holder);
+			assert.equal([...lease.holder].length, 128, "cut to spoond's limit");
+			assert.ok(lease.holder.endsWith("…"));
+			assert.equal(lease.holder_url, "https://example.slack.com/archives/C1/p100");
+
+			// Thread 1's lease came from before it could be described: it's found, and labelled, when next opened.
+			workspaces.describe = async (id) => (id === 1 ? { about: "#app-dev: bump the README" } : {});
+			await workspaces.suspend(1);
+			await workspaces.close();
+			workspaces = new Workspaces({
+				dataDir: join(root, "data"),
+				instance: "t",
+				repos: [{ name: "app", gitUrl: remote, base: "main" }],
+				driver: new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest") }),
+				sandbox: { image: "dev-base", network: "none" },
+				git: { name: "Scout", email: "scout@localhost" },
+			});
+			workspaces.describe = async (id) => (id === 1 ? { about: "#app-dev: bump the README" } : {});
+			const leases = spoond.leases.size;
+			await workspaces.env(1);
+			assert.equal(spoond.leases.size, leases, "no second lease for thread 1");
+			assert.equal(spoond.leases.get("lease1")?.holder, "scout:t-1 #app-dev: bump the README");
+			await workspaces.remove(3);
+		} finally {
+			workspaces.describe = async () => ({});
+		}
+	});
+
 	it("deletes the lease when the work is over", async () => {
 		await workspaces.remove(1);
 		assert.equal(spoond.leases.size, 0);

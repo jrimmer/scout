@@ -88,6 +88,8 @@ export class Workspaces {
 	repoOf: (conversationId: number) => Promise<string | undefined> = async () => undefined;
 	/** A conversation's own base branch, when it isn't the repository's (a reviewed pull request's branch). */
 	baseOf: (conversationId: number) => Promise<string | undefined> = async () => undefined;
+	/** What a conversation is about and where it's discussed, to label its sandbox for people. */
+	describe: (conversationId: number) => Promise<{ about?: string; link?: string }> = async () => ({});
 	readonly #sweep: ReturnType<typeof setInterval>;
 
 	constructor(config: WorkspacesConfig) {
@@ -201,7 +203,8 @@ export class Workspaces {
 		const configured = this.repo(await this.repoOf(conversationId));
 		const base = await this.baseOf(conversationId);
 		const repo = base === undefined ? configured : { ...configured, base };
-		const handle = await this.#config.driver.open(this.key(conversationId), this.spec(repo, conversationId));
+		const described = await this.describe(conversationId).catch(() => ({}));
+		const handle = await this.#config.driver.open(this.key(conversationId), { ...this.spec(repo, conversationId), ...described });
 		let connection: TrackedConnection | undefined;
 		if (handle.connect === undefined) {
 			const options: ConnectionOptions = {

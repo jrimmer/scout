@@ -23,6 +23,9 @@ export type SandboxSpec = {
 	size?: string;
 	/** What the sandbox is for, for the substrate's own bookkeeping and dashboards. */
 	labels: Record<string, string>;
+	/** What the work is, in a few words, and where it's discussed, for people reading the substrate's own list. */
+	about?: string;
+	link?: string;
 };
 
 export type SandboxHandle = {
