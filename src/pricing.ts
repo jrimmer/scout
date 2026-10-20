@@ -29,6 +29,11 @@ export class Pricing {
 		return new Pricing(prices);
 	}
 
+	/** Whether the local file prices this model (`provider/modelId`). */
+	has(model: string): boolean {
+		return model in this.#prices;
+	}
+
 	/** Dollars for one response: the local price if there is one, otherwise pi-ai's. */
 	cost(message: Pick<AssistantMessage, "provider" | "model" | "usage">): number {
 		const price = this.#prices[`${message.provider}/${message.model}`];

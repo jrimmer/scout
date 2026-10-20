@@ -109,6 +109,10 @@ await slack.start({
 	onMessage: (message) => bridge.onMessage(message),
 	onReaction: (reaction) => bridge.onReaction(reaction),
 });
+// The catalog prices its models; a gateway's own models cost nothing unless the prices file says otherwise.
+for (const id of config.gateway?.models ?? []) {
+	if (!scout.pricing.has(`gateway/${id}`)) console.log(`no price for gateway/${id}: budgets count it as free; set SCOUT_PRICES_FILE`);
+}
 console.log(`scout is listening as <@${slack.botUserId}> (model ${config.model.provider}/${config.model.modelId})`);
 
 async function reflect(day: string): Promise<void> {
