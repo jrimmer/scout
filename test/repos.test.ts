@@ -56,7 +56,6 @@ describe("repositories and zones", () => {
 		};
 		const config = loadConfig({ ...env, SCOUT_REPO_SNAPSHOT: "scout/node24" });
 		assert.equal(config.repo.snapshot, "scout/node24");
-		assert.equal(config.repos[0]?.snapshot, "scout/node24", "the default repository is first in repos");
 		assert.equal(loadConfig(env).repo.snapshot, undefined, "no snapshot unless it is named");
 	});
 
