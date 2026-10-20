@@ -44,6 +44,13 @@ export type WorkspacesConfig = {
 class TrackedConnection extends Connection {
 	inFlight = 0;
 	lastUsed = Date.now();
+	/** Scout closed it; what its transport says from here on is about its own ending. */
+	closing = false;
+
+	override close(): void {
+		this.closing = true;
+		super.close();
+	}
 
 	override async request(op: string, json: Record<string, unknown>, options?: RequestOptions): Promise<Reply> {
 		this.inFlight++;
@@ -185,12 +192,12 @@ export class Workspaces {
 		const handle = await this.#config.driver.open(this.key(conversationId), this.spec(repo, conversationId));
 		const options: ConnectionOptions = {
 			command: handle.daemonCommand,
-			// Once closed, what the daemon's transport says is about its own ending (spoond: the stream, as the lease goes).
+			// Once Scout closes it (idle, or the lease going), its transport's last words are about that (spoond: the stream).
 			onLog: (text) => {
-				if (this.#open.has(conversationId)) console.error(`sandbox ${this.key(conversationId)}: ${text.trimEnd()}`);
+				if (!connection.closing) console.error(`sandbox ${this.key(conversationId)}: ${text.trimEnd()}`);
 			},
 		};
-		const connection = new TrackedConnection(options);
+		const connection: TrackedConnection = new TrackedConnection(options);
 		const opened = { handle, connection, repo };
 		const env = this.#envAt(conversationId, opened, handle.workdir);
 		const clone = `${handle.workdir}/repo`;
