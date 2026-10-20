@@ -69,7 +69,7 @@ read-only token.
 ```json
 { "servers": {
     "grafana": { "command": "/usr/local/bin/mcp-grafana",
-                 "args": ["--disable-write", "--enabled-tools", "search,datasource,prometheus,loki,alerting,dashboard,folder,annotations"],
+                 "args": ["--disable-write", "--usage-stats=disabled", "--enabled-tools", "search,datasource,prometheus,loki,alerting,dashboard,folder,annotations"],
                  "env": { "GRAFANA_URL": "http://grafana.lan:3000", "GRAFANA_SERVICE_ACCOUNT_TOKEN": "${GRAFANA_TOKEN}" } },
     "ci": { "command": "node", "args": ["mcp/forgejo-ci.ts"],
             "env": { "FORGEJO_API": "http://git.lan:3000/api/v1", "FORGEJO_TOKEN": "${SCOUT_CODEHOST_TOKEN}" } },
