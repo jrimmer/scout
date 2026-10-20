@@ -39,6 +39,7 @@ Slack (Socket Mode) ─▶ slack.ts ─▶ bridge.ts ──submit──▶ Pi Du
 nightly:   reflect.ts ─▶ reflection conversation (profile files only) ─▶ pull request on the profile repo
            people review and merge ─▶ Scout pulls its profile ─▶ every thread's next request
 polling:   pulls.ts (merge rate, weekly report) · automation.ts (pull requests that ask Scout get a review)
+           ci.ts (Scout's pull requests: green says so, red goes back to the thread) · alerts.ts (Gatus, Grafana)
 one-off:   job.ts ─▶ the same agent, no Slack, nothing kept
 ```
 

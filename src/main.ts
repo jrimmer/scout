@@ -5,6 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type Alert, AlertLog, type AlertSource, AlertWatcher, gatusAlerts, grafanaAlerts } from "./alerts.ts";
 import { PullReviewer } from "./automation.ts";
+import { type Check, CiWatcher, MAX_FIXES } from "./ci.ts";
 import { hostname } from "node:os";
 import { Bridge } from "./bridge.ts";
 import { Collector } from "./dash/collect.ts";
@@ -228,6 +229,35 @@ const alertTick =
 		: setInterval(() => void health.watch("alerts", "watching for alerts failed", () => alertWatcher.poll()), MINUTE);
 if (alertSources.length > 0) console.log(`watching for alerts: ${alertSources.map((s) => s.source).join(", ")}`);
 
+// CI on Scout's own pull requests: green says so in the thread, red goes back to the thread to fix (ci.ts).
+const checkList = (checks: Check[]) => checks.map((c) => `• ${c.context}: ${c.state}${c.url === undefined ? "" : ` (${c.url})`}`).join("\n");
+const inThread = async (conversationId: number, text: string) => {
+	const thread = threads.byConversation(conversationId);
+	if (thread !== undefined) await slack.surface.post(thread.channel, thread.threadTs, { text, blocks: [{ type: "markdown", text }] });
+};
+const ciWatcher = new CiWatcher({
+	pulls,
+	host: config.codeHost,
+	handlers: {
+		passed: (pull, sha) => inThread(pull.conversationId, `✅ CI passed on <${pull.url}|${pull.title}> at \`${sha.slice(0, 7)}\`.`),
+		failed: async (pull, sha, checks, attempt) => {
+			const prompt = [
+				`CI failed on your pull request ${pull.url} (${pull.slug} #${pull.number}) at ${sha.slice(0, 7)}:`,
+				checkList(checks),
+				`Read the failing job's log with the CI tools (ci_runs, ci_jobs, ci_log for ${pull.slug}). If your change caused it, fix it in your workspace and call open_pull_request again, which pushes to the same pull request. If it isn't from your change (a flaky test, main already broken, the runner), say so and change nothing.`,
+				`This is automatic attempt ${attempt} of ${MAX_FIXES}.`,
+			].join("\n\n");
+			await bridge.work(pull.conversationId, prompt, `ci:${pull.url}:${sha}`, "fix the build");
+		},
+		stuck: async (pull, sha) => {
+			const asker = threads.byConversation(pull.conversationId)?.lastAsker;
+			const who = !asker || asker === "scout" ? "Could someone" : `<@${asker}>, could you`;
+			await inThread(pull.conversationId, `CI is still red on <${pull.url}|${pull.title}> at \`${sha.slice(0, 7)}\` after ${MAX_FIXES} tries at fixing it. ${who} take a look? I'll stop retrying.`);
+		},
+	},
+});
+const ciTick = setInterval(() => void health.watch("ci", "watching CI failed", () => ciWatcher.poll()), MINUTE);
+
 const tick = setInterval(() => {
 	const now = Date.now();
 	// Sandboxes are cattle: put to sleep the ones whose threads went quiet; the next tool call wakes them (a spoond lease
@@ -331,6 +361,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		if (stopping) process.exit(1);
 		stopping = true;
 		clearInterval(tick);
+		clearInterval(ciTick);
 		if (alertTick !== undefined) clearInterval(alertTick);
 		alertLog.close();
 		await slack.stop().catch(() => {});

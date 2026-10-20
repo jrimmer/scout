@@ -333,20 +333,29 @@ export class Bridge {
 	 * request. It answers to budgets and concurrency like any request; if they say no, the thread says why.
 	 */
 	async investigate(thread: { channel: string; channelName: string; threadTs: string; context: string; prompt: string; requestId: string }): Promise<void> {
-		const { harness, threads, context } = this.#options;
 		await this.openThread(thread);
-		const key = threadKey(thread.channel, thread.threadTs);
-		const row = threads.get(key);
+		const row = this.#options.threads.get(threadKey(thread.channel, thread.threadTs));
+		if (row !== undefined) await this.work(row.conversationId, thread.prompt, thread.requestId, "look into this");
+	}
+
+	/**
+	 * Work Scout asks of one of its threads itself (an alert to look into, a red build to fix): a request in that thread,
+	 * steering it if it's busy. It answers to budgets and concurrency; if they say no, the thread says why.
+	 */
+	async work(conversationId: number, prompt: string, requestId: string, doing: string): Promise<void> {
+		const { harness, threads, context } = this.#options;
+		const row = threads.byConversation(conversationId);
 		if (row === undefined) return;
-		const admission = (await this.#options.admit?.({ user: "scout", channelName: thread.channelName, starting: true })) ?? { ok: true };
+		const channelName = (await harness.snapshot(ThreadDoc, conversationId as ConversationId, context))?.channelName ?? "";
+		const view = await this.#view(row);
+		const admission = (await this.#options.admit?.({ user: "scout", channelName, starting: !view.busy })) ?? { ok: true };
 		if (!admission.ok) {
-			await this.#options.surface.post(thread.channel, thread.threadTs, plain(`I'd look into this, but ${admission.reason}`));
+			await this.#options.surface.post(row.channel, row.threadTs, plain(`I'd ${doing}, but ${admission.reason}`));
 			return;
 		}
-		await this.#view(row);
-		const conversation = await harness.conversation(row.conversationId as ConversationId, context);
-		await conversation?.submit({ type: "input", content: thread.prompt, whenBusy: "steer", requestId: thread.requestId }, context);
-		this.#options.audit?.record("request", { actor: "scout", conversationId: row.conversationId, channel: thread.channelName, detail: { as: "investigate", text: thread.prompt.slice(0, 200) } });
+		const conversation = await harness.conversation(conversationId as ConversationId, context);
+		await conversation?.submit({ type: "input", content: prompt, whenBusy: "steer", requestId }, context);
+		this.#options.audit?.record("request", { actor: "scout", conversationId, channel: channelName, detail: { as: "self", text: prompt.slice(0, 200) } });
 	}
 
 	async #startThread(key: string, message: Pick<IncomingMessage, "channel" | "channelName" | "ts" | "user"> & { threadTs?: string }): Promise<ThreadRow> {

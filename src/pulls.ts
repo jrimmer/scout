@@ -47,6 +47,13 @@ export class Pulls {
 				checked_at INTEGER NOT NULL DEFAULT 0
 			);
 			CREATE TABLE IF NOT EXISTS reports (week TEXT PRIMARY KEY, sent_at INTEGER NOT NULL, spent REAL);
+			CREATE TABLE IF NOT EXISTS ci (
+				url TEXT PRIMARY KEY,
+				sha TEXT NOT NULL,
+				outcome TEXT NOT NULL,
+				attempts INTEGER NOT NULL DEFAULT 0,
+				since INTEGER NOT NULL
+			);
 			CREATE TABLE IF NOT EXISTS reviews (
 				slug TEXT NOT NULL,
 				number INTEGER NOT NULL,
@@ -67,6 +74,25 @@ export class Pulls {
 				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.run(pull.url, pull.number, pull.slug, pull.kind, pull.conversationId, pull.title, now);
+	}
+
+	/** Scout's pull requests that are still open, as of the last check. */
+	open(kind: PullKind): PullRow[] {
+		return this.#db.prepare("SELECT * FROM pulls WHERE state = 'open' AND kind = ?").all(kind).map(toPull);
+	}
+
+	/** What CI said about a pull request's head (ci.ts): the commit, its outcome, and how many fixes Scout has tried. */
+	ci(url: string): CiRow | undefined {
+		const row = this.#db.prepare("SELECT * FROM ci WHERE url = ?").get(url) as
+			| { sha: string; outcome: CiOutcome; attempts: number; since: number }
+			| undefined;
+		return row === undefined ? undefined : { sha: row.sha, outcome: row.outcome, attempts: row.attempts, since: row.since };
+	}
+
+	ciSaw(url: string, row: CiRow): void {
+		this.#db
+			.prepare("INSERT OR REPLACE INTO ci (url, sha, outcome, attempts, since) VALUES (?, ?, ?, ?, ?)")
+			.run(url, row.sha, row.outcome, row.attempts, row.since);
 	}
 
 	get(url: string): PullRow | undefined {
@@ -187,6 +213,10 @@ export class Pulls {
 		this.#db.close();
 	}
 }
+
+/** `none`: no CI reported on the commit in a while, so the repository has none (or not for this branch). */
+export type CiOutcome = "pending" | "success" | "failure" | "none";
+export type CiRow = { sha: string; outcome: CiOutcome; attempts: number; since: number };
 
 export type ReviewRow = {
 	slug: string;

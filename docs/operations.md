@@ -70,6 +70,14 @@ the diff shows, then reviews each new push until the pull request closes. Its ow
 their self-review). The channel whose profile names the repository gets a short summary, in a thread where anyone can
 ask Scout about its review. Nothing to configure; give Scout's account access to the repository.
 
+## CI on Scout's pull requests
+
+Once a minute Scout reads the combined commit status of each of its open pull requests' heads (Forgejo Actions and
+GitHub report there). Green, it says so in the pull request's thread. Red, the thread is asked to read the failing
+job's log (the CI tools) and fix what its change broke, or say it isn't from its change; at most twice per pull
+request, then Scout asks the person who requested the work to look. A commit nobody reports CI for within 15 minutes
+is taken as having none. Fixes count against the channel's budget and concurrency.
+
 ## Alerts
 
 Scout can watch the monitoring you already have and look into each new alert in public. It reads Gatus's checks
