@@ -95,7 +95,7 @@ export class SpoondDriver implements SandboxDriver {
 				.map(([k, v]) => `${k}=${v}`)
 				.join(" ")
 				.slice(0, 500),
-			idle_suspend: this.#options.idleSuspend ?? 3600,
+			idle_suspend: this.#options.idleSuspend ?? 900,
 			checkpoint_interval: this.#options.checkpointInterval ?? 600,
 			wait: 60,
 		})) as Lease;

@@ -126,9 +126,10 @@ async function reflect(day: string): Promise<void> {
 
 const tick = setInterval(() => {
 	const now = Date.now();
-	// Containers are cattle: stop the ones whose threads went quiet; the next tool call starts them again.
+	// Sandboxes are cattle: put to sleep the ones whose threads went quiet; the next tool call wakes them (a spoond lease
+	// in under a second), so sleeping early costs little and leaves room for other threads.
 	for (const thread of threads.activeSince(now - 24 * HOUR)) {
-		if (thread.lastActivity < now - HOUR && !bridge.view(thread.conversationId)?.busy) {
+		if (thread.lastActivity < now - 15 * MINUTE && !bridge.view(thread.conversationId)?.busy) {
 			void workspaces.suspend(thread.conversationId);
 		}
 	}

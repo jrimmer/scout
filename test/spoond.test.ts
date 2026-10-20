@@ -49,7 +49,7 @@ describe("spoond driver", () => {
 			egress_allowlist: ["registry.npmjs.org", "proxy.golang.org"],
 			holder: "scout:t-1",
 			comment: "conversation=1 repo=app instance=t",
-			idle_suspend: 3600,
+			idle_suspend: 900,
 			checkpoint_interval: 600,
 			wait: 60,
 		});
