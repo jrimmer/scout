@@ -43,10 +43,17 @@ const health = new Health();
 const startedAt = Date.now();
 /** Say something in Scout's home channel, if it has one. */
 function announce(text: string): void {
-	if (config.reflect.channel === undefined) return;
-	slack.surface.post(config.reflect.channel, undefined, { text, blocks: [] }).catch((error: unknown) => {
-		console.error("announcement failed:", error);
-	});
+	const home = config.reflect.channel;
+	if (home === undefined) return;
+	void slack
+		.channelId(home)
+		.then((id) => {
+			if (id === undefined) throw new Error(`there's no channel #${home}`);
+			return slack.surface.post(id, undefined, { text, blocks: [] });
+		})
+		.catch((error: unknown) => {
+			console.error("announcement failed:", error);
+		});
 }
 
 const scout = await openScout({
@@ -162,7 +169,7 @@ const alertSources: AlertSource[] = [
 	...(config.alerts.gatusUrl === undefined ? [] : [{ source: "gatus" as const, read: () => gatusAlerts(config.alerts.gatusUrl!) }]),
 	...(config.alerts.grafana === undefined ? [] : [{ source: "grafana" as const, read: () => grafanaAlerts(config.alerts.grafana!.url, config.alerts.grafana!.token) }]),
 ];
-const home = config.reflect.channel?.replace(/^#/, "");
+const home = config.reflect.channel;
 const alertLog = new AlertLog(join(config.dataDir, "scout.sqlite"));
 const describeAlert = (alert: Alert) => `${alert.title}: ${alert.detail}${alert.url === undefined ? "" : ` (${alert.url})`}`;
 const alertWatcher = new AlertWatcher({

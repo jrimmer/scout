@@ -187,7 +187,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		},
 		reflect: {
 			hour: Number(env.SCOUT_REFLECT_HOUR ?? 3),
-			...(env.SCOUT_REFLECT_CHANNEL ? { channel: env.SCOUT_REFLECT_CHANNEL } : {}),
+			// A name, with or without `#` (in an env file an unquoted `#` starts a comment, so `scout` is the safe spelling).
+			...(env.SCOUT_REFLECT_CHANNEL?.replace(/^#/, "") ? { channel: env.SCOUT_REFLECT_CHANNEL.replace(/^#/, "") } : {}),
 		},
 		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
 		...(env.SCOUT_MCP_FILE ? { mcpFile: resolve(env.SCOUT_MCP_FILE) } : {}),
