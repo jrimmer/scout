@@ -109,8 +109,12 @@ export async function openScout(options: ScoutOptions) {
 	let profile: Profile = loadProfile(config.profileDir);
 	const repoNamed = (name: string | undefined): RepoConfig => config.repos.find((r) => r.name === name) ?? config.repo;
 	/** The repository a conversation works in, as its thread was started with. */
-	const repoOf = async (id: number, ctx: Context): Promise<RepoConfig> =>
-		repoNamed((await harness?.snapshot(ThreadDoc, id as ConversationId, ctx))?.repo);
+	/** A conversation's repository, with its own base branch when it has one (a pull request review's thread). */
+	const repoOf = async (id: number, ctx: Context): Promise<RepoConfig> => {
+		const doc = await harness?.snapshot(ThreadDoc, id as ConversationId, ctx);
+		const repo = repoNamed(doc?.repo);
+		return doc?.base === undefined ? repo : { ...repo, base: doc.base };
+	};
 	const workspace = {
 		repo: repoOf,
 		branch: (id: number) => workspaces.branch(id),
@@ -287,6 +291,7 @@ export async function openScout(options: ScoutOptions) {
 
 	const opened = harness;
 	workspaces.repoOf = async (id) => (await opened.snapshot(ThreadDoc, id as ConversationId, context))?.repo;
+	workspaces.baseOf = async (id) => (await opened.snapshot(ThreadDoc, id as ConversationId, context))?.base;
 
 	if (config.profileRepo !== undefined) {
 		reflector = new Reflector({

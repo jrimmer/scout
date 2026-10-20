@@ -325,11 +325,11 @@ export class Bridge {
 	 * A thread Scout started itself, such as a pull request review's summary: its conversation starts knowing `context`
 	 * (what Scout did and said there), so whoever replies can ask about it and Scout answers with that in mind.
 	 */
-	async openThread(thread: { channel: string; channelName: string; threadTs: string; context: string; about?: string }): Promise<void> {
+	async openThread(thread: { channel: string; channelName: string; threadTs: string; context: string; about?: string; base?: string }): Promise<void> {
 		const { harness, threads, context } = this.#options;
 		const key = threadKey(thread.channel, thread.threadTs);
 		if (threads.get(key) !== undefined) return;
-		const row = await this.#startThread(key, { channel: thread.channel, channelName: thread.channelName, ts: thread.threadTs, user: "scout", text: thread.about ?? thread.context });
+		const row = await this.#startThread(key, { channel: thread.channel, channelName: thread.channelName, ts: thread.threadTs, user: "scout", text: thread.about ?? thread.context }, thread.base);
 		const conversation = await harness.conversation(row.conversationId as ConversationId, context);
 		await conversation?.submit(
 			{
@@ -373,7 +373,7 @@ export class Bridge {
 		this.#options.audit?.record("request", { actor: "scout", conversationId, channel: channelName, detail: { as: "self", text: prompt.slice(0, 200) } });
 	}
 
-	async #startThread(key: string, message: Pick<IncomingMessage, "channel" | "channelName" | "ts" | "user" | "text"> & { threadTs?: string }): Promise<ThreadRow> {
+	async #startThread(key: string, message: Pick<IncomingMessage, "channel" | "channelName" | "ts" | "user" | "text"> & { threadTs?: string }, base?: string): Promise<ThreadRow> {
 		const { harness, threads, context } = this.#options;
 		const model = this.#options.modelFor?.(message.channelName);
 		const agent = model === undefined ? this.#options.agent : { ...this.#options.agent, model };
@@ -389,6 +389,7 @@ export class Bridge {
 					doc.threadTs = threadTs;
 					const repo = this.#options.repoFor?.(message.channelName, message.text);
 					if (repo !== undefined) doc.repo = repo;
+					if (base !== undefined) doc.base = base;
 				},
 			},
 			context,

@@ -68,7 +68,9 @@ like a colleague would: the profile's `reviewer.md`, the channel's instructions 
 and the MCP tools (CI logs). It posts a real review (approve, request changes, or comment) with comments on the lines
 the diff shows, then reviews each new push until the pull request closes. Its own pull requests are skipped (they had
 their self-review). The channel whose profile names the repository gets a short summary, in a thread where anyone can
-ask Scout about its review. Nothing to configure; give Scout's account access to the repository.
+ask Scout about its review, or to fix what it flagged: that thread's sandbox has the pull request's branch, and a fix
+opens as a pull request into it, so the author merges it or not (Scout never pushes to someone else's branch). A pull
+request from a fork gets the base branch instead. Nothing to configure; give Scout's account access to the repository.
 
 ## CI on Scout's pull requests
 

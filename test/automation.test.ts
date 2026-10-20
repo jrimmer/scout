@@ -70,7 +70,7 @@ describe("pull request review, when asked", () => {
 			html_url: `http://forge/o/r/pulls/${number}`,
 			user: { login: author },
 			requested_reviewers: asked ? [{ login: "scout" }] : [],
-			head: { sha: head, ref: "feature" },
+			head: { sha: head, ref: "feature", repo: { full_name: number === 4 ? "o/r" : "someone/fork" } },
 			base: { ref: "main" },
 		});
 		const reviews: { path: string; body: { body: string; event: string; commit_id: string; comments?: unknown[] } }[] = [];
@@ -79,7 +79,7 @@ describe("pull request review, when asked", () => {
 			scout,
 			config,
 			context,
-			onReview: async (posted) => void announced.push(`${posted.repo} #${posted.number} ${posted.review.verdict}`),
+			onReview: async (posted) => void announced.push(`${posted.repo} #${posted.number} ${posted.review.verdict} on ${posted.head ?? "a fork"}`),
 			fetch: async (url, init) => {
 				const path = new URL(String(url)).pathname;
 				if (init?.method === "POST") {
@@ -113,7 +113,7 @@ describe("pull request review, when asked", () => {
 		assert.match(prompt, /Review strictly\./);
 		assert.match(prompt, /We care about tests\./);
 		assert.match(prompt, /\+b/);
-		assert.deepEqual(announced, ["r #4 changes"]);
+		assert.deepEqual(announced, ["r #4 changes on feature"], "its thread can work on the branch, which is in the repository");
 
 		// Answering clears the request; a new push is still reviewed, the same commit never twice.
 		requested = false;

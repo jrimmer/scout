@@ -121,8 +121,11 @@ const pullReviewer = new PullReviewer({
 				`You reviewed pull request ${posted.url} ("${posted.title}"${posted.author === undefined ? "" : ` by ${posted.author}`}) at ${posted.sha.slice(0, 7)}, and ${VERDICTS[review.verdict]} it. Your review:`,
 				review.body,
 				...(comments === "" ? [] : [`Your comments on lines:\n${comments}`]),
-				"You started this thread to say so. People may ask about your review here. Your sandbox has the repository's base branch, not the pull request's.",
+				posted.head === undefined
+					? "You started this thread to say so. People may ask about your review here. The pull request comes from a fork, so your sandbox has the repository's base branch, not its branch."
+					: `You started this thread to say so. People may ask about your review here, or ask you to fix what you flagged. Your sandbox has the pull request's branch, ${posted.head}; a fix you open with open_pull_request goes into that branch, as a pull request its author can merge or not. Never push to their branch any other way.`,
 			].join("\n\n"),
+			...(posted.head === undefined ? {} : { base: posted.head }),
 		});
 	},
 });

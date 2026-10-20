@@ -86,6 +86,8 @@ export class Workspaces {
 	readonly #connected = new Set<number>();
 	/** Which repository a conversation works in; set once the harness exists. */
 	repoOf: (conversationId: number) => Promise<string | undefined> = async () => undefined;
+	/** A conversation's own base branch, when it isn't the repository's (a reviewed pull request's branch). */
+	baseOf: (conversationId: number) => Promise<string | undefined> = async () => undefined;
 	readonly #sweep: ReturnType<typeof setInterval>;
 
 	constructor(config: WorkspacesConfig) {
@@ -196,7 +198,9 @@ export class Workspaces {
 	}
 
 	async #prepare(conversationId: number): Promise<Opened> {
-		const repo = this.repo(await this.repoOf(conversationId));
+		const configured = this.repo(await this.repoOf(conversationId));
+		const base = await this.baseOf(conversationId);
+		const repo = base === undefined ? configured : { ...configured, base };
 		const handle = await this.#config.driver.open(this.key(conversationId), this.spec(repo, conversationId));
 		let connection: TrackedConnection | undefined;
 		if (handle.connect === undefined) {

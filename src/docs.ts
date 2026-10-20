@@ -2,8 +2,11 @@ import { defineDoc } from "@earendil-works/pi-durable";
 
 /** Documents Scout keeps on its conversations, next to the transcript. */
 
-/** Which Slack thread a conversation is. Written when the thread's conversation is created. */
-export const ThreadDoc = defineDoc<{ channel: string; channelName: string; threadTs: string; repo?: string }>({
+/**
+ * Which Slack thread a conversation is. Written when the thread's conversation is created. `base` overrides the
+ * repository's base branch: a pull request review's thread works on (and opens fixes into) the reviewed branch.
+ */
+export const ThreadDoc = defineDoc<{ channel: string; channelName: string; threadTs: string; repo?: string; base?: string }>({
 	kind: "scout.thread",
 	version: 1,
 	scope: "conversation",

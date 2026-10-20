@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -35,6 +35,8 @@ describe("workspaces (local driver)", () => {
 		git: { name: "Scout", email: "scout@localhost" },
 	});
 	workspaces.repoOf = async (id) => (id === 2 ? "web" : undefined);
+	// Conversation 5 is a pull request review's thread: it works on the reviewed branch.
+	workspaces.baseOf = async (id) => (id === 5 ? "their-feature" : undefined);
 	after(() => workspaces.close());
 
 	it("clones each conversation's repository into its sandbox, on its own branch, with no credentials", async () => {
@@ -81,6 +83,25 @@ describe("workspaces (local driver)", () => {
 		assert.match(JSON.stringify(result.output), /pulls\/1 \(1 commit\)/);
 		assert.equal(git("--git-dir", api, "show", "scout/t-1:feature.txt"), "new");
 		assert.equal((requests[0] as { head: string }).head, "scout/t-1");
+	});
+
+	it("works on a reviewed pull request's branch, and hands out only its own commits beyond it", async () => {
+		const seed = join(root, "api-seed");
+		git("-C", seed, "checkout", "--quiet", "-b", "their-feature");
+		writeFileSync(join(seed, "theirs.txt"), "theirs\n");
+		git("-C", seed, "add", ".");
+		git("-C", seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "Their change");
+		git("-C", seed, "push", "--quiet", api, "their-feature");
+
+		const env = await workspaces.env(5);
+		assert.equal(await run(env, "git branch --show-current; cat theirs.txt"), "scout/t-5\ntheirs");
+		await run(env, "echo fix > fix.txt && git add fix.txt && git commit -qm 'Fix what the review flagged'");
+		const bundle = await workspaces.exportBranch(5);
+		assert.ok(bundle !== undefined);
+		const check = join(root, "bundle-check");
+		git("clone", "--quiet", "--branch", "their-feature", api, check);
+		git("-C", check, "fetch", "--quiet", bundle, "HEAD");
+		assert.equal(git("-C", check, "rev-list", "--count", "their-feature..FETCH_HEAD"), "1", "just the fix, on top of their branch");
 	});
 
 	it("saves attachments beside the repository, never in it", async () => {

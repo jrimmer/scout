@@ -8,6 +8,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { Type } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { ThreadDoc } from "../src/docs.ts";
 import { Bridge, DECLINE_PRIVATE, type IncomingMessage } from "../src/bridge.ts";
 import { loadProfile, profileExtension } from "../src/profile.ts";
 import { ThreadSearch } from "../src/search.ts";
@@ -109,7 +110,7 @@ describe("bridge", () => {
 	}
 
 	it("continues a thread Scout opened itself, knowing what it said there", async () => {
-		await bridge.openThread({ channel: "C1", channelName: "team", threadTs: "500.1", context: "You reviewed pull request 7 and asked for a test." });
+		await bridge.openThread({ channel: "C1", channelName: "team", threadTs: "500.1", context: "You reviewed pull request 7 and asked for a test.", base: "their-feature" });
 		let seen = "";
 		faux.setResponses([
 			(transcript) => {
@@ -122,6 +123,7 @@ describe("bridge", () => {
 		assert.ok(thread);
 		await settle(thread.conversationId);
 		assert.match(seen, /You reviewed pull request 7 and asked for a test\./);
+		assert.equal((await harness.snapshot(ThreadDoc, thread.conversationId as never, context))?.base, "their-feature", "it works on the reviewed branch");
 		assert.match(seen, /why the test\?/);
 		assert.match(surface.texts().at(-1) ?? "", /nothing covers the empty case/);
 	});

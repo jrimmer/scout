@@ -26,7 +26,7 @@ type OpenPull = {
 	html_url: string;
 	user?: { login?: string };
 	requested_reviewers?: { login?: string }[] | null;
-	head: { sha: string; ref: string };
+	head: { sha: string; ref: string; repo?: { full_name?: string } | null };
 	base: { ref: string };
 };
 
@@ -39,6 +39,8 @@ export type PostedReview = {
 	title: string;
 	url: string;
 	author?: string;
+	/** The pull request's branch, when it's in the repository itself (not a fork's), so its thread can work on it. */
+	head?: string;
 	conversationId: number;
 	review: PullReview;
 };
@@ -169,6 +171,7 @@ export class PullReviewer {
 				title: pull.title,
 				url: pull.html_url,
 				...(pull.user?.login === undefined ? {} : { author: pull.user.login }),
+				...(pull.head.repo?.full_name === row.slug ? { head: pull.head.ref } : {}),
 				conversationId: row.conversationId,
 				review,
 			});
