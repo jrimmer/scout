@@ -192,7 +192,7 @@ const alertWatcher = new AlertWatcher({
 				channelName: name,
 				threadTs: ts,
 				context: `${scout.responder()}\n\nThe alert, from ${alert.source}: ${describeAlert(alert)}\nIts labels: ${JSON.stringify(alert.labels)}`,
-				prompt: `This alert just fired: ${describeAlert(alert)}. Look into it.`,
+				prompt: `This alert just fired in ${alert.source === "gatus" ? "Gatus" : "Grafana"}: ${describeAlert(alert)}. Look into it.`,
 				requestId: `alert:${alert.key}:${Date.now()}`,
 			});
 			audit.record("alert", { actor: "scout", channel: name, detail: { key: alert.key, title: alert.title } });

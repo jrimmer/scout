@@ -45,7 +45,8 @@ export type BridgeOptions = {
 	/** Where what's said in threads is indexed, for `search_threads`. */
 	search?: ThreadSearch;
 	/** The repository a channel's threads work in. */
-	repoFor?: (channelName: string) => string;
+	/** The repository a thread starts in, from its channel and its first message. */
+	repoFor?: (channelName: string, text?: string) => string;
 	/** A channel's own model, if its profile names one; otherwise `agent`'s. */
 	modelFor?: (channelName: string) => { provider: string; modelId: string } | undefined;
 	/** Download a shared file (Slack needs the bot's token for that). */
@@ -174,9 +175,10 @@ export class Bridge {
 		return text.replaceAll(`<@${this.#options.botUserId}>`, "").trim();
 	}
 
-	async #admit(message: IncomingMessage, starting: boolean): Promise<Admission> {
+	/** `repo`: the thread's, once it has one; a new thread's is the one its first message would start in. */
+	async #admit(message: IncomingMessage, starting: boolean, threadRepo?: string): Promise<Admission> {
 		if (this.#options.admit === undefined) return { ok: true };
-		const repo = this.#options.repoFor?.(message.channelName);
+		const repo = threadRepo ?? this.#options.repoFor?.(message.channelName, message.text);
 		return this.#options.admit({ user: message.user, channelName: message.channelName, ...(repo === undefined ? {} : { repo }), starting });
 	}
 
@@ -219,7 +221,8 @@ export class Bridge {
 		});
 		if (how !== "note") {
 			const starting = !view.busy;
-			const admission = await this.#admit(message, starting);
+			const threadRepo = (await harness.snapshot(ThreadDoc, thread.conversationId as ConversationId, context))?.repo;
+			const admission = await this.#admit(message, starting, threadRepo);
 			if (!admission.ok) {
 				if (admission.wait === true && starting) {
 					if (!queued) {
@@ -311,11 +314,11 @@ export class Bridge {
 	 * A thread Scout started itself, such as a pull request review's summary: its conversation starts knowing `context`
 	 * (what Scout did and said there), so whoever replies can ask about it and Scout answers with that in mind.
 	 */
-	async openThread(thread: { channel: string; channelName: string; threadTs: string; context: string }): Promise<void> {
+	async openThread(thread: { channel: string; channelName: string; threadTs: string; context: string; about?: string }): Promise<void> {
 		const { harness, threads, context } = this.#options;
 		const key = threadKey(thread.channel, thread.threadTs);
 		if (threads.get(key) !== undefined) return;
-		const row = await this.#startThread(key, { channel: thread.channel, channelName: thread.channelName, ts: thread.threadTs, user: "scout" });
+		const row = await this.#startThread(key, { channel: thread.channel, channelName: thread.channelName, ts: thread.threadTs, user: "scout", text: thread.about ?? thread.context });
 		const conversation = await harness.conversation(row.conversationId as ConversationId, context);
 		await conversation?.submit(
 			{
@@ -333,7 +336,8 @@ export class Bridge {
 	 * request. It answers to budgets and concurrency like any request; if they say no, the thread says why.
 	 */
 	async investigate(thread: { channel: string; channelName: string; threadTs: string; context: string; prompt: string; requestId: string }): Promise<void> {
-		await this.openThread(thread);
+		// The request, not the instructions around it, says which of the channel's repositories it's about.
+		await this.openThread({ ...thread, about: thread.prompt });
 		const row = this.#options.threads.get(threadKey(thread.channel, thread.threadTs));
 		if (row !== undefined) await this.work(row.conversationId, thread.prompt, thread.requestId, "look into this");
 	}
@@ -358,7 +362,7 @@ export class Bridge {
 		this.#options.audit?.record("request", { actor: "scout", conversationId, channel: channelName, detail: { as: "self", text: prompt.slice(0, 200) } });
 	}
 
-	async #startThread(key: string, message: Pick<IncomingMessage, "channel" | "channelName" | "ts" | "user"> & { threadTs?: string }): Promise<ThreadRow> {
+	async #startThread(key: string, message: Pick<IncomingMessage, "channel" | "channelName" | "ts" | "user" | "text"> & { threadTs?: string }): Promise<ThreadRow> {
 		const { harness, threads, context } = this.#options;
 		const model = this.#options.modelFor?.(message.channelName);
 		const agent = model === undefined ? this.#options.agent : { ...this.#options.agent, model };
@@ -372,7 +376,7 @@ export class Bridge {
 					doc.channel = message.channel;
 					doc.channelName = message.channelName;
 					doc.threadTs = threadTs;
-					const repo = this.#options.repoFor?.(message.channelName);
+					const repo = this.#options.repoFor?.(message.channelName, message.text);
 					if (repo !== undefined) doc.repo = repo;
 				},
 			},

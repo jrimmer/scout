@@ -39,12 +39,14 @@ describe("repositories and zones", () => {
 	);
 	mkdirSync(join(profileDir, "channels", "lost"), { recursive: true });
 	writeFileSync(join(profileDir, "channels", "lost", "instructions.md"), "---\nrepo: nope\n---\n");
+	mkdirSync(join(profileDir, "channels", "ops"), { recursive: true });
+	writeFileSync(join(profileDir, "channels", "ops", "instructions.md"), "---\nrepo: web, api\n---\n");
 	const reposFile = join(root, "repos.json");
 	writeFileSync(reposFile, JSON.stringify([{ name: "web", gitUrl: web, slug: "team/web", base: "develop" }]));
 
 	it("reads a channel's repository and zones from its instructions", () => {
 		const channel = loadProfile(profileDir).channels.get("web-team");
-		assert.deepEqual(channel, { instructions: "We ship on Tuesdays.", repo: "web", zones: ["apps/storefront", "libs/ui"], alerts: [], skills: [] });
+		assert.deepEqual(channel, { instructions: "We ship on Tuesdays.", repo: "web", repos: ["web"], zones: ["apps/storefront", "libs/ui"], alerts: [], skills: [] });
 	});
 
 	it("takes the default repository's snapshot from SCOUT_REPO_SNAPSHOT", () => {
@@ -115,6 +117,11 @@ describe("repositories and zones", () => {
 		assert.equal(scout.repoFor("web-team"), "web");
 		assert.equal(scout.repoFor("anything-else"), "api");
 		assert.equal(scout.repoFor("lost"), "api", "an unknown repository falls back to the default");
+		// A channel with several: the first is its default, and a thread starts in the one its first message names.
+		assert.equal(scout.repoFor("ops"), "web");
+		assert.equal(scout.repoFor("ops", "The API returns 500s; the web app is fine"), "api");
+		assert.equal(scout.repoFor("ops", "Our rapid apis are slow"), "web", "a name only counts as a whole word");
+		assert.equal(scout.channelOf("api")?.name, "ops");
 
 		const thread = async (repo: string | undefined) =>
 			(

@@ -37,7 +37,10 @@ export type Skill = { name: string; description: string; body: string };
  */
 export type ChannelProfile = {
 	instructions?: string;
+	/** The channel's default repository: the first of `repos`. */
 	repo?: string;
+	/** The repositories the team works in (`repo: gatus, grafana`); a thread starts in the one its first message names. */
+	repos: string[];
 	/** `provider/modelId`, for a team that wants a different model than the default. */
 	model?: string;
 	zones: string[];
@@ -70,7 +73,8 @@ export function loadProfile(dir: string): Profile {
 			const zones = list(meta.zones);
 			channels.set(entry.name, {
 				...(body.trim() === "" ? {} : { instructions: body.trim() }),
-				...(meta.repo ? { repo: meta.repo } : {}),
+				...(list(meta.repo)[0] ? { repo: list(meta.repo)[0] } : {}),
+				repos: list(meta.repo),
 				...(meta.model ? { model: meta.model } : {}),
 				zones,
 				alerts: list(meta.alerts),

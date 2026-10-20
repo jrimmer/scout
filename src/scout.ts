@@ -270,19 +270,28 @@ export async function openScout(options: ScoutOptions) {
 		});
 	}
 
-	/** The repository a channel's threads work in: its profile's `repo`, if that names one, or the default. */
-	const repoFor = (channelName: string): string => {
-		const named = profile.channels.get(channelName)?.repo;
-		if (named !== undefined && !config.repos.some((r) => r.name === named)) {
-			console.error(`#${channelName} names repository ${named}, which isn't configured; using ${config.repo.name}`);
-		}
-		return repoNamed(named).name;
+	/**
+	 * The repository a thread works in: of its channel's `repo` list, the one its first message (`text`) names first,
+	 * or else the list's first; with no list, the default repository.
+	 */
+	const repoFor = (channelName: string, text?: string): string => {
+		const named = profile.channels.get(channelName)?.repos ?? [];
+		const configured = named.filter((name) => {
+			const known = config.repos.some((r) => r.name === name);
+			if (!known) console.error(`#${channelName} names repository ${name}, which isn't configured`);
+			return known;
+		});
+		const mentioned = configured
+			.map((name) => ({ name, at: text?.search(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i")) ?? -1 }))
+			.filter((m) => m.at >= 0)
+			.sort((a, b) => a.at - b.at)[0]?.name;
+		return repoNamed(mentioned ?? configured[0]).name;
 	};
 
 	/** The channel whose profile names this repository, and what its team wants Scout to know. */
 	const channelOf = (repoName: string): { name: string; instructions?: string } | undefined => {
 		for (const [name, channel] of profile.channels) {
-			if (channel.repo === repoName) return { name, ...(channel.instructions === undefined ? {} : { instructions: channel.instructions }) };
+			if (channel.repos.includes(repoName)) return { name, ...(channel.instructions === undefined ? {} : { instructions: channel.instructions }) };
 		}
 		return undefined;
 	};

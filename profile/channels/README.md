@@ -27,4 +27,8 @@ We ship on Tuesdays. Ask in #payments before changing anything under libs/paymen
 When you've looked into an alert, mention @ann with your verdict.
 ```
 
+A team that works in several repositories lists them, `repo: gatus, grafana`: the first is the default, and a thread
+starts in the one its first message names ("the grafana alert rule for disk space…"). An alert's thread names its
+source, so `#alerts` with `repo: gatus, grafana` puts a Gatus alert in `gatus` and a Grafana one in `grafana`.
+
 Edits apply to the next request in every thread; no restart needed.
