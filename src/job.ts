@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type ConversationId, MemoryStorage, watchEvents } from "@earendil-works/pi-durable";
@@ -83,16 +84,20 @@ if (import.meta.main) {
 		process.exit(2);
 	}
 	useScoutsKey(config.git.sshKey);
+	// Nothing is kept: conversations live in memory and start at 1 each run, so the rest gets its own folder too.
+	const instance = `job${randomBytes(3).toString("hex")}`;
+	const dataDir = join(config.dataDir, "jobs", instance);
 	const scout = await openScout({
 		config,
 		storage: new MemoryStorage(),
-		dataDir: join(config.dataDir, "jobs"),
-		instance: `job${randomBytes(3).toString("hex")}`,
+		dataDir,
+		instance,
 		context: BACKGROUND_CONTEXT,
 		watchProfile: false,
 	});
 	const result = await runJob(scout, prompt, { progress: (line) => console.error(`• ${line}`) }, repo === undefined ? {} : { repo });
 	await scout.close();
+	rmSync(dataDir, { recursive: true, force: true });
 	console.log(result.answer);
 	for (const url of result.pullRequests) console.log(url);
 	process.exit(result.ok ? 0 : 1);
