@@ -191,6 +191,19 @@ describe("bridge", () => {
 		});
 	}
 
+	it("says when a reply steered the work, so people know it was heard", async () => {
+		faux.setResponses([fauxAssistantMessage([fauxToolCall("wait", {})], { stopReason: "toolUse" })]);
+		await bridge.onMessage(message({ text: `<@${BOT}> take your time` }));
+		const thread = threads.get(threadKey("C1", "100.1"))!;
+		await until(() => bridge.view(thread.conversationId)?.runTs !== undefined && faux.state.callCount === 1);
+		await bridge.onMessage(message({ text: "also cover the docs", ts: "100.2", threadTs: "100.1" }));
+		await until(() => surface.texts().some((text) => /Took in ann's reply/.test(text)));
+
+		await bridge.onMessage(message({ user: "UBOB", text: `<@${BOT}> stop`, ts: "100.3", threadTs: "100.1" }));
+		await settle(thread.conversationId);
+		assert.match(surface.texts().at(-1) ?? "", /Stopped by bob\. My last steps:\n• `wait`\n• _Took in ann's reply_/);
+	});
+
 	it("ignores a stop when nothing is running, and other reactions", async () => {
 		faux.setResponses([fauxAssistantMessage("done")]);
 		await bridge.onMessage(message({}));

@@ -27,6 +27,11 @@ describe("render", () => {
 		assert.doesNotMatch(JSON.stringify(finalMessage({ startedAt: 0, steps: [], text: "Done." }, 1000).blocks), /Noted/);
 	});
 
+	it("keeps a stopped run's last steps when it had no words yet", () => {
+		const message = finalMessage({ startedAt: 0, steps: ["`bash npm test`", "`open_pull_request Fix it`"], stoppedBy: "ann" }, 1000);
+		assert.match(message.text, /Stopped by ann\. My last steps:\n• `bash npm test`\n• `open_pull_request Fix it`/);
+	});
+
 	it("says what went wrong when a run fails without an answer", () => {
 		const message = finalMessage({ startedAt: 0, steps: [], error: "model overloaded" }, 1000);
 		assert.match(message.text, /ran into a problem.*model overloaded/);

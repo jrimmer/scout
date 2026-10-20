@@ -255,6 +255,7 @@ export class Bridge {
 				context,
 			);
 			threads.asked(key, message.user);
+			if (how === "steer") this.view(thread.conversationId)?.tookIn(name);
 		}
 		threads.spoke(key, message.user);
 		this.#options.audit?.record("request", {

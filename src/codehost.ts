@@ -165,7 +165,7 @@ type PullDraft = { title: string; body: string; head: string; base: string };
 
 type Created = { url: string; number: number };
 
-async function createOrFindPull(host: CodeHost, slug: string, doFetch: typeof fetch, pull: PullDraft): Promise<Created> {
+export async function createOrFindPull(host: CodeHost, slug: string, doFetch: typeof fetch, pull: PullDraft): Promise<Created> {
 	const headers = {
 		"content-type": "application/json",
 		accept: host.kind === "github" ? "application/vnd.github+json" : "application/json",
@@ -178,14 +178,23 @@ async function createOrFindPull(host: CodeHost, slug: string, doFetch: typeof fe
 		return { url: body.html_url, number: body.number };
 	}
 
-	// Already open for this branch: the push above updated it.
+	// Already open for this branch: the push above updated its commits; bring its title and description (and the
+	// self-review in it) up to date with them.
 	if (created.status === 409 || created.status === 422) {
 		const open = await doFetch(`${pulls}?state=open&per_page=100&limit=50`, { headers });
 		if (open.ok) {
 			const existing = ((await open.json()) as { html_url: string; number: number; head: { ref: string } }[]).find(
 				(candidate) => candidate.head.ref === pull.head,
 			);
-			if (existing !== undefined) return { url: existing.html_url, number: existing.number };
+			if (existing !== undefined) {
+				const updated = await doFetch(`${pulls}/${existing.number}`, {
+					method: "PATCH",
+					headers,
+					body: JSON.stringify({ title: pull.title, body: pull.body }),
+				});
+				if (!updated.ok) console.error(`couldn't update ${existing.html_url}'s description (${updated.status})`);
+				return { url: existing.html_url, number: existing.number };
+			}
 		}
 	}
 	throw new Error(`Code host refused the pull request (${created.status}): ${(await created.text()).slice(0, 500)}`);

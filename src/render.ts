@@ -84,6 +84,13 @@ export class ThreadView {
 		if (this.#run !== undefined) this.#run.stoppedBy = by;
 	}
 
+	/** Someone's reply steered the current run: say so among its steps, so they know it was heard. */
+	tookIn(name: string): void {
+		if (this.#run === undefined) return;
+		this.#run.steps.push(`_Took in ${name}'s reply_`);
+		this.#schedule();
+	}
+
 	/** Resolves once every Slack call queued so far has finished. */
 	settled(): Promise<void> {
 		return this.#queue;
@@ -196,7 +203,7 @@ export function finalMessage(
 ): ChatMessage {
 	const answer =
 		run.stoppedBy !== undefined
-			? `Stopped by ${run.stoppedBy}.${run.text === undefined ? "" : ` Where I'd got to:\n\n${run.text}`}`
+			? `Stopped by ${run.stoppedBy}.${stoppedAt(run)}`
 			: (run.text ??
 				(run.error === undefined ? "Done." : `I ran into a problem and stopped: ${clip(run.error, 500)}`));
 	const steps = run.steps.length;
@@ -221,6 +228,13 @@ export function finalMessage(
 			{ type: "context", elements: [{ type: "mrkdwn", text: footer }] },
 		],
 	};
+}
+
+/** Where a stopped run had got to: its last words, or else its last steps, so the work done so far isn't lost. */
+function stoppedAt(run: Pick<Run, "steps" | "text">): string {
+	if (run.text !== undefined) return ` Where I'd got to:\n\n${run.text}`;
+	if (run.steps.length === 0) return "";
+	return ` My last steps:\n${run.steps.slice(-VISIBLE_STEPS).map((step) => `• ${step}`).join("\n")}`;
 }
 
 export function describeStep(toolName: string, args: Record<string, unknown>): string {

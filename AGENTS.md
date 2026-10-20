@@ -7,6 +7,7 @@ and what was left out on purpose.
 ## Commands
 
 ```bash
+npm ci                            # first, in a fresh checkout
 npm test                          # node:test, TypeScript run directly by Node (no build step)
 SCOUT_DOCKER_TESTS=1 npm test     # plus real Docker/git tests; needs `docker build -t scout-sandbox:latest sandbox`
 npm run check                     # tsc --noEmit
