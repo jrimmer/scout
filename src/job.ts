@@ -6,6 +6,7 @@ import { loadConfig, useScoutsKey } from "./config.ts";
 import { ThreadDoc } from "./docs.ts";
 import { describeStep } from "./render.ts";
 import { openScout, type Scout } from "./scout.ts";
+import { resolveSecrets } from "./secrets.ts";
 
 /**
  * Job mode: one task, no Slack, nothing kept. Provision a workspace, run, stream progress, clean up; for CI and batch
@@ -72,6 +73,10 @@ if (import.meta.main) {
 		console.error('usage: npm run job -- [--repo name] "what to do"');
 		process.exit(2);
 	}
+	// Secrets may be references, as for the service; a job never talks to Slack, so its tokens needn't resolve.
+	delete process.env.SLACK_BOT_TOKEN;
+	delete process.env.SLACK_APP_TOKEN;
+	await resolveSecrets();
 	const config = loadConfig();
 	if (repo !== undefined && !config.repos.some((r) => r.name === repo)) {
 		console.error(`no repository named ${repo}; configured: ${config.repos.map((r) => r.name).join(", ")}`);

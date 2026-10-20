@@ -182,7 +182,10 @@ export class Workspaces {
 		const handle = await this.#config.driver.open(this.key(conversationId), this.spec(repo, conversationId));
 		const options: ConnectionOptions = {
 			command: handle.daemonCommand,
-			onLog: (text) => console.error(`sandbox ${this.key(conversationId)}: ${text.trimEnd()}`),
+			// Once closed, what the daemon's transport says is about its own ending (spoond: the stream, as the lease goes).
+			onLog: (text) => {
+				if (this.#open.has(conversationId)) console.error(`sandbox ${this.key(conversationId)}: ${text.trimEnd()}`);
+			},
 		};
 		const connection = new TrackedConnection(options);
 		const opened = { handle, connection, repo };

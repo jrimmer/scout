@@ -77,8 +77,9 @@ export class SpoondDriver implements SandboxDriver {
 	}
 
 	async #find(key: string): Promise<Lease | undefined> {
-		const { sandboxes } = (await this.#api("GET", "/api/leases")) as { sandboxes: Lease[] };
-		return sandboxes.find((s) => s.holder === holder(key));
+		// An owner with no leases gets `"sandboxes": null`.
+		const { sandboxes } = (await this.#api("GET", "/api/leases")) as { sandboxes: Lease[] | null };
+		return sandboxes?.find((s) => s.holder === holder(key));
 	}
 
 	async #create(key: string, spec: SandboxSpec): Promise<Lease> {

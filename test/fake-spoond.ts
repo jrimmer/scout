@@ -32,7 +32,7 @@ export async function fakeSpoond(token: string) {
 		const match = /^\/api\/leases(?:\/([^/]+))?(?:\/(.*))?$/.exec(url.pathname);
 		if (match === null) return json(404, { error: "not found" });
 		const [, id, rest] = match;
-		if (id === undefined && req.method === "GET") return json(200, { sandboxes: [...leases.values()].map(({ body: _, ...l }) => l) });
+		if (id === undefined && req.method === "GET") return json(200, { sandboxes: leases.size === 0 ? null : [...leases.values()].map(({ body: _, ...l }) => l) });
 		if (id === undefined && req.method === "POST") {
 			const created = JSON.parse(body.toString()) as Record<string, unknown>;
 			const lease = { id: `lease${next++}`, holder: String(created.holder), state: "running", body: created };
