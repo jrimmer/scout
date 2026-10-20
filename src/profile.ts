@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, watch } from "node:fs";
 import { promisify } from "node:util";
-import { basename, join } from "node:path";
+import { basename, join, sep } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/chord";
 import { type ConversationId, type DocumentReader, defineExtension, defineTool, section } from "@earendil-works/pi-durable";
@@ -192,7 +192,9 @@ export async function pullProfile(dir: string): Promise<void> {
 /** Watch the profile directory and call `onChange` with a fresh profile after edits settle. */
 export function watchProfile(dir: string, onChange: (profile: Profile) => void): () => void {
 	let timer: ReturnType<typeof setTimeout> | undefined;
-	const watcher = watch(dir, { recursive: true }, () => {
+	const watcher = watch(dir, { recursive: true }, (_event, file) => {
+		// A pull that brings nothing still touches .git (FETCH_HEAD); only the profile's own files are changes.
+		if (file !== null && (file === ".git" || file.startsWith(`.git${sep}`))) return;
 		if (timer !== undefined) clearTimeout(timer);
 		timer = setTimeout(() => {
 			try {
