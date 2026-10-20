@@ -30,7 +30,7 @@ describe("alerts", () => {
 			"http://grafana",
 			"tok",
 			answer([
-				{ fingerprint: "f1", labels: { alertname: "DiskSpaceHigh", instance: "vm1", severity: "warning" }, annotations: { summary: "Disk > 80% on vm1" }, startsAt: "2026-10-20T05:00:00Z", status: { state: "active" } },
+				{ fingerprint: "f1", labels: { alertname: "DiskSpaceHigh", instance: "vm1", mountpoint: "/data", severity: "warning" }, annotations: { summary: "Disk > 80% on vm1" }, startsAt: "2026-10-20T05:00:00Z", status: { state: "active" } },
 				{ fingerprint: "f2", labels: { alertname: "Old" }, startsAt: "2026-10-20T05:00:00Z", status: { state: "suppressed" } },
 			]),
 		);
@@ -38,9 +38,9 @@ describe("alerts", () => {
 			{
 				key: "grafana:f1",
 				source: "grafana",
-				title: "DiskSpaceHigh on vm1 (warning)",
+				title: "DiskSpaceHigh on vm1 /data (warning)",
 				detail: "Disk > 80% on vm1; firing since 2026-10-20T05:00:00Z",
-				labels: { alertname: "DiskSpaceHigh", instance: "vm1", severity: "warning" },
+				labels: { alertname: "DiskSpaceHigh", instance: "vm1", mountpoint: "/data", severity: "warning" },
 			},
 		]);
 	});

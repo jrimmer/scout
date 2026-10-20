@@ -80,7 +80,8 @@ export async function grafanaAlerts(url: string, token: string, fetch: typeof gl
 		.filter((a) => a.status.state === "active")
 		.map((a) => {
 			const name = a.labels.alertname ?? "alert";
-			const where = a.labels.instance ?? a.labels.job;
+			// Alerts of one rule on one host differ by what they watch, such as a disk's mount point.
+			const where = [a.labels.instance ?? a.labels.job, a.labels.mountpoint].filter(Boolean).join(" ");
 			const notes = a.annotations ?? {};
 			return {
 				key: `grafana:${a.fingerprint}`,
