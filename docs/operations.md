@@ -54,6 +54,28 @@ data folder. Scout on main refuses to open data the release has used until you s
 `SCOUT_PI_MIGRATE=1`; back `pi.sqlite` up first, or try main on a copy (`SCOUT_DATA_DIR`). Back on the release, Scout
 refuses converted data and says so.
 
+## Tools beyond code: MCP servers
+
+`SCOUT_MCP_FILE` lists MCP servers Scout runs on its host with their own credentials, never in a sandbox (the file's
+shape is in `src/mcp.ts`). A server can be limited to some channels. Give Scout read-only access: a viewer account, a
+read-only token.
+
+- **Grafana**: Grafana Labs' [`mcp-grafana`](https://github.com/grafana/mcp-grafana) with `--disable-write` and a
+  Viewer service account: metrics and logs queries, dashboards, alerts.
+- **Forgejo CI** (`mcp/forgejo-ci.ts`): a repository's runs, a run's jobs, a job's log (tail or matching lines),
+  with Scout's code host token; logs are redacted for credentials.
+- **Gatus** (`mcp/gatus.ts`): what's failing now, and an endpoint's recent checks.
+
+```json
+{ "servers": {
+    "grafana": { "command": "/usr/local/bin/mcp-grafana",
+                 "args": ["--disable-write", "--enabled-tools", "search,datasource,prometheus,loki,alerting,dashboard,folder,annotations"],
+                 "env": { "GRAFANA_URL": "http://grafana.lan:3000", "GRAFANA_SERVICE_ACCOUNT_TOKEN": "${GRAFANA_TOKEN}" } },
+    "ci": { "command": "node", "args": ["mcp/forgejo-ci.ts"],
+            "env": { "FORGEJO_API": "http://git.lan:3000/api/v1", "FORGEJO_TOKEN": "${SCOUT_CODEHOST_TOKEN}" } },
+    "status": { "command": "node", "args": ["mcp/gatus.ts"], "env": { "GATUS_URL": "http://gatus.lan:8080" } } } }
+```
+
 ## Backups: Litestream
 
 Both databases (`pi.sqlite`, conversations; `scout.sqlite`, everything else) are SQLite in WAL mode.
