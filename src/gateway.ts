@@ -21,6 +21,11 @@ export type GatewayConfig = {
 	headers?: Record<string, string>;
 	/** How to speak OpenAI through it: `responses` (OpenAI's own API) or `completions` (what most gateways serve). */
 	openaiApi?: "responses" | "completions";
+	/**
+	 * Models the gateway serves that the catalog doesn't know, by the gateway's name (e.g. `lunaroute/deepseek-4.1-flash`).
+	 * They are `gateway/<name>`, spoken to with OpenAI's chat completions API at `url`.
+	 */
+	models?: string[];
 };
 
 /** Model access: the providers Scout knows, direct or through a gateway. */
@@ -39,7 +44,8 @@ export function gatewayProviders(gateway: GatewayConfig): Provider[] {
 	const auth = {
 		apiKey: {
 			name: "gateway key",
-			resolve: async () => (gateway.key === undefined ? { auth: {}, source: "gateway" } : { auth: { apiKey: gateway.key }, source: "SCOUT_GATEWAY_KEY" }),
+			// A gateway on a trusted network may take no key, but the OpenAI client won't send a request without one.
+			resolve: async () => (gateway.key === undefined ? { auth: { apiKey: "none" }, source: "gateway" } : { auth: { apiKey: gateway.key }, source: "SCOUT_GATEWAY_KEY" }),
 		},
 	};
 	const headers = gateway.headers ?? {};
@@ -62,6 +68,28 @@ export function gatewayProviders(gateway: GatewayConfig): Provider[] {
 			auth,
 			models: Object.values(OPENAI_MODELS).map((m) => ({ ...m, baseUrl: gateway.url, headers: { ...m.headers, ...headers } })),
 			api: gateway.openaiApi === "responses" ? openAIResponsesApi() : openAICompletionsApi(),
+		}) as Provider,
+		createProvider({
+			id: "gateway",
+			name: "Gateway",
+			baseUrl: gateway.url,
+			headers,
+			auth,
+			// The gateway knows these models' limits and prices; these are safe guesses (SCOUT_PRICES_FILE sets prices).
+			models: (gateway.models ?? []).map((id) => ({
+				id,
+				name: id,
+				api: "openai-completions" as const,
+				provider: "gateway",
+				baseUrl: gateway.url,
+				headers,
+				reasoning: false,
+				input: ["text" as const],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 131072,
+				maxTokens: 16384,
+			})),
+			api: openAICompletionsApi(),
 		}) as Provider,
 	];
 }

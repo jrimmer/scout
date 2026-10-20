@@ -51,4 +51,40 @@ describe("model gateway", () => {
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 		}
 	});
+
+	it("serves models only the gateway knows as gateway/<name>, over OpenAI's chat completions", async () => {
+		const seen: { path: string; model: string }[] = [];
+		const server = createServer((req, res) => {
+			let body = "";
+			req.on("data", (chunk) => (body += chunk));
+			req.on("end", () => {
+				seen.push({ path: new URL(req.url ?? "", "http://x").pathname, model: (JSON.parse(body) as { model: string }).model });
+				const chunk = (delta: object, finish: string | null) =>
+					`data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 0, model: "m", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+				res.writeHead(200, { "content-type": "text/event-stream" });
+				res.end(`${chunk({ role: "assistant", content: "hello from lunaroute" }, null)}${chunk({}, "stop")}data: [DONE]\n\n`);
+			});
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address();
+		const port = typeof address === "object" && address !== null ? address.port : 0;
+
+		const models = modelsFor({ url: `http://127.0.0.1:${port}/v1`, models: ["lunaroute/deepseek-4.1-flash"] });
+		const harness = await Harness.open(new MemoryStorage(), { models, registry: createRegistry() }, context);
+		try {
+			const conversation = await harness.root(context, { agent: { model: { provider: "gateway", modelId: "lunaroute/deepseek-4.1-flash" } } });
+			const settled = await (await conversation.submit({ type: "input", content: "hi" }, context)).wait(context);
+			assert.equal(settled.status, "done", JSON.stringify(settled));
+			const answer =
+				settled.status === "done" && settled.type === "input"
+					? await conversation.commit((tx) => tx.entry(AssistantEntry, settled.answer), context)
+					: undefined;
+			assert.match(JSON.stringify(answer?.model), /hello from lunaroute/);
+			assert.deepEqual(seen, [{ path: "/v1/chat/completions", model: "lunaroute/deepseek-4.1-flash" }]);
+		} finally {
+			await harness.close(context);
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
+	});
 });

@@ -86,6 +86,12 @@ export type Config = {
 	git: { name: string; email: string; sshKey?: string };
 };
 
+/** `gateway/…` models: SCOUT_GATEWAY_MODELS (comma-separated), and SCOUT_MODEL's when it is one. */
+function gatewayModels(env: NodeJS.ProcessEnv, model: string | undefined): string[] {
+	const listed = (env.SCOUT_GATEWAY_MODELS ?? "").split(",").map((m) => m.trim()).filter(Boolean);
+	return [...new Set(model === undefined ? listed : [model, ...listed])];
+}
+
 function required(env: NodeJS.ProcessEnv, name: string): string {
 	const value = env[name];
 	if (value === undefined || value === "") throw new Error(`${name} is not set (see .env.example)`);
@@ -197,6 +203,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 						...(env.SCOUT_GATEWAY_KEY ? { key: env.SCOUT_GATEWAY_KEY } : {}),
 						...(env.SCOUT_GATEWAY_HEADERS ? { headers: JSON.parse(env.SCOUT_GATEWAY_HEADERS) as Record<string, string> } : {}),
 						...(env.SCOUT_GATEWAY_OPENAI_API === "responses" ? { openaiApi: "responses" as const } : {}),
+						models: gatewayModels(env, provider === "gateway" ? modelId : undefined),
 					},
 				}
 			: {}),
