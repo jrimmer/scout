@@ -37,6 +37,8 @@ export type Config = {
 	/** `provider/modelId`, e.g. `anthropic/claude-opus-5-5`. */
 	model: { provider: string; modelId: string };
 	dataDir: string;
+	/** Pi Durable from main may convert this data dir's pi.sqlite, which its release can't open afterwards. */
+	piMigrate: boolean;
 	profileDir: string;
 	/** The default repository: threads in channels whose profile names no other work here. */
 	repo: RepoConfig;
@@ -146,6 +148,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		slack: { botToken: env.SLACK_BOT_TOKEN ?? "", appToken: env.SLACK_APP_TOKEN ?? "" },
 		model: { provider, modelId },
 		dataDir: resolve(env.SCOUT_DATA_DIR ?? "data"),
+		piMigrate: env.SCOUT_PI_MIGRATE === "1",
 		profileDir: resolve(env.SCOUT_PROFILE_DIR ?? "profile"),
 		repo,
 		repos: [repo, ...moreRepos(env.SCOUT_REPOS_FILE).filter((r) => r.name !== repo.name)],

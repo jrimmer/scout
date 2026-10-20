@@ -38,6 +38,17 @@ resumes on its next use, so a thread's first command after a quiet spell can tak
 with `SCOUT_GATEWAY_KEY` and any `SCOUT_GATEWAY_HEADERS` (JSON) on every request. Model names don't change. spoond's
 gateway serves only OpenAI's API and needs a lease id, so it isn't a good fit for Scout's own calls.
 
+## Pi Durable: stable or main
+
+Scout runs on the Pi Durable release `package.json` pins. `npm run pi -- main` builds Pi's main branch (or any branch,
+tag or commit) from github.com/earendil-works/pi and installs it in place of the release, without saving: `npm ci`,
+`npm install` or `npm run pi -- stable` go back. pi-env stays at its release. Scout logs which it runs on at start.
+
+Main can change how `pi.sqlite` is stored, and a release can't open what it converted, so switching is one-way for a
+data folder. Scout on main refuses to open data the release has used until you start it once with
+`SCOUT_PI_MIGRATE=1`; back `pi.sqlite` up first, or try main on a copy (`SCOUT_DATA_DIR`). Back on the release, Scout
+refuses converted data and says so.
+
 ## Backups: Litestream
 
 Both databases (`pi.sqlite`, conversations; `scout.sqlite`, everything else) are SQLite in WAL mode.

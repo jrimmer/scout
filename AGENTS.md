@@ -19,7 +19,8 @@ npm run job -- "what to do"       # one task with the same agent, no Slack
 - **Keep it small.** The previous attempt (`scout-legacy`) drowned in architecture. Prefer a plain function in the
   file that uses it over a new abstraction. Add a layer only when a second real use exists.
 - **Pi Durable is pinned to an exact version** because its API is experimental. Read its README in
-  `node_modules/@earendil-works/pi-durable/README.md` before using a feature; don't guess at the API.
+  `node_modules/@earendil-works/pi-durable/README.md` before using a feature; don't guess at the API. Code must work
+  on the pinned release; `npm run pi -- main` installs Pi's main branch to try it (`npm run pi -- stable` goes back).
 - **Only `src/scout.ts` wires concrete things together** (with `main.ts` and `job.ts` as front doors). Everything
   else takes what it needs as arguments, so tests can use the faux model, `MemoryStorage`, and a fake `ChatSurface`.
   `openScout` takes `models` for the same reason.

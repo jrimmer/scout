@@ -9,6 +9,7 @@ export const ThreadDoc = defineDoc<{ channel: string; channelName: string; threa
 	scope: "conversation",
 	history: "latest",
 	fork: "current",
+	checkpointWhen: () => false,
 	initial: () => ({ channel: "", channelName: "", threadTs: "" }),
 });
 
@@ -19,6 +20,7 @@ export const ReflectionDoc = defineDoc<{ day: string; root: string }>({
 	scope: "conversation",
 	history: "latest",
 	fork: "current",
+	checkpointWhen: () => false,
 	initial: () => ({ day: "", root: "" }),
 });
 
@@ -32,6 +34,7 @@ export const ReviewDoc = defineDoc<{ root: string; cwd: string; sandbox?: number
 	scope: "conversation",
 	history: "latest",
 	fork: "current",
+	checkpointWhen: () => false,
 	initial: () => ({ root: "", cwd: "" }),
 });
 
@@ -42,5 +45,6 @@ export const ReviewsDoc = defineDoc<{ verdicts: Record<string, "approve" | "chan
 	scope: "conversation",
 	history: "latest",
 	fork: "current",
+	checkpointWhen: () => false,
 	initial: () => ({ verdicts: {} }),
 });

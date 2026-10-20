@@ -8,7 +8,8 @@
     "check": "tsc --noEmit",
     "job": "node --env-file-if-exists=.env src/job.ts",
     "dash-password": "node src/dash/server.ts",
-    "audit": "node --env-file-if-exists=.env src/audit.ts"
+    "audit": "node --env-file-if-exists=.env src/audit.ts",
+    "pi": "scripts/pi.sh"
   },
   "type": "module",
   "dependencies": {

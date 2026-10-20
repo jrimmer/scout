@@ -30,6 +30,7 @@ if (config.slack.botToken === "" || config.slack.appToken === "") {
 	throw new Error("SLACK_BOT_TOKEN and SLACK_APP_TOKEN are not set (see .env.example)");
 }
 mkdirSync(config.dataDir, { recursive: true });
+checkPi(config.dataDir, config.piMigrate);
 useScoutsKey(config.git.sshKey);
 console.log(`sandboxes: ${config.sandbox.driver}, image ${config.sandbox.image}, network ${config.sandbox.network}`);
 if (config.sandbox.network === "none") {
@@ -227,6 +228,34 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		await scout.close();
 		process.exit(0);
 	});
+}
+
+/**
+ * Pi Durable from main (`npm run pi -- main`) converts pi.sqlite to a schema its release can't open, so it does that
+ * only when asked, and Scout on the release says why it can't open converted data instead of failing inside Pi.
+ */
+function checkPi(dataDir: string, migrate: boolean): void {
+	const channel = new URL("../node_modules/.pi-channel", import.meta.url);
+	const pi = existsSync(channel) ? readFileSync(channel, "utf8").trim() : "stable";
+	console.log(`pi durable: ${pi}`);
+	const db = join(dataDir, "pi.sqlite");
+	const converted = join(dataDir, "pi-main");
+	if (pi === "stable") {
+		if (existsSync(converted)) {
+			throw new Error(
+				`${db} was converted by Pi Durable ${readFileSync(converted, "utf8").trim()}, which the release can't open. ` +
+					"Go back with `npm run pi -- main`, or restore a backup from before the switch.",
+			);
+		}
+		return;
+	}
+	if (existsSync(db) && !existsSync(converted) && !migrate) {
+		throw new Error(
+			`Pi Durable ${pi} converts ${db} for good: the release can't open it afterwards. Back it up (or use another ` +
+				"SCOUT_DATA_DIR), then start once with SCOUT_PI_MIGRATE=1.",
+		);
+	}
+	writeFileSync(converted, `${pi}\n`);
 }
 
 function instanceId(dataDir: string): string {
