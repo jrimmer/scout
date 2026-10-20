@@ -44,7 +44,7 @@ describe("repositories and zones", () => {
 
 	it("reads a channel's repository and zones from its instructions", () => {
 		const channel = loadProfile(profileDir).channels.get("web-team");
-		assert.deepEqual(channel, { instructions: "We ship on Tuesdays.", repo: "web", zones: ["apps/storefront", "libs/ui"], skills: [] });
+		assert.deepEqual(channel, { instructions: "We ship on Tuesdays.", repo: "web", zones: ["apps/storefront", "libs/ui"], alerts: [], skills: [] });
 	});
 
 	it("takes the default repository's snapshot from SCOUT_REPO_SNAPSHOT", () => {

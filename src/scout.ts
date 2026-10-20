@@ -18,6 +18,7 @@ import { consolidationExtension, Memory, memoryExtension } from "./memory.ts";
 import { cloneProfile, loadProfile, type Profile, profileExtension, watchProfile } from "./profile.ts";
 import { Pulls } from "./pulls.ts";
 import { Reflector, reflectionExtensions } from "./reflect.ts";
+import { type Alert, DEFAULT_RESPONDER_INSTRUCTIONS } from "./alerts.ts";
 import { DEFAULT_PULL_REVIEW_INSTRUCTIONS, reviewAsSubtask, reviewEnv, reviewExtension } from "./review.ts";
 import { searchExtension, ThreadSearch } from "./search.ts";
 import { DockerDriver } from "./drivers/docker.ts";
@@ -286,6 +287,17 @@ export async function openScout(options: ScoutOptions) {
 		return undefined;
 	};
 
+	/** The channel whose profile claims this alert (`alerts:` matching one of its labels), and whom to mention. */
+	const alertChannel = (alert: Alert): { name: string; oncall?: string } | undefined => {
+		const values = new Set(Object.values(alert.labels).map((v) => v.toLowerCase()).filter(Boolean));
+		for (const [name, channel] of profile.channels) {
+			if (channel.alerts.some((term) => values.has(term.toLowerCase()))) return { name, ...(channel.oncall === undefined ? {} : { oncall: channel.oncall }) };
+		}
+		return undefined;
+	};
+	/** How Scout looks into an alert: the profile's `responder.md`. */
+	const responder = (): string => profile.responder ?? DEFAULT_RESPONDER_INSTRUCTIONS;
+
 	/** A channel's own model, from its profile's `model: provider/modelId`. */
 	const modelFor = (channelName: string): { provider: string; modelId: string } | undefined => {
 		const named = profile.channels.get(channelName)?.model;
@@ -305,7 +317,8 @@ export async function openScout(options: ScoutOptions) {
 	const admitter =
 		(working: () => Promise<{ channel: string }[]>) =>
 		async (request: { user: string; channelName: string; repo?: string; starting: boolean }): Promise<Admission> => {
-			const allowed = await permissions.admit(request.user, repoNamed(request.repo).slug);
+			// Work Scout starts itself (an alert's investigation) answers to budgets and concurrency, not to a person's access.
+			const allowed = request.user === "scout" ? ({ ok: true } as const) : await permissions.admit(request.user, repoNamed(request.repo).slug);
 			if (!allowed.ok || !request.starting) return allowed;
 			return limits.admit(request.channelName, await working());
 		};
@@ -314,6 +327,8 @@ export async function openScout(options: ScoutOptions) {
 		harness,
 		repoFor,
 		channelOf,
+		alertChannel,
+		responder,
 		admitter,
 		audit,
 		spend,

@@ -17,6 +17,7 @@ export type Skill = { name: string; description: string; body: string };
  *       reflect.md                      how Scout reviews its own threads each night (see reflect.ts)
  *       review.md                       how Scout reviews its own change before opening a pull request
  *       reviewer.md                     how Scout reviews other people's pull requests when asked (automation.ts)
+ *       responder.md                    how Scout investigates an alert (alerts.ts)
  *       skills/<name>.md                know-how, loaded on demand (frontmatter: description)
  *       channels/<channel-name>/
  *         instructions.md               what this channel's team wants Scout to know
@@ -40,6 +41,10 @@ export type ChannelProfile = {
 	/** `provider/modelId`, for a team that wants a different model than the default. */
 	model?: string;
 	zones: string[];
+	/** Alerts this team owns: a Gatus group or endpoint name, or a Grafana label value (`alerts: Immich, vm1`). */
+	alerts: string[];
+	/** Whom to mention when one of its alerts fires: Slack user or group mentions, e.g. `<@U0123ABC>`. */
+	oncall?: string;
 	skills: Skill[];
 };
 
@@ -48,6 +53,7 @@ export type Profile = {
 	reflect?: string;
 	review?: string;
 	reviewer?: string;
+	responder?: string;
 	skills: Skill[];
 	channels: Map<string, ChannelProfile>;
 };
@@ -60,12 +66,15 @@ export function loadProfile(dir: string): Profile {
 			if (!entry.isDirectory()) continue;
 			const text = readOptional(join(channelsDir, entry.name, "instructions.md"));
 			const { meta, body } = frontmatter(text ?? "");
-			const zones = (meta.zones ?? "").split(",").map((z) => z.trim()).filter(Boolean);
+			const list = (value: string | undefined) => (value ?? "").split(",").map((z) => z.trim()).filter(Boolean);
+			const zones = list(meta.zones);
 			channels.set(entry.name, {
 				...(body.trim() === "" ? {} : { instructions: body.trim() }),
 				...(meta.repo ? { repo: meta.repo } : {}),
 				...(meta.model ? { model: meta.model } : {}),
 				zones,
+				alerts: list(meta.alerts),
+				...(meta.oncall ? { oncall: meta.oncall } : {}),
 				skills: loadSkills(join(channelsDir, entry.name, "skills")),
 			});
 		}
@@ -73,11 +82,13 @@ export function loadProfile(dir: string): Profile {
 	const reflect = readOptional(join(dir, "reflect.md"));
 	const review = readOptional(join(dir, "review.md"));
 	const reviewer = readOptional(join(dir, "reviewer.md"));
+	const responder = readOptional(join(dir, "responder.md"));
 	return {
 		system: readOptional(join(dir, "system.md")) ?? "",
 		...(reflect === undefined ? {} : { reflect }),
 		...(review === undefined ? {} : { review }),
 		...(reviewer === undefined ? {} : { reviewer }),
+		...(responder === undefined ? {} : { responder }),
 		skills: loadSkills(join(dir, "skills")),
 		channels,
 	};
@@ -100,7 +111,10 @@ export function frontmatter(text: string): { meta: Record<string, string>; body:
 	const meta: Record<string, string> = {};
 	for (const line of (match[1] ?? "").split("\n")) {
 		const colon = line.indexOf(":");
-		if (colon > 0) meta[line.slice(0, colon).trim()] = line.slice(colon + 1).trim();
+		if (colon <= 0) continue;
+		// `key: value   # a comment`, and `"quoted"` values (a leading @ or : reads better quoted).
+		const value = line.slice(colon + 1).trim().replace(/\s+#.*$/, "");
+		meta[line.slice(0, colon).trim()] = /^(["']).*\1$/.test(value) ? value.slice(1, -1) : value;
 	}
 	return { meta, body: text.slice(match[0].length) };
 }

@@ -138,8 +138,9 @@ one-off:   job.ts ─▶ the same agent, no Slack, nothing kept
   lines of front door.
 - **Profiles, not platforms.** Aquifer's lesson: a new agent is a profile (instructions, tools, trigger, output), not a
   new system. Scout's pull request reviewer is the first beyond the teammate: `reviewer.md`, read-only tools plus CI,
-  asked for in the code host, answering there and in the repository's channel. The alert responder (#26) is next;
-  named profiles and pinning them (#10) follow once there are several.
+  asked for in the code host, answering there and in the repository's channel. The alert responder (#26) is the
+  second: Gatus and Grafana watched by polling, `responder.md`, a public thread in the owning channel. Named profiles
+  and pinning them (#10) follow once there are several.
 - **One process, SQLite, Socket Mode.**
   - No tunnel, no Postgres, no job queue.
   - Pi Durable has one storage owner per process, which suits a team-sized deployment. Jobs use their own memory

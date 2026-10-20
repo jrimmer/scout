@@ -20,8 +20,11 @@ and Scout starts looking in the zones:
 repo: storefront
 zones: apps/checkout, libs/payments
 model: anthropic/claude-sonnet-5-5    # optional: this team's model, if not the default
+alerts: Checkout, payments-api        # optional: alerts this team owns (a Gatus group or name, a Grafana label value)
+oncall: "@ann"                        # optional: whom to mention when one of them fires
 ---
 We ship on Tuesdays. Ask in #payments before changing anything under libs/payments.
+When you've looked into an alert, mention @ann with your verdict.
 ```
 
 Edits apply to the next request in every thread; no restart needed.

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { type Alert, AlertLog, type AlertSource, AlertWatcher, gatusAlerts, grafanaAlerts } from "./alerts.ts";
 import { PullReviewer } from "./automation.ts";
 import { hostname } from "node:os";
 import { Bridge } from "./bridge.ts";
@@ -156,6 +157,65 @@ async function reflect(day: string): Promise<void> {
 	}
 }
 
+// The alert responder: new alerts become public investigations in the channel that owns them (alerts.ts).
+const alertSources: AlertSource[] = [
+	...(config.alerts.gatusUrl === undefined ? [] : [{ source: "gatus" as const, read: () => gatusAlerts(config.alerts.gatusUrl!) }]),
+	...(config.alerts.grafana === undefined ? [] : [{ source: "grafana" as const, read: () => grafanaAlerts(config.alerts.grafana!.url, config.alerts.grafana!.token) }]),
+];
+const home = config.reflect.channel?.replace(/^#/, "");
+const alertLog = new AlertLog(join(config.dataDir, "scout.sqlite"));
+const describeAlert = (alert: Alert) => `${alert.title}: ${alert.detail}${alert.url === undefined ? "" : ` (${alert.url})`}`;
+const alertWatcher = new AlertWatcher({
+	log: alertLog,
+	sources: alertSources,
+	handlers: {
+		firing: async (alert) => {
+			const route = scout.alertChannel(alert);
+			const name = route?.name ?? home;
+			const id = name === undefined ? undefined : await slack.channelId(name);
+			if (name === undefined || id === undefined) {
+				console.log(`alert with nowhere to go (no channel claims it, no SCOUT_REFLECT_CHANNEL): ${alert.title}`);
+				return undefined;
+			}
+			const text = [`🔴 *${alert.title}*`, alert.detail, `${route?.oncall === undefined ? "" : `${route.oncall} `}I'm looking into it in this thread.`].join("\n");
+			const ts = await slack.surface.post(id, undefined, { text, blocks: [{ type: "markdown", text }] });
+			await bridge.investigate({
+				channel: id,
+				channelName: name,
+				threadTs: ts,
+				context: `${scout.responder()}\n\nThe alert, from ${alert.source}: ${describeAlert(alert)}\nIts labels: ${JSON.stringify(alert.labels)}`,
+				prompt: `This alert just fired: ${describeAlert(alert)}. Look into it.`,
+				requestId: `alert:${alert.key}:${Date.now()}`,
+			});
+			audit.record("alert", { actor: "scout", channel: name, detail: { key: alert.key, title: alert.title } });
+			return { channel: id, threadTs: ts };
+		},
+		resolved: async (alert) => {
+			if (alert.channel === undefined || alert.threadTs === undefined) return;
+			const minutes = Math.max(1, Math.round((Date.now() - alert.openedAt) / MINUTE));
+			await slack.surface.post(alert.channel, alert.threadTs, { text: `🟢 Resolved after ${minutes} min.`, blocks: [{ type: "markdown", text: `🟢 Resolved after ${minutes} min.` }] });
+		},
+		baseline: async (alerts) => {
+			const id = home === undefined ? undefined : await slack.channelId(home);
+			if (id === undefined) return;
+			const names = alertSources.map((s) => (s.source === "gatus" ? "Gatus" : "Grafana")).join(" and ");
+			const listed = alerts.slice(0, 15).map((a) => `• ${a.title}`);
+			const text = [
+				`I'm watching ${names} for alerts now. From here on, each new one gets a thread in the channel that owns it (or here), where I look into it.`,
+				alerts.length === 0 ? "Nothing is firing right now." : `${alerts.length} already firing, which I'll leave be unless you ask:`,
+				...listed,
+				...(alerts.length > listed.length ? [`…and ${alerts.length - listed.length} more`] : []),
+			].join("\n");
+			await slack.surface.post(id, undefined, { text, blocks: [{ type: "markdown", text }] });
+		},
+	},
+});
+const alertTick =
+	alertSources.length === 0
+		? undefined
+		: setInterval(() => void health.watch("alerts", "watching for alerts failed", () => alertWatcher.poll()), MINUTE);
+if (alertSources.length > 0) console.log(`watching for alerts: ${alertSources.map((s) => s.source).join(", ")}`);
+
 const tick = setInterval(() => {
 	const now = Date.now();
 	// Sandboxes are cattle: put to sleep the ones whose threads went quiet; the next tool call wakes them (a spoond lease
@@ -259,6 +319,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		if (stopping) process.exit(1);
 		stopping = true;
 		clearInterval(tick);
+		if (alertTick !== undefined) clearInterval(alertTick);
+		alertLog.close();
 		await slack.stop().catch(() => {});
 		await dashboard?.close();
 		await scout.close();

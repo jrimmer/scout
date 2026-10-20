@@ -328,6 +328,27 @@ export class Bridge {
 		threads.spoke(key, "scout");
 	}
 
+	/**
+	 * Work Scout starts itself, such as an alert's investigation: a thread it opened, with `context`, then `prompt` as a
+	 * request. It answers to budgets and concurrency like any request; if they say no, the thread says why.
+	 */
+	async investigate(thread: { channel: string; channelName: string; threadTs: string; context: string; prompt: string; requestId: string }): Promise<void> {
+		const { harness, threads, context } = this.#options;
+		await this.openThread(thread);
+		const key = threadKey(thread.channel, thread.threadTs);
+		const row = threads.get(key);
+		if (row === undefined) return;
+		const admission = (await this.#options.admit?.({ user: "scout", channelName: thread.channelName, starting: true })) ?? { ok: true };
+		if (!admission.ok) {
+			await this.#options.surface.post(thread.channel, thread.threadTs, plain(`I'd look into this, but ${admission.reason}`));
+			return;
+		}
+		await this.#view(row);
+		const conversation = await harness.conversation(row.conversationId as ConversationId, context);
+		await conversation?.submit({ type: "input", content: thread.prompt, whenBusy: "steer", requestId: thread.requestId }, context);
+		this.#options.audit?.record("request", { actor: "scout", conversationId: row.conversationId, channel: thread.channelName, detail: { as: "investigate", text: thread.prompt.slice(0, 200) } });
+	}
+
 	async #startThread(key: string, message: Pick<IncomingMessage, "channel" | "channelName" | "ts" | "user"> & { threadTs?: string }): Promise<ThreadRow> {
 		const { harness, threads, context } = this.#options;
 		const model = this.#options.modelFor?.(message.channelName);

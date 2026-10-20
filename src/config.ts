@@ -55,6 +55,8 @@ export type Config = {
 	profileRepo?: { gitUrl: string; base: string; slug: string };
 	/** Local hour (0-23) for the nightly reflection, and Scout's home channel: proposals and the weekly report. */
 	reflect: { hour: number; channel?: string };
+	/** Monitoring Scout watches for alerts to investigate (alerts.ts); none set, it watches none. */
+	alerts: { gatusUrl?: string; grafana?: { url: string; token: string } };
 	sandbox: SandboxConfig;
 	/** Governance (see pricing.ts, limits.ts, permissions.ts, retention.ts, telemetry.ts). All optional. */
 	governance: {
@@ -177,6 +179,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 					},
 				}
 			: {}),
+		alerts: {
+			...(env.SCOUT_ALERTS_GATUS_URL ? { gatusUrl: env.SCOUT_ALERTS_GATUS_URL.replace(/\/$/, "") } : {}),
+			...(env.SCOUT_ALERTS_GRAFANA_URL
+				? { grafana: { url: env.SCOUT_ALERTS_GRAFANA_URL.replace(/\/$/, ""), token: required(env, "SCOUT_ALERTS_GRAFANA_TOKEN") } }
+				: {}),
+		},
 		reflect: {
 			hour: Number(env.SCOUT_REFLECT_HOUR ?? 3),
 			...(env.SCOUT_REFLECT_CHANNEL ? { channel: env.SCOUT_REFLECT_CHANNEL } : {}),

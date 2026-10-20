@@ -29,7 +29,8 @@ export class Slack {
 		this.app = new App({ token: tokens.botToken, appToken: tokens.appToken, socketMode: true, logLevel: LogLevel.WARN });
 		const client = this.app.client;
 		this.surface = {
-			post: async (channel, threadTs, message) => {
+			post: async (channel, threadTs, original) => {
+				const message = await this.#withMentions(original);
 				const posted = await client.chat.postMessage({
 					channel,
 					...(threadTs === undefined ? {} : { thread_ts: threadTs }),
@@ -39,10 +40,53 @@ export class Slack {
 				});
 				return posted.ts ?? "";
 			},
-			update: async (channel, ts, message) => {
+			update: async (channel, ts, original) => {
+				const message = await this.#withMentions(original);
 				await client.chat.update({ channel, ts, text: message.text, blocks: message.blocks as never });
 			},
 		};
+	}
+
+	/** `@jason` in what Scout writes (or its profile tells it to write) becomes a real mention of that person. */
+	async #withMentions(message: ChatMessage): Promise<ChatMessage> {
+		if (!/@\w/.test(message.text) && !JSON.stringify(message.blocks).includes("@")) return message;
+		const handles = await this.#handles();
+		const blocks = message.blocks.map((block) => {
+			const b = block as { type?: string; text?: unknown };
+			return b.type === "markdown" && typeof b.text === "string" ? { ...b, text: mentionNames(b.text, handles) } : block;
+		});
+		return { text: mentionNames(message.text, handles), blocks };
+	}
+
+	#handleCache: { at: number; handles: Map<string, string> } | undefined;
+
+	/** Everyone's Slack handle and display name, lowercased, to their user ID; refreshed hourly. Ambiguous ones are left out. */
+	async #handles(): Promise<Map<string, string>> {
+		if (this.#handleCache !== undefined && Date.now() - this.#handleCache.at < 60 * 60 * 1000) return this.#handleCache.handles;
+		const seen = new Map<string, string | null>();
+		const add = (name: string | undefined, id: string) => {
+			const key = name?.trim().toLowerCase().replace(/\s+/g, "");
+			if (!key) return;
+			seen.set(key, seen.has(key) && seen.get(key) !== id ? null : id);
+		};
+		try {
+			let cursor: string | undefined;
+			do {
+				const page = await this.app.client.users.list({ limit: 200, ...(cursor ? { cursor } : {}) });
+				for (const user of page.members ?? []) {
+					if (!user.id || user.deleted || user.is_bot) continue;
+					add(user.name, user.id);
+					add(user.profile?.display_name, user.id);
+				}
+				cursor = page.response_metadata?.next_cursor || undefined;
+			} while (cursor !== undefined);
+		} catch (error) {
+			console.error("listing Slack users for mentions failed:", error instanceof Error ? error.message : error);
+			return this.#handleCache?.handles ?? new Map();
+		}
+		const handles = new Map([...seen].flatMap(([name, id]) => (id === null ? [] : [[name, id] as const])));
+		this.#handleCache = { at: Date.now(), handles };
+		return handles;
 	}
 
 	/** Scout's own Slack user ID, which mentions of it carry. */
@@ -228,4 +272,23 @@ export function slackChannelName(text: string): string {
 			.replace(/^-+|-+$/g, "")
 			.slice(0, 70) || "scout"
 	);
+}
+
+/**
+ * `@name` → `<@ID>` for names in `handles` (lowercased Slack handles and display names), outside code spans and fences,
+ * so `@scope/package` and decorators stay as written. A trailing `.` or `-` (end of a sentence) isn't part of the name.
+ */
+export function mentionNames(text: string, handles: ReadonlyMap<string, string>): string {
+	return text
+		.split(/(```[\s\S]*?```|`[^`\n]*`)/)
+		.map((part, i) =>
+			i % 2 === 1
+				? part
+				: part.replace(/(^|[^\w<`/])@([A-Za-z0-9][\w.-]*)(?![\w/])/g, (whole, before: string, name: string) => {
+						const bare = name.replace(/[.-]+$/, "");
+						const id = handles.get(bare.toLowerCase());
+						return id === undefined ? whole : `${before}<@${id}>${name.slice(bare.length)}`;
+					}),
+		)
+		.join("");
 }

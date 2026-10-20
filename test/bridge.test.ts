@@ -123,6 +123,24 @@ describe("bridge", () => {
 		assert.match(surface.texts().at(-1) ?? "", /nothing covers the empty case/);
 	});
 
+	it("investigates in a thread it opened, with the context it was given", async () => {
+		let seen = "";
+		faux.setResponses([
+			(transcript) => {
+				seen = JSON.stringify(transcript);
+				return fauxAssistantMessage("Photos is down because its disk is full.");
+			},
+		]);
+		await bridge.investigate({ channel: "C1", channelName: "team", threadTs: "700.1", context: "Investigate calmly.", prompt: "This alert just fired: Photos is down.", requestId: "alert:photos:1" });
+		const thread = threads.get(threadKey("C1", "700.1"));
+		assert.ok(thread);
+		await settle(thread.conversationId);
+		assert.match(seen, /Investigate calmly\./);
+		assert.match(seen, /Photos is down\./);
+		assert.equal(surface.sent[0]?.ref, "700.1", "the answer is in the alert's thread");
+		assert.match(surface.texts().at(-1) ?? "", /its disk is full/);
+	});
+
 	it("starts a thread on a mention and answers in one message", async () => {
 		faux.setResponses([fauxAssistantMessage("It runs the tests.")]);
 		await bridge.onMessage(message({}));

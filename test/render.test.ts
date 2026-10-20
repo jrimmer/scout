@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { delivery } from "../src/etiquette.ts";
 import { frontmatter } from "../src/profile.ts";
 import { type ChatMessage, describeStep, finalMessage, progressMessage, ThreadView } from "../src/render.ts";
-import { slackChannelName } from "../src/slack.ts";
+import { mentionNames, slackChannelName } from "../src/slack.ts";
 
 describe("render", () => {
 	it("describes steps briefly", () => {
@@ -48,12 +48,24 @@ describe("etiquette", () => {
 });
 
 describe("helpers", () => {
+	it("reads frontmatter values without trailing comments or quotes", () => {
+		const { meta } = frontmatter('---\nmodel: anthropic/claude-sonnet-5-5    # optional\noncall: "@ann"\nchannel: #ops\n---\nbody');
+		assert.deepEqual(meta, { model: "anthropic/claude-sonnet-5-5", oncall: "@ann", channel: "#ops" });
+	});
+
 	it("parses skill frontmatter", () => {
 		assert.deepEqual(frontmatter("---\ndescription: Query the warehouse\n---\nBody"), {
 			meta: { description: "Query the warehouse" },
 			body: "Body",
 		});
 		assert.deepEqual(frontmatter("No frontmatter"), { meta: {}, body: "No frontmatter" });
+	});
+
+	it("turns @names into mentions, but not in code, emails, scopes or for unknown names", () => {
+		const handles = new Map([["jason", "U1"], ["ann.lee", "U2"]]);
+		assert.equal(mentionNames("Done, @jason. Over to @Ann.Lee.", handles), "Done, <@U1>. Over to <@U2>.");
+		assert.equal(mentionNames("Ask @nobody, mail jason@example.com, see <@U9>", handles), "Ask @nobody, mail jason@example.com, see <@U9>");
+		assert.equal(mentionNames("`@jason` and ```\n@jason\n``` and npm i @jason/pkg", handles), "`@jason` and ```\n@jason\n``` and npm i @jason/pkg");
 	});
 
 	it("makes valid channel names", () => {

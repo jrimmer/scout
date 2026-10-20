@@ -70,6 +70,26 @@ the diff shows, then reviews each new push until the pull request closes. Its ow
 their self-review). The channel whose profile names the repository gets a short summary, in a thread where anyone can
 ask Scout about its review. Nothing to configure; give Scout's account access to the repository.
 
+## Alerts
+
+Scout can watch the monitoring you already have and look into each new alert in public. It reads Gatus's checks
+(`SCOUT_ALERTS_GATUS_URL`; an endpoint is down after two failed checks in a row) and Grafana's firing alerts
+(`SCOUT_ALERTS_GRAFANA_URL` and `SCOUT_ALERTS_GRAFANA_TOKEN`, a Viewer service account), once a minute. Your alerts'
+existing destinations are untouched.
+
+- The first look only records what's already firing, and lists it in Scout's home channel (`SCOUT_REFLECT_CHANNEL`).
+- Each new alert gets a message in the channel whose profile claims it (`alerts:` in its `instructions.md`, matching a
+  Gatus group or endpoint name, or any Grafana label value), or the home channel. Its thread is an investigation: the
+  profile's `responder.md` says how. Scout mentions the channel's `oncall:` people.
+- When the alert clears, Scout says so in the same thread. People can join, steer, or ask it to fix what it found.
+- Investigations count against the channel's budget and concurrency like any request.
+
+## Asking for behavior in the profile
+
+Profiles are instructions in plain English, so behavior goes there: "when you've finished looking into an alert,
+mention @jason with your verdict" in `responder.md`, or in one channel's `instructions.md`. `@name` in anything Scout
+posts becomes a real Slack mention when it matches someone's handle or display name (not inside code).
+
 ## Tools beyond code: MCP servers
 
 `SCOUT_MCP_FILE` lists MCP servers Scout runs on its host with their own credentials, never in a sandbox (the file's
