@@ -20,7 +20,7 @@ import { consolidationExtension, Memory, memoryExtension } from "./memory.ts";
 import { cloneProfile, loadProfile, type Profile, profileExtension, watchProfile } from "./profile.ts";
 import { Pulls } from "./pulls.ts";
 import { Reflector, reflectionExtensions } from "./reflect.ts";
-import { type Alert, DEFAULT_RESPONDER_INSTRUCTIONS } from "./alerts.ts";
+import { type Alert, type AlertPolicy, alertMatches, DEFAULT_RESPONDER_INSTRUCTIONS } from "./alerts.ts";
 import { DEFAULT_PULL_REVIEW_INSTRUCTIONS, reviewAsSubtask, reviewEnv, reviewExtension } from "./review.ts";
 import { searchExtension, ThreadSearch } from "./search.ts";
 import { DockerDriver } from "./drivers/docker.ts";
@@ -107,6 +107,7 @@ export async function openScout(options: ScoutOptions) {
 	// What Scout knows. With a profile repo, the directory is a clone kept pulled, so merged changes just arrive.
 	if (config.profileRepo !== undefined) await cloneProfile(config.profileDir, config.profileRepo);
 	let profile: Profile = loadProfile(config.profileDir);
+	for (const problem of profile.problems) console.warn(`profile: ${problem}`);
 	const repoNamed = (name: string | undefined): RepoConfig => config.repos.find((r) => r.name === name) ?? config.repo;
 	/** The repository a conversation works in, as its thread was started with. */
 	/** A conversation's repository, with its own base branch when it has one (a pull request review's thread). */
@@ -273,6 +274,7 @@ export async function openScout(options: ScoutOptions) {
 					profile = next;
 					registry.install(profileExtension(profile, workspace));
 					console.log("profile reloaded");
+					for (const problem of profile.problems) console.warn(`profile: ${problem}`);
 				});
 
 	harness = await Harness.open(
@@ -337,14 +339,15 @@ export async function openScout(options: ScoutOptions) {
 
 	/** The channel whose profile claims this alert (`alerts:` matching one of its labels), and whom to mention. */
 	const alertChannel = (alert: Alert): { name: string; oncall?: string } | undefined => {
-		const values = new Set(Object.values(alert.labels).map((v) => v.toLowerCase()).filter(Boolean));
 		for (const [name, channel] of profile.channels) {
-			if (channel.alerts.some((term) => values.has(term.toLowerCase()))) return { name, ...(channel.oncall === undefined ? {} : { oncall: channel.oncall }) };
+			if (channel.alerts.some((term) => alertMatches(alert, term))) return { name, ...(channel.oncall === undefined ? {} : { oncall: channel.oncall }) };
 		}
 		return undefined;
 	};
 	/** How Scout looks into an alert: the profile's `responder.md`. */
 	const responder = (): string => profile.responder ?? DEFAULT_RESPONDER_INSTRUCTIONS;
+	/** Which alerts to investigate or ignore, and when they count: the frontmatter of `responder.md`. */
+	const alertPolicy = (source: Alert["source"]): AlertPolicy => profile.alertPolicy[source];
 
 	/** A channel's own model, from its profile's `model: provider/modelId`. */
 	const modelFor = (channelName: string): { provider: string; modelId: string } | undefined => {
@@ -378,6 +381,7 @@ export async function openScout(options: ScoutOptions) {
 		approvals,
 		alertChannel,
 		responder,
+		alertPolicy,
 		admitter,
 		audit,
 		spend,

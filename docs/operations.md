@@ -83,18 +83,34 @@ is taken as having none. Fixes count against the channel's budget and concurrenc
 ## Alerts
 
 Scout can watch the monitoring you already have and look into each new alert in public. It reads Gatus's checks
-(`SCOUT_ALERTS_GATUS_URL`; an endpoint is down after two failed checks in a row) and Grafana's firing alerts
-(`SCOUT_ALERTS_GRAFANA_URL` and `SCOUT_ALERTS_GRAFANA_TOKEN`, a Viewer service account), once a minute. Your alerts'
-existing destinations are untouched.
+(`SCOUT_ALERTS_GATUS_URL`) and Grafana's firing alerts (`SCOUT_ALERTS_GRAFANA_URL` and `SCOUT_ALERTS_GRAFANA_TOKEN`,
+a Viewer service account), once a minute. Your alerts' existing destinations are untouched. Where Scout reads alerts
+from is yours to set; which ones it looks into is the profile's (below), so it can be changed by pull request.
 
 - The first look only records what's already firing, and lists it in the alerts channel (`SCOUT_ALERTS_CHANNEL`, or
   else Scout's home channel, `SCOUT_REFLECT_CHANNEL`).
-- Each new alert gets a message in the channel whose profile claims it (`alerts:` in its `instructions.md`, matching a
-  Gatus group or endpoint name, or any Grafana label value), or the alerts channel. Its thread is an investigation: the
+- Each new alert gets a message in the channel whose profile claims it (`alerts:` in its `instructions.md`: any of the
+  alert's label values, or `label=value`; a Gatus check's labels are `group`, `name` and `endpoint`), or the alerts
+  channel. Its thread is an investigation: the
   profile's `responder.md` says how. Scout mentions the channel's `oncall:` people.
 - When the alert clears, Scout says so in the same thread. People can join, steer, or ask it to fix what it found.
-- An alert that clears and comes back within six hours is the same incident: Scout says so in its thread instead of
-  opening another and investigating again.
+- An alert that clears and comes back soon after (`returns_within`, six hours unless the profile says otherwise) is
+  the same incident: Scout says so in its thread instead of opening another and investigating again.
+
+The frontmatter of `responder.md` is the alert policy. Each key can be prefixed with a source (`gatus.`, `grafana.`),
+which then overrides the same key without one for that source:
+
+```yaml
+---
+ignore: name=Cloudflare OS                  # never posted
+grafana.investigate: severity=critical      # the rest are posted, with a thread to ask in, but not looked into
+gatus.down_after: 3                         # failed checks in a row before a Gatus check counts as down (default 2)
+returns_within: 6h                          # 30m, 6h, 1d
+---
+```
+
+`ignore` and `investigate` match like `alerts:` above. Scout logs a warning for a key or value it can't read, rather
+than guessing, and applies changes on its next look.
 - Investigations count against the channel's budget and concurrency like any request.
 
 ## Asking for behavior in the profile

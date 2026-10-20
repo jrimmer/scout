@@ -30,8 +30,92 @@ export const DEFAULT_RESPONDER_INSTRUCTIONS =
 
 export type OpenAlert = Alert & { openedAt: number; channel?: string; threadTs?: string; returns: number };
 
-/** How long a cleared alert's thread stays its thread: if it fires again within this, it's the same incident. */
-export const FLAP_WINDOW_MS = 6 * 60 * 60 * 1000;
+export const ALERT_SOURCES = ["gatus", "grafana"] as const;
+
+/**
+ * How Scout treats one source's alerts. It's the profile's to tune (`responder.md`'s frontmatter, parseAlertPolicy);
+ * where alerts come from and how often Scout looks stay the operator's (config.ts).
+ */
+export type AlertPolicy = {
+	/** Alerts never posted. */
+	ignore: string[];
+	/** When set, only these are investigated; the rest are posted with a thread to ask in. */
+	investigate?: string[];
+	/** Failed checks in a row before a Gatus check counts as down (Gatus's own alerts use 2). */
+	downAfter: number;
+	/** How long a cleared alert's thread stays its thread: if it fires again within this, it's the same incident. */
+	returnsWithinMs: number;
+};
+
+export const DEFAULT_ALERT_POLICY: AlertPolicy = { ignore: [], downAfter: 2, returnsWithinMs: 6 * 60 * 60 * 1000 };
+
+/** Whether `term` names this alert: `label=value` for one label, or a bare value for any label (any case). */
+export function alertMatches(alert: Pick<Alert, "labels">, term: string): boolean {
+	const equals = term.indexOf("=");
+	const want = (equals < 0 ? term : term.slice(equals + 1)).trim().toLowerCase();
+	if (want === "") return false;
+	if (equals < 0) return Object.values(alert.labels).some((v) => v.toLowerCase() === want);
+	return alert.labels[term.slice(0, equals).trim()]?.toLowerCase() === want;
+}
+
+/**
+ * The alert policy in `responder.md`'s frontmatter: flat keys, each optionally for one source (`gatus.down_after`),
+ * which then overrides the same key without one for that source.
+ *
+ *     ignore: name=Cloudflare OS                  # never posted
+ *     grafana.investigate: severity=critical      # the rest are posted, not investigated
+ *     gatus.down_after: 3
+ *     returns_within: 6h
+ *
+ * What it can't read is a problem to report, never a silent default.
+ */
+export function parseAlertPolicy(meta: Record<string, string>): { policy: Record<Alert["source"], AlertPolicy>; problems: string[] } {
+	const problems: string[] = [];
+	const general: Partial<AlertPolicy> = {};
+	const bySource = Object.fromEntries(ALERT_SOURCES.map((s) => [s, {} as Partial<AlertPolicy>])) as Record<Alert["source"], Partial<AlertPolicy>>;
+	for (const [name, value] of Object.entries(meta)) {
+		const dot = name.indexOf(".");
+		const source = dot < 0 ? undefined : name.slice(0, dot);
+		const key = dot < 0 ? name : name.slice(dot + 1);
+		if (source !== undefined && !(ALERT_SOURCES as readonly string[]).includes(source)) {
+			problems.push(`${name}: no alert source called ${source} (there's ${ALERT_SOURCES.join(" and ")})`);
+			continue;
+		}
+		const into = source === undefined ? general : bySource[source as Alert["source"]];
+		const list = value.split(",").map((t) => t.trim()).filter(Boolean);
+		switch (key) {
+			case "ignore":
+				into.ignore = list;
+				break;
+			case "investigate":
+				into.investigate = list;
+				break;
+			case "down_after": {
+				const n = Number(value);
+				if (source === "grafana") problems.push(`${name}: Grafana decides when its own alerts fire (a rule's pending period)`);
+				else if (!Number.isInteger(n) || n < 1) problems.push(`${name}: "${value}" isn't a whole number of checks`);
+				else into.downAfter = n;
+				break;
+			}
+			case "returns_within": {
+				const ms = durationMs(value);
+				if (ms === undefined) problems.push(`${name}: "${value}" isn't a duration like 30m, 6h or 1d`);
+				else into.returnsWithinMs = ms;
+				break;
+			}
+			default:
+				problems.push(`${name}: not an alert setting (there's ignore, investigate, down_after and returns_within)`);
+		}
+	}
+	const policy = Object.fromEntries(ALERT_SOURCES.map((s) => [s, { ...DEFAULT_ALERT_POLICY, ...general, ...bySource[s] }])) as Record<Alert["source"], AlertPolicy>;
+	return { policy, problems };
+}
+
+function durationMs(value: string): number | undefined {
+	const match = /^(\d+)\s*(m|h|d)$/.exec(value.trim());
+	if (match === null) return undefined;
+	return Number(match[1]) * { m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2] as "m" | "h" | "d"];
+}
 
 type Check = { success: boolean; status?: number; timestamp: string; errors?: string[]; conditionResults?: { condition: string; success: boolean }[] };
 type Endpoint = { key: string; name: string; group?: string; results: Check[] };
@@ -176,8 +260,11 @@ function toOpenAlert(row: unknown): OpenAlert {
 }
 
 export type AlertHandlers = {
-	/** A new alert: say so where it belongs and look into it; where that conversation lives, if anywhere. */
-	firing(alert: Alert): Promise<{ channel: string; threadTs: string } | undefined>;
+	/**
+	 * A new alert: say so where it belongs and, if `investigate`, look into it; where that conversation lives, if
+	 * anywhere. Without `investigate`, the policy says it isn't worth an investigation unless someone asks.
+	 */
+	firing(alert: Alert, investigate: boolean): Promise<{ channel: string; threadTs: string } | undefined>;
 	resolved(alert: OpenAlert): Promise<void>;
 	/** It cleared and came back within the flap window: the same incident, in its thread, without a new investigation. */
 	returned(alert: OpenAlert): Promise<void>;
@@ -191,12 +278,14 @@ export class AlertWatcher {
 	readonly #log: AlertLog;
 	readonly #sources: AlertSource[];
 	readonly #handlers: AlertHandlers;
+	readonly #policy: (source: Alert["source"]) => AlertPolicy;
 	#polling = false;
 
-	constructor(options: { log: AlertLog; sources: AlertSource[]; handlers: AlertHandlers }) {
+	constructor(options: { log: AlertLog; sources: AlertSource[]; handlers: AlertHandlers; policy?: (source: Alert["source"]) => AlertPolicy }) {
 		this.#log = options.log;
 		this.#sources = options.sources;
 		this.#handlers = options.handlers;
+		this.#policy = options.policy ?? (() => DEFAULT_ALERT_POLICY);
 	}
 
 	async poll(now = Date.now()): Promise<void> {
@@ -204,11 +293,17 @@ export class AlertWatcher {
 		this.#polling = true;
 		try {
 			const firing = new Map<string, Alert>();
+			// Ignored alerts are as good as not firing, but one that was open before it was ignored goes quietly.
+			const ignored = new Set<string>();
 			// A source that can't be read says nothing about its alerts: they stay open rather than resolve.
 			const unread = new Set<Alert["source"]>();
 			for (const { source, read } of this.#sources) {
 				try {
-					for (const alert of await read()) firing.set(alert.key, alert);
+					const { ignore } = this.#policy(source);
+					for (const alert of await read()) {
+						if (ignore.some((term) => alertMatches(alert, term))) ignored.add(alert.key);
+						else firing.set(alert.key, alert);
+					}
 				} catch (error) {
 					unread.add(source);
 					console.error(`reading ${source} alerts failed:`, error instanceof Error ? error.message : error);
@@ -221,17 +316,19 @@ export class AlertWatcher {
 				await this.#handlers.baseline([...firing.values()]);
 				return;
 			}
-			this.#log.prune(now - FLAP_WINDOW_MS);
+			this.#log.prune(now - Math.max(...ALERT_SOURCES.map((s) => this.#policy(s).returnsWithinMs)));
 			const open = new Map(this.#log.open().map((alert) => [alert.key, alert]));
 			for (const [key, alert] of firing) {
 				if (open.has(key)) continue;
-				const back = this.#log.recentlyResolved(key, now - FLAP_WINDOW_MS);
+				const policy = this.#policy(alert.source);
+				const back = this.#log.recentlyResolved(key, now - policy.returnsWithinMs);
 				if (back !== undefined) {
 					this.#log.reopened(key);
 					await this.#handlers.returned({ ...back, returns: back.returns + 1 }).catch((error: unknown) => console.error(`${alert.title} came back, but saying so failed:`, error));
 					continue;
 				}
-				const where = await this.#handlers.firing(alert).catch((error: unknown) => {
+				const investigate = policy.investigate === undefined || policy.investigate.some((term) => alertMatches(alert, term));
+				const where = await this.#handlers.firing(alert, investigate).catch((error: unknown) => {
 					console.error(`raising ${alert.title} failed:`, error);
 					return undefined;
 				});
@@ -240,6 +337,7 @@ export class AlertWatcher {
 			for (const [key, alert] of open) {
 				if (firing.has(key) || unread.has(alert.source)) continue;
 				this.#log.resolved(key, now);
+				if (ignored.has(key)) continue;
 				await this.#handlers.resolved(alert).catch((error: unknown) => console.error(`resolving ${alert.title} failed:`, error));
 			}
 		} finally {

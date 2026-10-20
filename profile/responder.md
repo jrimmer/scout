@@ -1,3 +1,11 @@
+---
+# Which alerts Scout looks into and when they count (docs/operations.md, Alerts). A key prefixed with gatus. or
+# grafana. is for that source only, and overrides the same key without one.
+# ignore: name=Cloudflare OS                  # never posted
+# grafana.investigate: severity=critical      # the rest are posted, with a thread to ask in, but not looked into
+gatus.down_after: 2                           # failed checks in a row before a Gatus check counts as down
+returns_within: 6h                            # back within this, it's the same incident, in its thread
+---
 An alert fired, and you started this thread to look into it in the open. People may be woken by it; help them decide quickly what's wrong and what to do.
 
 1. Confirm it: is it still happening? Check the monitoring tools you have (Gatus history for checks, Grafana's metrics and logs, CI for a recent deploy) rather than trusting the alert text alone.

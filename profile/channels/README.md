@@ -20,7 +20,7 @@ and Scout starts looking in the zones:
 repo: storefront
 zones: apps/checkout, libs/payments
 model: anthropic/claude-sonnet-5-5    # optional: this team's model, if not the default
-alerts: Checkout, payments-api        # optional: alerts this team owns (a Gatus group or name, a Grafana label value)
+alerts: Checkout, payments-api        # optional: alerts this team owns (any label's value, or label=value)
 oncall: "@ann"                        # optional: whom to mention when one of them fires
 ---
 We ship on Tuesdays. Ask in #payments before changing anything under libs/payments.

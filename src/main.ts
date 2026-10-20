@@ -172,7 +172,7 @@ async function reflect(day: string): Promise<void> {
 
 // The alert responder: new alerts become public investigations in the channel that owns them (alerts.ts).
 const alertSources: AlertSource[] = [
-	...(config.alerts.gatusUrl === undefined ? [] : [{ source: "gatus" as const, read: () => gatusAlerts(config.alerts.gatusUrl!) }]),
+	...(config.alerts.gatusUrl === undefined ? [] : [{ source: "gatus" as const, read: () => gatusAlerts(config.alerts.gatusUrl!, fetch, scout.alertPolicy("gatus").downAfter) }]),
 	...(config.alerts.grafana === undefined ? [] : [{ source: "grafana" as const, read: () => grafanaAlerts(config.alerts.grafana!.url, config.alerts.grafana!.token) }]),
 ];
 const alertHome = config.alerts.channel ?? config.reflect.channel;
@@ -181,8 +181,9 @@ const describeAlert = (alert: Alert) => `${alert.title}: ${alert.detail}${alert.
 const alertWatcher = new AlertWatcher({
 	log: alertLog,
 	sources: alertSources,
+	policy: (source) => scout.alertPolicy(source),
 	handlers: {
-		firing: async (alert) => {
+		firing: async (alert, investigate) => {
 			const route = scout.alertChannel(alert);
 			const name = route?.name ?? alertHome;
 			const id = name === undefined ? undefined : await slack.channelId(name);
@@ -190,13 +191,22 @@ const alertWatcher = new AlertWatcher({
 				console.log(`alert with nowhere to go (no channel claims it, and no SCOUT_ALERTS_CHANNEL or SCOUT_REFLECT_CHANNEL): ${alert.title}`);
 				return undefined;
 			}
+			const context = `${scout.responder()}\n\nThe alert, from ${alert.source}: ${describeAlert(alert)}\nIts labels: ${JSON.stringify(alert.labels)}`;
+			if (!investigate) {
+				// The profile's policy (responder.md) leaves this one alone; its thread is there if someone wants a look.
+				const text = [`🟠 *${alert.title}*`, alert.detail, "Not one I look into on my own. Ask me in this thread if you'd like me to."].join("\n");
+				const ts = await slack.surface.post(id, undefined, { text, blocks: [{ type: "markdown", text }] });
+				await bridge.openThread({ channel: id, channelName: name, threadTs: ts, context: `${context}\n\nYou posted this alert without looking into it, as the policy says.`, about: describeAlert(alert) });
+				audit.record("alert", { actor: "scout", channel: name, detail: { key: alert.key, title: alert.title, investigated: false } });
+				return { channel: id, threadTs: ts };
+			}
 			const text = [`🔴 *${alert.title}*`, alert.detail, `${route?.oncall === undefined ? "" : `${route.oncall} `}I'm looking into it in this thread.`].join("\n");
 			const ts = await slack.surface.post(id, undefined, { text, blocks: [{ type: "markdown", text }] });
 			await bridge.investigate({
 				channel: id,
 				channelName: name,
 				threadTs: ts,
-				context: `${scout.responder()}\n\nThe alert, from ${alert.source}: ${describeAlert(alert)}\nIts labels: ${JSON.stringify(alert.labels)}`,
+				context,
 				prompt: `This alert just fired in ${alert.source === "gatus" ? "Gatus" : "Grafana"}: ${describeAlert(alert)}. Look into it.`,
 				requestId: `alert:${alert.key}:${Date.now()}`,
 			});

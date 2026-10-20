@@ -5,6 +5,7 @@ import { basename, join, sep } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/chord";
 import { type ConversationId, type DocumentReader, defineExtension, defineTool, section } from "@earendil-works/pi-durable";
+import { type Alert, type AlertPolicy, parseAlertPolicy } from "./alerts.ts";
 import { ThreadDoc } from "./docs.ts";
 
 export type Skill = { name: string; description: string; body: string };
@@ -17,7 +18,7 @@ export type Skill = { name: string; description: string; body: string };
  *       reflect.md                      how Scout reviews its own threads each night (see reflect.ts)
  *       review.md                       how Scout reviews its own change before opening a pull request
  *       reviewer.md                     how Scout reviews other people's pull requests when asked (automation.ts)
- *       responder.md                    how Scout investigates an alert (alerts.ts)
+ *       responder.md                    how Scout investigates an alert; its frontmatter, which alerts (alerts.ts)
  *       skills/<name>.md                know-how, loaded on demand (frontmatter: description)
  *       channels/<channel-name>/
  *         instructions.md               what this channel's team wants Scout to know
@@ -57,6 +58,10 @@ export type Profile = {
 	review?: string;
 	reviewer?: string;
 	responder?: string;
+	/** How alerts are treated, per source: `responder.md`'s frontmatter (alerts.ts). */
+	alertPolicy: Record<Alert["source"], AlertPolicy>;
+	/** Settings Scout couldn't read, to say so when the profile loads. */
+	problems: string[];
 	skills: Skill[];
 	channels: Map<string, ChannelProfile>;
 };
@@ -86,13 +91,17 @@ export function loadProfile(dir: string): Profile {
 	const reflect = readOptional(join(dir, "reflect.md"));
 	const review = readOptional(join(dir, "review.md"));
 	const reviewer = readOptional(join(dir, "reviewer.md"));
-	const responder = readOptional(join(dir, "responder.md"));
+	const responderFile = frontmatter(readOptional(join(dir, "responder.md")) ?? "");
+	const responder = responderFile.body.trim() || undefined;
+	const alerts = parseAlertPolicy(responderFile.meta);
 	return {
 		system: readOptional(join(dir, "system.md")) ?? "",
 		...(reflect === undefined ? {} : { reflect }),
 		...(review === undefined ? {} : { review }),
 		...(reviewer === undefined ? {} : { reviewer }),
 		...(responder === undefined ? {} : { responder }),
+		alertPolicy: alerts.policy,
+		problems: alerts.problems.map((p) => `responder.md: ${p}`),
 		skills: loadSkills(join(dir, "skills")),
 		channels,
 	};
@@ -115,7 +124,7 @@ export function frontmatter(text: string): { meta: Record<string, string>; body:
 	const meta: Record<string, string> = {};
 	for (const line of (match[1] ?? "").split("\n")) {
 		const colon = line.indexOf(":");
-		if (colon <= 0) continue;
+		if (colon <= 0 || line.trimStart().startsWith("#")) continue;
 		// `key: value   # a comment`, and `"quoted"` values (a leading @ or : reads better quoted).
 		const value = line.slice(colon + 1).trim().replace(/\s+#.*$/, "");
 		meta[line.slice(0, colon).trim()] = /^(["']).*\1$/.test(value) ? value.slice(1, -1) : value;
