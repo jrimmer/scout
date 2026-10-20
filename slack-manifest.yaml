@@ -25,6 +25,7 @@ oauth_config:
       - mpim:history
       - reactions:read # a stop sign reaction stops Scout's work
       - users:read # display names
+      - users:read.email # who someone is in the identity provider (SCOUT_DIRECTORY), for permissions and roles
       - usergroups:read # only if SCOUT_ALLOWED_USERGROUP limits who may ask for work
 settings:
   event_subscriptions:

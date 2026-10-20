@@ -195,6 +195,12 @@ export class Slack {
 		return name;
 	}
 
+	/** A user's email, to find them in the identity provider; needs the `users:read.email` scope. */
+	async emailOf(user: string): Promise<string | undefined> {
+		const info = await this.app.client.users.info({ user }).catch(() => undefined);
+		return info?.user?.profile?.email || undefined;
+	}
+
 	async channelName(channel: string): Promise<string> {
 		const cached = this.#channels.get(channel);
 		if (cached !== undefined) return cached;

@@ -7,8 +7,9 @@ import type { Admission } from "./limits.ts";
  * repository it was given; in a larger organization, someone in a public channel shouldn't get changes made where
  * they couldn't make them themselves.
  *
- * Slack users map to code host accounts through a file the operator keeps (`{ "U0123ABC": "alice" }`): an explicit
- * list, which a person can't extend by claiming an account. A Slack user group can also gate who may use Scout at all.
+ * Slack users map to code host accounts through the identity provider (directory.ts: their Slack email, the person
+ * with that email, whose username is their code host login), or a file the operator keeps (`{ "U0123ABC": "alice" }`),
+ * which wins. Neither lets a person claim an account: Slack's email is the workspace's, the directory the operator's. A Slack user group can also gate who may use Scout at all.
  * With `SCOUT_REQUESTER_CHECK=enforce`, people without write access (or without a mapping) can talk in threads, but
  * their messages don't start or steer work.
  */
@@ -32,6 +33,7 @@ export class Permissions {
 	readonly #host: CodeHost;
 	readonly #fetch: typeof fetch;
 	readonly #groupMembers: () => Promise<Set<string>>;
+	readonly #loginOf: (user: string) => Promise<string | undefined>;
 	readonly #cache = new Map<string, { at: number; admission: Admission }>();
 	#group: { at: number; members: Set<string> } | undefined;
 
@@ -40,8 +42,11 @@ export class Permissions {
 		codeHost: CodeHost;
 		/** Members of `config.userGroup`, from Slack. */
 		groupMembers?: () => Promise<Set<string>>;
+		/** A Slack user's code host login, from the identity provider, when the people file doesn't say. */
+		loginOf?: (user: string) => Promise<string | undefined>;
 		fetch?: typeof fetch;
 	}) {
+		this.#loginOf = options.loginOf ?? (async () => undefined);
 		this.#config = options.config;
 		this.#host = options.codeHost;
 		this.#fetch = options.fetch ?? fetch;
@@ -70,7 +75,7 @@ export class Permissions {
 				return { ok: false, reason: "I can only take work from people in the group set up for me. Ask whoever runs me to add you." };
 			}
 		}
-		const login = this.#config.people[user];
+		const login = this.#config.people[user] ?? (await this.#loginOf(user).catch(() => undefined));
 		if (login === undefined) {
 			return { ok: false, reason: `I don't know your ${hostName(this.#host)} account yet, so I can't check you can change ${slug}. Ask whoever runs me to link it.` };
 		}

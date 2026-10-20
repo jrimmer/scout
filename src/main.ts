@@ -70,6 +70,7 @@ const scout = await openScout({
 	threadLink: (thread) => slack.permalink(thread.channel, thread.threadTs),
 	announce,
 	groupMembers: (group) => slack.groupMembers(group),
+	emailOf: (user) => slack.emailOf(user),
 });
 const { harness, threads, pulls, memory, workspaces, reflector, audit } = scout;
 const channelNames = new Map<number, string>();

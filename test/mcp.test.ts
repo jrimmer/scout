@@ -94,13 +94,13 @@ describe("MCP tools", () => {
 			server.registerTool("unmarked", { description: "Says nothing about itself" }, async () => ({ content: [{ type: "text", text: "did it" }] }));
 			return server;
 		};
-		const toolsFor = async (writes: Writes | undefined, approvals?: Approvals) => {
+		const toolsFor = async (writes: Writes | undefined, approvals?: Approvals, refuse?: (user: string, server: string) => Promise<string | undefined>) => {
 			const connections = await connectMcp({ servers: { grafana: { command: "unused", ...(writes === undefined ? {} : { writes }) } } }, () => {
 				const [client, server] = InMemoryTransport.createLinkedPair();
 				void dashboards().connect(server);
 				return client;
 			});
-			return { extension: await mcpExtension(connections, approvals), connections };
+			return { extension: await mcpExtension(connections, approvals, refuse), connections };
 		};
 		const names = async (writes?: Writes) => {
 			const { extension, connections } = await toolsFor(writes);
@@ -113,7 +113,7 @@ describe("MCP tools", () => {
 
 		// With approval: the write waits until someone in the thread approves, for a while.
 		const approvals = new Approvals();
-		const { extension, connections } = await toolsFor("approve", approvals);
+		const { extension, connections } = await toolsFor("approve", approvals, async (user) => (user === "UANN" ? undefined : "changes to grafana need someone in admins."));
 		const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }] });
 		const models = createModels();
 		models.setProvider(faux.provider);
@@ -138,6 +138,8 @@ describe("MCP tools", () => {
 		assert.match(await write(), /written/);
 		approvals.grant(conversation.id, "UANN", Date.now() - 16 * 60 * 1000);
 		assert.match(await write(), /needs a person's approval first/, "an approval runs out");
+		approvals.grant(conversation.id, "UBOB");
+		assert.match(await write(), /doesn't cover this: changes to grafana need someone in admins/, "only someone in an approving group counts");
 		await harness.close(context);
 		await Promise.all(connections.map((c) => c.client.close()));
 	});

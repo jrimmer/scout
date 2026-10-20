@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai/models";
@@ -12,6 +13,7 @@ import { observeExtension, type Observer } from "./observe.ts";
 import { loadPeople, Permissions } from "./permissions.ts";
 import { Pricing } from "./pricing.ts";
 import { Counters, Tracer } from "./telemetry.ts";
+import { AutheliaFile, approversOf, loadRoles } from "./directory.ts";
 import { Approvals, closeMcp, connectMcp, loadMcpConfig, type McpConnection, mcpExtension } from "./mcp.ts";
 import { ThreadDoc } from "./docs.ts";
 import { consolidationExtension, Memory, memoryExtension } from "./memory.ts";
@@ -55,6 +57,8 @@ export type ScoutOptions = {
 	mcp?: McpConnection[];
 	/** Members of a Slack user group, for `governance.allowedUserGroup`. */
 	groupMembers?: (group: string) => Promise<Set<string>>;
+	/** A Slack user's email, to find them in the identity provider (directory.ts). */
+	emailOf?: (user: string) => Promise<string | undefined>;
 	fetch?: typeof fetch;
 };
 
@@ -121,7 +125,23 @@ export async function openScout(options: ScoutOptions) {
 	const limits = new Limits(loadLimits(governance.limitsFile), spend, pricing);
 	const counters = new Counters(pricing);
 	const tracer = governance.otlp === undefined ? undefined : new Tracer({ ...governance.otlp, pricing });
+	// The identity provider: who a Slack user is (by email), their code host login, and their groups.
+	const directory = governance.directory === undefined ? undefined : new AutheliaFile(sourceReader(governance.directory.source, config.codeHost, options.fetch ?? fetch));
+	const personOf = async (user: string) => {
+		if (directory === undefined || options.emailOf === undefined) return undefined;
+		const email = await options.emailOf(user);
+		return email === undefined ? undefined : directory.byEmail(email);
+	};
+	const roles = loadRoles(governance.rolesFile);
+	const refuseApprover = async (user: string, server: string): Promise<string | undefined> => {
+		const groups = approversOf(roles, server);
+		if (groups === undefined) return undefined;
+		const person = await personOf(user).catch(() => undefined);
+		if (person?.groups.some((g) => groups.includes(g)) === true) return undefined;
+		return `changes to ${server} need someone in ${groups.join(" or ")}${person === undefined ? ", and I couldn't find who approved in the directory" : ""}.`;
+	};
 	const permissions = new Permissions({
+		loginOf: async (user) => (await personOf(user))?.username,
 		config: {
 			mode: governance.requesterCheck,
 			people: loadPeople(governance.peopleFile),
@@ -204,7 +224,7 @@ export async function openScout(options: ScoutOptions) {
 	const consolidation = consolidationExtension(memory);
 	const mcp = options.mcp ?? (config.mcpFile === undefined ? [] : await connectMcp(loadMcpConfig(config.mcpFile)));
 	const approvals = new Approvals();
-	const mcpTools = await mcpExtension(mcp, approvals);
+	const mcpTools = await mcpExtension(mcp, approvals, refuseApprover);
 	if (mcp.length > 0) console.log(`MCP: ${mcp.map((c) => c.name).join(", ")} (${mcpTools.tools?.length ?? 0} tools)`);
 	// Reviewing other people's pull requests when asked: read-only files, the profile's reviewer.md, and the MCP tools
 	// (CI logs above all) a thread outside any channel gets.
@@ -373,5 +393,16 @@ export async function openScout(options: ScoutOptions) {
 			spend.close();
 			await closeMcp(mcp);
 		},
+	};
+}
+
+/** Where the directory reads its file: a path, or a URL (with the code host's token when it's the code host's). */
+function sourceReader(source: string, codeHost: Config["codeHost"], doFetch: typeof fetch): () => Promise<string> {
+	if (!/^https?:\/\//.test(source)) return async () => readFileSync(source, "utf8");
+	const sameHost = new URL(source).origin === new URL(codeHost.apiUrl).origin;
+	return async () => {
+		const response = await doFetch(source, sameHost ? { headers: { authorization: codeHost.kind === "github" ? `Bearer ${codeHost.token}` : `token ${codeHost.token}` } } : {});
+		if (!response.ok) throw new Error(`the directory at ${source} answered ${response.status}`);
+		return response.text();
 	};
 }

@@ -133,7 +133,12 @@ export async function connectMcp(
 }
 
 /** Every connected server's tools as Scout tools, named `mcp__<server>__<tool>`, as its `writes` allows. */
-export async function mcpExtension(connections: readonly McpConnection[], approvals?: Approvals) {
+export async function mcpExtension(
+	connections: readonly McpConnection[],
+	approvals?: Approvals,
+	/** Why this approver's approval doesn't cover changes to `server`, if it doesn't (their groups, directory.ts). */
+	refuseApprover?: (user: string, server: string) => Promise<string | undefined>,
+) {
 	const tools: ToolRegistration[] = [];
 	for (const connection of connections) {
 		const listed = await connection.client.listTools();
@@ -148,11 +153,14 @@ export async function mcpExtension(connections: readonly McpConnection[], approv
 					description: `${tool.description ?? tool.name} (from ${connection.name}${gated ? "; it changes things, so a person in the thread has to approve first" : ""})`,
 					parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
 					execute: async (args, api, context) => {
-						if (gated && approvals?.by(api.conversationId) === undefined) {
+						const approver = gated ? approvals?.by(api.conversationId) : undefined;
+						if (gated && approver === undefined) {
 							throw new Error(
 								`${tool.name} changes ${connection.name}, so it needs a person's approval first. Say exactly what you'll change and why, ask the people in this thread to reply "approve", and call it again once someone has. (An approval lasts 15 minutes.)`,
 							);
 						}
+						const refused = approver === undefined ? undefined : await refuseApprover?.(approver, connection.name);
+						if (refused !== undefined) throw new Error(`The approval doesn't cover this: ${refused} Ask someone who may to reply "approve".`);
 						if (connection.channels !== undefined) {
 							const channel = (await api.snapshot(ThreadDoc, api.conversationId as ConversationId, context))?.channelName ?? "";
 							if (!connection.channels.includes(channel)) {

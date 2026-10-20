@@ -70,6 +70,10 @@ export type Config = {
 		peopleFile?: string;
 		/** Only this Slack user group may ask for work. */
 		allowedUserGroup?: string;
+		/** The identity provider (directory.ts): who people are and their groups, by email. */
+		directory?: { kind: "authelia-file"; source: string };
+		/** Who may approve changes made through tools, by group (directory.ts `Roles`). */
+		rolesFile?: string;
 		/** Delete what quiet threads leave behind after this many days. */
 		retentionDays?: number;
 		/** OTLP/HTTP traces endpoint (…/v1/traces), and headers for it. */
@@ -196,6 +200,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		...(env.SCOUT_MCP_FILE ? { mcpFile: resolve(env.SCOUT_MCP_FILE) } : {}),
 		governance: {
 			...(env.SCOUT_PRICES_FILE ? { pricesFile: resolve(env.SCOUT_PRICES_FILE) } : {}),
+			...(env.SCOUT_DIRECTORY === "authelia-file" ? { directory: { kind: "authelia-file" as const, source: required(env, "SCOUT_DIRECTORY_SOURCE") } } : {}),
+			...(env.SCOUT_ROLES_FILE ? { rolesFile: resolve(env.SCOUT_ROLES_FILE) } : {}),
 			...(env.SCOUT_LIMITS_FILE ? { limitsFile: resolve(env.SCOUT_LIMITS_FILE) } : {}),
 			requesterCheck: env.SCOUT_REQUESTER_CHECK === "enforce" ? "enforce" : "off",
 			...(env.SCOUT_PEOPLE_FILE ? { peopleFile: resolve(env.SCOUT_PEOPLE_FILE) } : {}),

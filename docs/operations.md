@@ -168,13 +168,24 @@ Slack tokens and MCP servers' credentials need a restart.
 
 ## Who may ask for work
 
-`SCOUT_REQUESTER_CHECK=enforce` means a person may start or steer work in a repository only if they can change it
-themselves:
-- `SCOUT_PEOPLE_FILE` maps Slack user IDs to code host logins: `{ "U0123ABC": "alice" }`.
+Roles live in the organization's identity provider (Authelia, Entra, Google Workspace), and Scout asks it rather than
+keeping its own. Repository permissions come from the code host, which signs people in through that provider and maps
+its groups to teams; everything else asks the provider's groups directly.
+
+`SCOUT_REQUESTER_CHECK=enforce` means a person may start or steer work in a repository, or approve a change, only if
+they can change the repository themselves:
+- Scout finds their code host login through the identity provider: their Slack email, the person with that email,
+  their username (`SCOUT_DIRECTORY=authelia-file` with `SCOUT_DIRECTORY_SOURCE`, a path or URL of Authelia's
+  `users_database.yml`; password hashes are dropped as it's read). This needs Slack's `users:read.email` scope.
+- `SCOUT_PEOPLE_FILE` maps Slack user IDs to logins directly (`{ "U0123ABC": "alice" }`), and wins over the directory.
 - Scout asks the code host for each person's permission on the repository, and caches the answer for ten minutes.
 - `SCOUT_ALLOWED_USERGROUP` can also limit requests to one Slack user group.
 
 Everyone can still talk in threads. Their words are kept as context, and Scout tells them why it isn't acting on them.
+
+`SCOUT_ROLES_FILE` names who may approve changes made through tools (MCP servers with `writes: "approve"`), by the
+identity provider's groups, per server or `*`: `{ "approve": { "*": ["admins"] } }`. Merging and deploying stay with
+the code host: branch protection says who may merge, and deploys run from merges and protected tags.
 
 ## Budgets and limits
 
