@@ -160,6 +160,20 @@ export class Slack {
 		return name;
 	}
 
+	/** A public channel's ID from its name (without `#`), or undefined when there's none by that name. */
+	async channelId(name: string): Promise<string | undefined> {
+		for (const [id, known] of this.#channels) if (known === name) return id;
+		let cursor: string | undefined;
+		do {
+			const page = await this.app.client.conversations.list({ types: "public_channel", exclude_archived: true, limit: 200, ...(cursor ? { cursor } : {}) });
+			for (const channel of page.channels ?? []) if (channel.id && channel.name) this.#channels.set(channel.id, channel.name);
+			const found = page.channels?.find((c) => c.name === name)?.id;
+			if (found !== undefined) return found;
+			cursor = page.response_metadata?.next_cursor || undefined;
+		} while (cursor !== undefined);
+		return undefined;
+	}
+
 	async permalink(channel: string, ts: string): Promise<string | undefined> {
 		const link = await this.app.client.chat.getPermalink({ channel, message_ts: ts }).catch(() => undefined);
 		return link?.permalink;

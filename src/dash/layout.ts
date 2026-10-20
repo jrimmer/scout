@@ -25,7 +25,7 @@ export function layout(s: Snapshot, width = WIDTH): Grid {
 	y = panel(grid, 0, y, width, "threads", threadLines(s));
 	y = sideBySide(grid, y, width, half, ["learning", learningLines(s)], ["spend", spendLines(s)]);
 	if (s.learning.notes.length > 0) y = panel(grid, 0, y, width, "unreviewed notes", noteLines(s));
-	if (s.reviews !== undefined) y = panel(grid, 0, y, width, `reviews (label ${s.reviews.label})`, reviewLines(s));
+	if (s.reviews.latest.length > 0) y = panel(grid, 0, y, width, "pull request reviews", reviewLines(s));
 
 	grid.put(1, y, "scout · read-only", "dim");
 	grid.putRight(width - 1, y, `updated ${clock(s.now)}`, "dim");
@@ -158,7 +158,7 @@ function noteLines(s: Snapshot): Line[] {
 }
 
 function reviewLines(s: Snapshot): Line[] {
-	const latest = s.reviews?.latest ?? [];
+	const latest = s.reviews.latest;
 	if (latest.length === 0) return [{ left: [{ text: "· no labelled pull requests yet", style: "dim" }] }];
 	return latest.map((r) => ({
 		left: [

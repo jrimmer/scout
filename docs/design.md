@@ -38,7 +38,7 @@ Slack (Socket Mode) ─▶ slack.ts ─▶ bridge.ts ──submit──▶ Pi Du
 
 nightly:   reflect.ts ─▶ reflection conversation (profile files only) ─▶ pull request on the profile repo
            people review and merge ─▶ Scout pulls its profile ─▶ every thread's next request
-polling:   pulls.ts (merge rate, weekly report) · automation.ts (labelled pull requests get a review)
+polling:   pulls.ts (merge rate, weekly report) · automation.ts (pull requests that ask Scout get a review)
 one-off:   job.ts ─▶ the same agent, no Slack, nothing kept
 ```
 
@@ -59,13 +59,13 @@ one-off:   job.ts ─▶ the same agent, no Slack, nothing kept
 | `src/secrets.ts`, `src/scan.ts` | Secret references and rotation; credential scanning and redaction. |
 | `src/retention.ts` | What quiet threads leave behind, deleted after a while. |
 | `src/codehost.ts` | `open_pull_request`, run on the host with host credentials, after a size check and self-review. |
-| `src/review.ts` | The reviewer: a conversation that can only read, used before pull requests and for automation. |
+| `src/review.ts` | Reviewers: conversations that can only read. Scout's own change before a pull request (`review.md`), and other people's when asked (`reviewer.md`). |
 | `src/profile.ts` | `profile/` as an extension, reloaded on change; kept pulled when it's a repository. |
 | `src/reflect.ts` | The nightly learning loop: digest the day's threads and notes, propose profile changes. |
 | `src/memory.ts` | `remember` and `forget`; notes retire when the reflection's proposal that covers them merges. |
 | `src/search.ts` | Full-text search over what was said in Scout's threads. |
 | `src/pulls.ts` | Every pull request Scout opens and what became of it; the weekly merge rate. |
-| `src/automation.ts` | Pull requests with the review label get a review comment, once per commit. |
+| `src/automation.ts` | Pull requests that request Scout's review get one (a real review, line comments), then one per new push; the repository's channel hears about it. |
 | `src/mcp.ts` | MCP servers' tools, run on the host, optionally per channel. |
 | `src/dash/` | The read-only dashboard: a character grid (after spoond's), live over SSE, row by row. |
 | `src/health.ts` | What needs a person: background jobs that keep failing. |
@@ -133,8 +133,13 @@ one-off:   job.ts ─▶ the same agent, no Slack, nothing kept
   conversation. The audit trail, the spend ledger, per-run limits, counters and traces are observers of it. Budgets,
   concurrency and requester permissions are checked where a message would start or steer work. Limits live in a
   file the operator owns, not in the profile Scout proposes changes to.
-- **One agent, three ways in**, as in Aquifer: interactive (Slack threads), automation (labelled pull requests) and
-  job (`npm run job`). They share the session model, workspaces and tools; each is a few dozen lines of front door.
+- **One agent, three ways in**, as in Aquifer: interactive (Slack threads), automation (pull requests that ask for
+  Scout's review) and job (`npm run job`). They share the session model, workspaces and tools; each is a few dozen
+  lines of front door.
+- **Profiles, not platforms.** Aquifer's lesson: a new agent is a profile (instructions, tools, trigger, output), not a
+  new system. Scout's pull request reviewer is the first beyond the teammate: `reviewer.md`, read-only tools plus CI,
+  asked for in the code host, answering there and in the repository's channel. The alert responder (#26) is next;
+  named profiles and pinning them (#10) follow once there are several.
 - **One process, SQLite, Socket Mode.**
   - No tunnel, no Postgres, no job queue.
   - Pi Durable has one storage owner per process, which suits a team-sized deployment. Jobs use their own memory

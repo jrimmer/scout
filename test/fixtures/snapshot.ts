@@ -40,7 +40,7 @@ export const busy: Snapshot = {
 			{ id: 15, channelName: "data-team", note: "The orders table is partitioned by day; always filter on created_on.", createdAt: now - 50 * min },
 		],
 	},
-	reviews: { label: "scout-review", latest: [{ slug: "team/storefront", number: 412, sha: "a1b2c3d4e5", posted: true }, { slug: "team/api", number: 88, sha: "ffee0011", posted: false }] },
+	reviews: { latest: [{ slug: "team/storefront", number: 412, sha: "a1b2c3d4e5", posted: true }, { slug: "team/api", number: 88, sha: "ffee0011", posted: false }] },
 	spend: { total: 41.27, byModel: [{ model: "anthropic/claude-opus-5-5", cost: 38.9 }, { model: "anthropic/claude-haiku-5-5", cost: 2.37 }] },
 	history: { working: [0, 1, 1, 2, 3, 2, 1, 0, 0, 1, 2, 2], spendPerHour: [1.2, 3.4, 2.2, 5.1, 4.4, 2.0, 0.5, 6.1] },
 };

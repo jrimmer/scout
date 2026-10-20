@@ -61,6 +61,15 @@ data folder. Scout on main refuses to open data the release has used until you s
 `SCOUT_PI_MIGRATE=1`; back `pi.sqlite` up first, or try main on a copy (`SCOUT_DATA_DIR`). Back on the release, Scout
 refuses converted data and says so.
 
+## Pull request review
+
+Request a review from Scout's code host account on a pull request in a configured repository, and Scout reviews it
+like a colleague would: the profile's `reviewer.md`, the channel's instructions for that repository, read-only files
+and the MCP tools (CI logs). It posts a real review (approve, request changes, or comment) with comments on the lines
+the diff shows, then reviews each new push until the pull request closes. Its own pull requests are skipped (they had
+their self-review). The channel whose profile names the repository gets a short summary, in a thread where anyone can
+ask Scout about its review. Nothing to configure; give Scout's account access to the repository.
+
 ## Tools beyond code: MCP servers
 
 `SCOUT_MCP_FILE` lists MCP servers Scout runs on its host with their own credentials, never in a sandbox (the file's

@@ -80,10 +80,42 @@ harness.closed.then((end) => {
 });
 if (reflector === undefined) console.log("no SCOUT_PROFILE_REPO_URL: the nightly reflection is off");
 
-const pullReviewer =
-	config.reviewLabel === undefined
-		? undefined
-		: new PullReviewer({ scout, config, label: config.reviewLabel, context });
+// Asked for a review in the code host, Scout reviews there, then says so in the repository's channel, where the thread
+// knows the review and anyone can ask about it.
+const VERDICTS = { approve: "approved", changes: "asked for changes on", comment: "commented on" } as const;
+const pullReviewer = new PullReviewer({
+	scout,
+	config,
+	context,
+	onReview: async (posted) => {
+		const channel = scout.channelOf(posted.repo)?.name;
+		const id = channel === undefined ? undefined : await slack.channelId(channel);
+		if (channel === undefined || id === undefined) return;
+		const { review } = posted;
+		const gist = review.body.split("\n\n")[0]?.slice(0, 600) ?? "";
+		const lines = review.comments.length === 0 ? "" : ` (and ${review.comments.length} comment${review.comments.length === 1 ? "" : "s"} on lines)`;
+		const text = [
+			`I ${VERDICTS[review.verdict]} <${posted.url}|${posted.title}>${posted.author === undefined ? "" : ` by ${posted.author}`}${lines}.`,
+			gist,
+			"Ask me about it here.",
+		]
+			.filter(Boolean)
+			.join("\n\n");
+		const ts = await slack.surface.post(id, undefined, { text, blocks: [{ type: "markdown", text }] });
+		const comments = review.comments.map((c) => `- ${c.path}:${c.line}: ${c.body}`).join("\n");
+		await bridge.openThread({
+			channel: id,
+			channelName: channel,
+			threadTs: ts,
+			context: [
+				`You reviewed pull request ${posted.url} ("${posted.title}"${posted.author === undefined ? "" : ` by ${posted.author}`}) at ${posted.sha.slice(0, 7)}, and ${VERDICTS[review.verdict]} it. Your review:`,
+				review.body,
+				...(comments === "" ? [] : [`Your comments on lines:\n${comments}`]),
+				"You started this thread to say so. People may ask about your review here. Your sandbox has the repository's base branch, not the pull request's.",
+			].join("\n\n"),
+		});
+	},
+});
 
 const bridge = new Bridge({
 	harness,
@@ -137,7 +169,7 @@ const tick = setInterval(() => {
 		void health.watch("profile", "pulling the profile failed", () => pullProfile(config.profileDir));
 	}
 	if (new Date(now).getHours() >= config.reflect.hour) void reflect(localDay(new Date(now)));
-	if (pullReviewer !== undefined) void health.watch("reviews", "reviewing labelled pull requests failed", () => pullReviewer.poll());
+	void health.watch("reviews", "reviewing pull requests failed", () => pullReviewer.poll());
 	void health.watch("pulls", "checking pull requests failed", () => pulls.refresh(config.codeHost)).then(async (decided = []) => {
 		// A reflection's proposal was decided: merged retires the notes it covered; rejected keeps them.
 		for (const pull of decided) {
@@ -187,7 +219,6 @@ const dashboard =
 					startedAt,
 					reflectHour: config.reflect.hour,
 					profileRepo: config.profileRepo !== undefined,
-					...(config.reviewLabel === undefined ? {} : { reviewLabel: config.reviewLabel }),
 					threads,
 					pulls,
 					memory,

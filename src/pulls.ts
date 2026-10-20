@@ -156,6 +156,11 @@ export class Pulls {
 		return Number((this.#db.prepare(`SELECT COUNT(*) AS n FROM pulls WHERE ${where}`).get(...args) as { n: number }).n);
 	}
 
+	/** Whether Scout has reviewed this pull request before, at any commit: once asked, it reviews each new push. */
+	reviewedBefore(slug: string, number: number): boolean {
+		return this.#db.prepare("SELECT 1 FROM reviews WHERE slug = ? AND number = ? LIMIT 1").get(slug, number) !== undefined;
+	}
+
 	/** Reviews of other people's pull requests (automation.ts), by the commit reviewed. */
 	review(slug: string, number: number, sha: string): ReviewRow | undefined {
 		const row = this.#db.prepare("SELECT * FROM reviews WHERE slug = ? AND number = ? AND sha = ?").get(slug, number, sha);

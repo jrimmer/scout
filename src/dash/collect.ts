@@ -25,7 +25,7 @@ export type Snapshot = {
 		proposals: { merged: number; closed: number };
 		notes: MemoryNote[];
 	};
-	reviews?: { label: string; latest: { slug: string; number: number; sha: string; posted: boolean }[] };
+	reviews: { latest: { slug: string; number: number; sha: string; posted: boolean }[] };
 	spend: {
 		total: number;
 		byModel: { model: string; cost: number }[];
@@ -42,7 +42,6 @@ export type Sources = {
 	startedAt: number;
 	reflectHour: number;
 	profileRepo: boolean;
-	reviewLabel?: string;
 	threads: {
 		recent(limit: number): ThreadRow[];
 		countSince(since: number): number;
@@ -141,14 +140,9 @@ export class Collector {
 				proposals: s.pulls.rate(now - 30 * DAY, now, "profile"),
 				notes: s.memory.active(),
 			},
-			...(s.reviewLabel === undefined
-				? {}
-				: {
-						reviews: {
-							label: s.reviewLabel,
-							latest: s.pulls.latestReviews(5).map((r) => ({ slug: r.slug, number: r.number, sha: r.sha, posted: r.postedAt !== undefined })),
-						},
-					}),
+			reviews: {
+				latest: s.pulls.latestReviews(5).map((r) => ({ slug: r.slug, number: r.number, sha: r.sha, posted: r.postedAt !== undefined })),
+			},
 			spend: {
 				total,
 				byModel: Object.entries(byModel)

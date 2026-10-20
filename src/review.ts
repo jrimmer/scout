@@ -32,12 +32,22 @@ export const DEFAULT_REVIEW_INSTRUCTIONS =
 
 const DIFF_BUDGET = 60_000;
 
-/** The reviewer: read-only file access to the workspace, and its instructions (profile `review.md`). */
-export function reviewExtension(instructions: () => string | undefined) {
+/** Reviewing someone else's pull request, when the profile has no `reviewer.md`. */
+export const DEFAULT_PULL_REVIEW_INSTRUCTIONS =
+	"Review this pull request for its author. Read the diff and enough of the surrounding code, and the repository's " +
+	"AGENTS.md, to judge it. Say what matters most first: bugs, missing tests, risk. Start your answer with a line " +
+	"that is exactly APPROVE, CHANGES or COMMENT. For a comment on one line, add a line `### path:line` (the line in " +
+	"the new file) and the comment under it.";
+
+/**
+ * A reviewer: read-only file access to the workspace, and its instructions, Scout's own change (profile `review.md`)
+ * or someone else's pull request (`reviewer.md`).
+ */
+export function reviewExtension(instructions: () => string | undefined, fallback = DEFAULT_REVIEW_INSTRUCTIONS, name = "review") {
 	return defineExtension({
-		name: "review",
+		name,
 		tools: [createReadTool()],
-		sections: [section("review", () => instructions() ?? DEFAULT_REVIEW_INSTRUCTIONS, { tag: false })],
+		sections: [section("review", () => instructions() ?? fallback, { tag: false })],
 	});
 }
 
@@ -60,6 +70,65 @@ export async function reviewEnv(
 export function parseReview(text: string): Review {
 	const first = text.trim().split("\n")[0]?.trim().toUpperCase() ?? "";
 	return { verdict: first.startsWith("CHANGES") ? "changes" : "approve", text: text.trim() };
+}
+
+/** A review of someone else's pull request, ready for the code host: a verdict, a body, and comments on lines. */
+export type PullReview = {
+	verdict: "approve" | "changes" | "comment";
+	body: string;
+	comments: { path: string; line: number; body: string }[];
+};
+
+/**
+ * The reviewer's answer as a review: its first line is the verdict, `### path:line` headings start comments on lines.
+ * A code host takes comments only on lines the diff shows, so a comment on any other line goes in the body instead.
+ */
+export function parsePullReview(text: string, diff: string): PullReview {
+	const [first = "", ...others] = text.trim().split("\n");
+	const word = first.trim().toUpperCase();
+	const verdict = word.startsWith("CHANGES") ? "changes" : word.startsWith("APPROVE") ? "approve" : "comment";
+	// The verdict line isn't part of the review; a first line that isn't one is.
+	const rest = /^(CHANGES|APPROVE|COMMENT)/.test(word) ? others : [first, ...others];
+	const body: string[] = [];
+	const notes: { path: string; line: number; text: string[] }[] = [];
+	for (const line of rest) {
+		const heading = /^###\s+`?([^`\s:]+)`?:(\d+)\s*$/.exec(line);
+		if (heading !== null) notes.push({ path: heading[1]!, line: Number(heading[2]), text: [] });
+		else (notes.at(-1)?.text ?? body).push(line);
+	}
+	const shown = changedLines(diff);
+	const comments: PullReview["comments"] = [];
+	const elsewhere: string[] = [];
+	for (const note of notes) {
+		const text = note.text.join("\n").trim();
+		if (text === "") continue;
+		if (shown.get(note.path)?.has(note.line) === true) comments.push({ path: note.path, line: note.line, body: text });
+		else elsewhere.push(`**${note.path}:${note.line}**: ${text}`);
+	}
+	return { verdict, body: [body.join("\n").trim(), ...elsewhere].filter(Boolean).join("\n\n"), comments };
+}
+
+/** The lines of each file's new version that a unified diff shows (added or context), which a review may comment on. */
+export function changedLines(diff: string): Map<string, Set<number>> {
+	const shown = new Map<string, Set<number>>();
+	let lines: Set<number> | undefined;
+	let next = 0;
+	for (const line of diff.split("\n")) {
+		if (line.startsWith("+++ ")) {
+			const path = line.slice(4).replace(/^b\//, "");
+			lines = path === "/dev/null" ? undefined : (shown.get(path) ?? new Set());
+			if (lines !== undefined) shown.set(path, lines);
+			continue;
+		}
+		const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+		if (hunk !== null) {
+			next = Number(hunk[1]);
+			continue;
+		}
+		if (lines === undefined || line.startsWith("--- ") || line.startsWith("-") || line.startsWith("\\")) continue;
+		if (line.startsWith("+") || line.startsWith(" ")) lines.add(next++);
+	}
+	return shown;
 }
 
 /**

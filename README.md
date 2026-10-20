@@ -24,7 +24,7 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
   has reviewed yet, and what it costs, live, at `http://127.0.0.1:8893/`.
 - **Three ways in:**
   - Slack threads.
-  - Pull requests labelled for review (it comments).
+  - Pull requests that ask Scout for a review: it reviews like a colleague, and says so in the repository's channel.
   - `npm run job -- "…"` for one-off work.
 
 ## Run it

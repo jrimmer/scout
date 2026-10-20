@@ -81,8 +81,6 @@ export type Config = {
 	dash?: { addr: string; auth?: { user: string; passwordHash: string } };
 	/** MCP servers whose tools Scout may use (see mcp.ts). */
 	mcpFile?: string;
-	/** Pull requests with this label get a review from Scout (automation mode); unset, Scout reviews none. */
-	reviewLabel?: string;
 	/** Largest change, in lines added plus removed, Scout puts in one pull request. */
 	maxPullLines: number;
 	/** Scout's commit identity, and the SSH key the host pushes and pulls with: Scout's own, not a person's. */
@@ -184,7 +182,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			...(env.SCOUT_REFLECT_CHANNEL ? { channel: env.SCOUT_REFLECT_CHANNEL } : {}),
 		},
 		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
-		...(env.SCOUT_REVIEW_LABEL ? { reviewLabel: env.SCOUT_REVIEW_LABEL } : {}),
 		...(env.SCOUT_MCP_FILE ? { mcpFile: resolve(env.SCOUT_MCP_FILE) } : {}),
 		governance: {
 			...(env.SCOUT_PRICES_FILE ? { pricesFile: resolve(env.SCOUT_PRICES_FILE) } : {}),

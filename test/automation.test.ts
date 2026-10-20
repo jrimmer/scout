@@ -10,6 +10,7 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/provid
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { PullReviewer } from "../src/automation.ts";
 import { loadConfig } from "../src/config.ts";
+import { changedLines, parsePullReview } from "../src/review.ts";
 import { openScout } from "../src/scout.ts";
 
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
@@ -22,8 +23,8 @@ async function until(check: () => boolean, ms = 5000): Promise<void> {
 	}
 }
 
-describe("pull request review (automation mode)", () => {
-	it("reviews labelled pull requests once per commit and comments", async () => {
+describe("pull request review, when asked", () => {
+	it("reviews pull requests Scout was asked to, as a review with line comments, then each new push", async () => {
 		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-automation-")));
 		const remote = join(root, "remote.git");
 		const seed = join(root, "seed");
@@ -42,8 +43,9 @@ describe("pull request review (automation mode)", () => {
 		git("-C", seed, "push", "--quiet", remote, "feature");
 
 		const profileDir = join(root, "profile");
-		mkdirSync(profileDir);
-		writeFileSync(join(profileDir, "review.md"), "Review strictly.");
+		mkdirSync(join(profileDir, "channels", "team"), { recursive: true });
+		writeFileSync(join(profileDir, "reviewer.md"), "Review strictly.");
+		writeFileSync(join(profileDir, "channels", "team", "instructions.md"), "---\nrepo: r\n---\nWe care about tests.");
 		const config = loadConfig({
 			SLACK_BOT_TOKEN: "x",
 			SLACK_APP_TOKEN: "x",
@@ -54,37 +56,40 @@ describe("pull request review (automation mode)", () => {
 			SCOUT_CODEHOST_API: "http://forge/api/v1",
 			SCOUT_DATA_DIR: join(root, "data"),
 			SCOUT_PROFILE_DIR: profileDir,
-			SCOUT_REVIEW_LABEL: "scout-review",
 		});
 		const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }] });
 		const models = createModels();
 		models.setProvider(faux.provider);
-		const scout = await openScout({
-			config,
-			storage: new MemoryStorage(),
-			dataDir: config.dataDir,
-			instance: "t",
-			context,
-			models,
-			watchProfile: false,
-		});
+		const scout = await openScout({ config, storage: new MemoryStorage(), dataDir: config.dataDir, instance: "t", context, models, watchProfile: false });
 
-		const comments: { url: string; body: string }[] = [];
-		const listing = () => [
-			{ number: 4, title: "Add b", body: "Adds b.", html_url: "http://forge/o/r/pulls/4", labels: [{ name: "scout-review" }], head: { sha: head, ref: "feature" }, base: { ref: "main" } },
-			{ number: 5, title: "Unlabelled", body: "", html_url: "http://forge/o/r/pulls/5", labels: [], head: { sha: head, ref: "feature" }, base: { ref: "main" } },
-		];
+		let requested = true;
+		const pull = (number: number, author: string, asked: boolean) => ({
+			number,
+			title: `Pull ${number}`,
+			body: "Adds b.",
+			html_url: `http://forge/o/r/pulls/${number}`,
+			user: { login: author },
+			requested_reviewers: asked ? [{ login: "scout" }] : [],
+			head: { sha: head, ref: "feature" },
+			base: { ref: "main" },
+		});
+		const reviews: { path: string; body: { body: string; event: string; commit_id: string; comments?: unknown[] } }[] = [];
+		const announced: string[] = [];
 		const reviewer = new PullReviewer({
 			scout,
 			config,
-			label: "scout-review",
 			context,
+			onReview: async (posted) => void announced.push(`${posted.repo} #${posted.number} ${posted.review.verdict}`),
 			fetch: async (url, init) => {
+				const path = new URL(String(url)).pathname;
 				if (init?.method === "POST") {
-					comments.push({ url: String(url), body: JSON.parse(String(init.body)).body });
-					return new Response("{}", { status: 201 });
+					reviews.push({ path, body: JSON.parse(String(init.body)) });
+					return Response.json({}, { status: 201 });
 				}
-				return new Response(JSON.stringify(listing()), { status: 200 });
+				if (path === "/api/v1/user") return Response.json({ login: "scout" });
+				if (path === "/api/v1/repos/o/r/pulls/4") return Response.json(pull(4, "ann", false));
+				// Pull 4 asked Scout (until it answered); 5 didn't; 6 is Scout's own.
+				return Response.json([pull(4, "ann", requested), pull(5, "ann", false), pull(6, "scout", true)]);
 			},
 		});
 
@@ -92,29 +97,73 @@ describe("pull request review (automation mode)", () => {
 		faux.setResponses([
 			(transcript) => {
 				prompt = JSON.stringify(transcript);
-				return fauxAssistantMessage("CHANGES\n- b.txt needs a test");
+				return fauxAssistantMessage("CHANGES\nb.txt needs a test.\n### b.txt:1\nName this better.\n### a.txt:1\nUnrelated, and not in the diff.");
 			},
 		]);
 		await reviewer.poll();
 		await reviewer.poll();
-		await until(() => comments.length === 1);
-		assert.equal(comments[0]!.url, "http://forge/api/v1/repos/o/r/issues/4/comments");
-		assert.match(comments[0]!.body, new RegExp(`^\\*\\*Scout's review\\*\\* of \`${head.slice(0, 7)}\``));
-		assert.match(comments[0]!.body, /b\.txt needs a test/);
+		await until(() => reviews.length === 1 && announced.length === 1);
+		const first = reviews[0]!;
+		assert.equal(first.path, "/api/v1/repos/o/r/pulls/4/reviews");
+		assert.equal(first.body.event, "REQUEST_CHANGES");
+		assert.equal(first.body.commit_id, head);
+		assert.deepEqual(first.body.comments, [{ path: "b.txt", new_position: 1, old_position: 0, body: "Name this better." }]);
+		assert.match(first.body.body, /^b\.txt needs a test\.\n\n\*\*a\.txt:1\*\*: Unrelated/);
+		assert.match(first.body.body, /ask me about it in #team/);
 		assert.match(prompt, /Review strictly\./);
+		assert.match(prompt, /We care about tests\./);
 		assert.match(prompt, /\+b/);
+		assert.deepEqual(announced, ["r #4 changes"]);
 
-		// The same commit is never reviewed twice; a new one is.
+		// Answering clears the request; a new push is still reviewed, the same commit never twice.
+		requested = false;
 		await reviewer.poll();
 		head = commit("b.test.txt", "test\n", "test b");
 		git("-C", seed, "push", "--quiet", remote, "feature");
 		faux.setResponses([fauxAssistantMessage("APPROVE")]);
 		await reviewer.poll();
-		await until(() => comments.length === 2);
+		await until(() => reviews.length === 2);
 		await reviewer.poll();
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		assert.equal(comments.length, 2);
-		assert.match(comments[1]!.body, /APPROVE/);
+		assert.equal(reviews.length, 2);
+		assert.equal(reviews[1]!.body.event, "APPROVED");
+		assert.match(reviews[1]!.body.body, /^Looks good to me\./);
 		await scout.close();
+	});
+});
+
+describe("reading a review", () => {
+	const diff = [
+		"diff --git a/src/cart.ts b/src/cart.ts",
+		"--- a/src/cart.ts",
+		"+++ b/src/cart.ts",
+		"@@ -10,3 +10,4 @@ export function total() {",
+		" \tlet sum = 0;",
+		"-\tfor (const i of items) sum += i;",
+		"+\tfor (const i of items) sum += i.price;",
+		"+\treturn sum;",
+		" }",
+		"diff --git a/old.txt b/old.txt",
+		"--- a/old.txt",
+		"+++ /dev/null",
+		"@@ -1 +0,0 @@",
+		"-gone",
+	].join("\n");
+
+	it("knows which new lines a diff shows, added or context", () => {
+		assert.deepEqual([...(changedLines(diff).get("src/cart.ts") ?? [])], [10, 11, 12, 13]);
+		assert.equal(changedLines(diff).has("old.txt"), false);
+	});
+
+	it("takes the verdict from the first line, and moves comments on unshown lines into the body", () => {
+		const review = parsePullReview(
+			"Changes requested\nThe total ignores quantity.\n\n### src/cart.ts:11\nMultiply by `i.quantity`.\n### `src/cart.ts`:40\nUnrelated, but this rounds.",
+			diff,
+		);
+		assert.equal(review.verdict, "changes");
+		assert.deepEqual(review.comments, [{ path: "src/cart.ts", line: 11, body: "Multiply by `i.quantity`." }]);
+		assert.equal(review.body, "The total ignores quantity.\n\n**src/cart.ts:40**: Unrelated, but this rounds.");
+		assert.equal(parsePullReview("APPROVE", diff).verdict, "approve");
+		assert.deepEqual(parsePullReview("Some thoughts first.", diff), { verdict: "comment", body: "Some thoughts first.", comments: [] });
 	});
 });

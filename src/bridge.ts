@@ -307,7 +307,28 @@ export class Bridge {
 		return { images, notes };
 	}
 
-	async #startThread(key: string, message: IncomingMessage): Promise<ThreadRow> {
+	/**
+	 * A thread Scout started itself, such as a pull request review's summary: its conversation starts knowing `context`
+	 * (what Scout did and said there), so whoever replies can ask about it and Scout answers with that in mind.
+	 */
+	async openThread(thread: { channel: string; channelName: string; threadTs: string; context: string }): Promise<void> {
+		const { harness, threads, context } = this.#options;
+		const key = threadKey(thread.channel, thread.threadTs);
+		if (threads.get(key) !== undefined) return;
+		const row = await this.#startThread(key, { channel: thread.channel, channelName: thread.channelName, ts: thread.threadTs, user: "scout" });
+		const conversation = await harness.conversation(row.conversationId as ConversationId, context);
+		await conversation?.submit(
+			{
+				type: "write",
+				requestId: `opened:${key}`,
+				entry: { kind: "scout.context", data: {}, model: [{ role: "user", content: thread.context, timestamp: Date.now() }] },
+			},
+			context,
+		);
+		threads.spoke(key, "scout");
+	}
+
+	async #startThread(key: string, message: Pick<IncomingMessage, "channel" | "channelName" | "ts" | "user"> & { threadTs?: string }): Promise<ThreadRow> {
 		const { harness, threads, context } = this.#options;
 		const model = this.#options.modelFor?.(message.channelName);
 		const agent = model === undefined ? this.#options.agent : { ...this.#options.agent, model };

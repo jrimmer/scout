@@ -105,6 +105,24 @@ describe("bridge", () => {
 		await bridge.view(conversationId)?.settled();
 	}
 
+	it("continues a thread Scout opened itself, knowing what it said there", async () => {
+		await bridge.openThread({ channel: "C1", channelName: "team", threadTs: "500.1", context: "You reviewed pull request 7 and asked for a test." });
+		let seen = "";
+		faux.setResponses([
+			(transcript) => {
+				seen = JSON.stringify(transcript);
+				return fauxAssistantMessage("Because nothing covers the empty case.");
+			},
+		]);
+		await bridge.onMessage(message({ text: `<@${BOT}> why the test?`, ts: "500.2", threadTs: "500.1" }));
+		const thread = threads.get(threadKey("C1", "500.1"));
+		assert.ok(thread);
+		await settle(thread.conversationId);
+		assert.match(seen, /You reviewed pull request 7 and asked for a test\./);
+		assert.match(seen, /why the test\?/);
+		assert.match(surface.texts().at(-1) ?? "", /nothing covers the empty case/);
+	});
+
 	it("starts a thread on a mention and answers in one message", async () => {
 		faux.setResponses([fauxAssistantMessage("It runs the tests.")]);
 		await bridge.onMessage(message({}));

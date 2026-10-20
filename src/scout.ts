@@ -18,7 +18,7 @@ import { consolidationExtension, Memory, memoryExtension } from "./memory.ts";
 import { cloneProfile, loadProfile, type Profile, profileExtension, watchProfile } from "./profile.ts";
 import { Pulls } from "./pulls.ts";
 import { Reflector, reflectionExtensions } from "./reflect.ts";
-import { reviewAsSubtask, reviewEnv, reviewExtension } from "./review.ts";
+import { DEFAULT_PULL_REVIEW_INSTRUCTIONS, reviewAsSubtask, reviewEnv, reviewExtension } from "./review.ts";
 import { searchExtension, ThreadSearch } from "./search.ts";
 import { DockerDriver } from "./drivers/docker.ts";
 import { LocalDriver } from "./drivers/local.ts";
@@ -204,9 +204,14 @@ export async function openScout(options: ScoutOptions) {
 	const mcp = options.mcp ?? (config.mcpFile === undefined ? [] : await connectMcp(loadMcpConfig(config.mcpFile)));
 	const mcpTools = await mcpExtension(mcp);
 	if (mcp.length > 0) console.log(`MCP: ${mcp.map((c) => c.name).join(", ")} (${mcpTools.tools?.length ?? 0} tools)`);
+	// Reviewing other people's pull requests when asked: read-only files, the profile's reviewer.md, and the MCP tools
+	// (CI logs above all) a thread outside any channel gets.
+	const pullReviewer = reviewExtension(() => profile.reviewer, DEFAULT_PULL_REVIEW_INSTRUCTIONS, "pull-review");
+	const pullReviewerAgent: AgentChange = { model: config.model, extensions: [pullReviewer, mcpTools, observe] };
 
 	for (const extension of [
 		reviewer,
+		pullReviewer,
 		profileTools,
 		codingTools,
 		workCodeHost,
@@ -273,6 +278,14 @@ export async function openScout(options: ScoutOptions) {
 		return repoNamed(named).name;
 	};
 
+	/** The channel whose profile names this repository, and what its team wants Scout to know. */
+	const channelOf = (repoName: string): { name: string; instructions?: string } | undefined => {
+		for (const [name, channel] of profile.channels) {
+			if (channel.repo === repoName) return { name, ...(channel.instructions === undefined ? {} : { instructions: channel.instructions }) };
+		}
+		return undefined;
+	};
+
 	/** A channel's own model, from its profile's `model: provider/modelId`. */
 	const modelFor = (channelName: string): { provider: string; modelId: string } | undefined => {
 		const named = profile.channels.get(channelName)?.model;
@@ -300,6 +313,7 @@ export async function openScout(options: ScoutOptions) {
 	return {
 		harness,
 		repoFor,
+		channelOf,
 		admitter,
 		audit,
 		spend,
@@ -319,6 +333,7 @@ export async function openScout(options: ScoutOptions) {
 			extensions: [profileTools, codingTools, workCodeHost, searchTools, memoryTools, mcpTools, observe],
 		} satisfies AgentChange,
 		reviewerAgent,
+		pullReviewerAgent,
 		async close(): Promise<void> {
 			stopWatching();
 			await harness.close(context);
