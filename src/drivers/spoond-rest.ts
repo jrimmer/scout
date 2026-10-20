@@ -11,7 +11,9 @@ import {
 	FileError,
 	type FileErrorCode,
 	type FileInfo,
+	type FileListEntry,
 	type FileListing,
+	type ListFilesOptions,
 	type FileWatcher,
 	LineScanner,
 	type LineScan,
@@ -42,6 +44,9 @@ export type SpoondRestOptions = {
 
 /** Seconds a finished job's record and output stay in spoond; Scout deletes them itself once read. */
 const JOB_RETENTION = 600;
+/** spoond's listing maxima (its defaults); a request can only ask for less. */
+const LIST_MAX_ENTRIES = 50_000;
+const LIST_MAX_BYTES = 4 * 1024 * 1024;
 /** Longest long poll, so output still arrives while a command runs; polls start at a second and grow to it. */
 const POLL_SECONDS = 5;
 /** Bytes per output read; above any per-job cap Scout sets, so what follows a dropped front comes in one piece. */
@@ -282,8 +287,47 @@ export class SpoondRestEnv implements ExecutionEnv {
 	}
 
 	/** Not until spoond lists directories itself (spoond-bvmc); Pi then walks the tree with `openDirReader`. */
-	async listFiles(path: string, _options: unknown, _context: Context): Promise<Result<FileListing, FileError>> {
-		return err(new FileError("not_supported", "spoond can't list files yet", this.#resolve(path)));
+	async listFiles(path: string, options: ListFilesOptions | undefined, context: Context): Promise<Result<FileListing, FileError>> {
+		const resolved = this.#resolve(path);
+		if (context.abortSignal?.aborted) return err(new FileError("aborted", "aborted", resolved));
+		for (const key of ["maxEntries", "maxBytes", "timeoutMs"] as const) {
+			const value = options?.[key];
+			if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+				return err(new FileError("invalid", `${key} must be a non-negative safe integer`, resolved));
+			}
+		}
+		const maxEntries = options?.maxEntries ?? LIST_MAX_ENTRIES;
+		const maxBytes = options?.maxBytes ?? LIST_MAX_BYTES;
+		const query = new URLSearchParams({ list: "1", hidden: options?.hidden === false ? "0" : "1", gitignore: options?.gitignore === false ? "0" : "1" });
+		if (options?.exclude !== undefined && options.exclude.length > 0) query.set("exclude", options.exclude.join(","));
+		// One more than asked, so an exact fit isn't reported truncated, and a limit of 0 (spoond's "the maximum") lists
+		// nothing. spoond's own byte limit counts JSON, larger than Pi's path-plus-two, so Pi's is applied here.
+		query.set("max_entries", String(Math.min(maxEntries + 1, LIST_MAX_ENTRIES)));
+		if (options?.timeoutMs !== undefined && options.timeoutMs > 0) query.set("timeout_ms", String(options.timeoutMs));
+		try {
+			const response = await this.#files("GET", resolved, `?${query}`);
+			if (!response.ok) {
+				// An older spoond reads the directory as a file and fails without a code: Pi then walks it itself.
+				return err((await spoondFileError(response, resolved)) ?? new FileError("not_supported", "this spoond can't list files", resolved));
+			}
+			const body = (await response.json()) as { entries?: { kind: string; path: string }[]; truncated?: boolean };
+			if (!Array.isArray(body.entries)) return err(new FileError("not_supported", "this spoond can't list files", resolved));
+			const entries: FileListEntry[] = [];
+			let bytes = 0;
+			let truncated = body.truncated === true;
+			for (const entry of body.entries) {
+				const size = Buffer.byteLength(entry.path) + 2;
+				if (entries.length >= maxEntries || bytes + size > maxBytes) {
+					truncated = true;
+					break;
+				}
+				bytes += size;
+				entries.push({ path: entry.path, kind: entry.kind === "d" ? "directory" : entry.kind === "l" ? "symlink" : "file" });
+			}
+			return ok({ entries, truncated });
+		} catch (error) {
+			return err(new FileError("unknown", error instanceof Error ? error.message : String(error), resolved));
+		}
 	}
 
 	async openDirReader(path: string, context: Context): Promise<Result<DirReader, FileError>> {

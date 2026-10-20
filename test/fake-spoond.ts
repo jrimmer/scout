@@ -1,8 +1,8 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { Duplex } from "node:stream";
 
 /**
@@ -136,6 +136,33 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 		}
 		if (rest?.startsWith("files/")) {
 			const path = decodeURIComponent(`/${rest.slice("files/".length)}`);
+			if (req.method === "GET" && url.searchParams.get("list") === "1") {
+				// spoond 3.11's listing, without .gitignore (the live conformance run checks that): depth first, siblings in
+				// byte order, .git skipped, hidden and exclude honoured, bounded by max_entries.
+				if (!existsSync(path)) return json(404, coded("no such file", "ENOENT"));
+				if (!statSync(path).isDirectory()) return json(409, coded("not a directory", "ENOTDIR"));
+				const hidden = url.searchParams.get("hidden") !== "0";
+				const exclude = new Set((url.searchParams.get("exclude") ?? "").split(",").filter(Boolean));
+				const max = Number(url.searchParams.get("max_entries") ?? 50_000) || 50_000;
+				const entries: { kind: string; path: string }[] = [];
+				let truncated = false;
+				const walk = (dir: string, prefix: string): void => {
+					for (const name of readdirSync(dir).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) {
+						if (truncated || name === ".git" || exclude.has(name) || (!hidden && name.startsWith("."))) continue;
+						if (entries.length >= max) {
+							truncated = true;
+							return;
+						}
+						const full = join(dir, name);
+						const stat = lstatSync(full);
+						const kind = stat.isSymbolicLink() ? "l" : stat.isDirectory() ? "d" : "f";
+						entries.push({ kind, path: `${prefix}${name}` });
+						if (kind === "d") walk(full, `${prefix}${name}/`);
+					}
+				};
+				walk(path, "");
+				return json(200, { entries, count: entries.length, truncated });
+			}
 			if (req.method === "GET" && url.searchParams.has("stat")) {
 				if (!existsSync(path)) return json(404, coded("no such file", "ENOENT"));
 				const stat = statSync(path);

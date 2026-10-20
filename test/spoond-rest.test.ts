@@ -13,22 +13,23 @@ import { bareRepo } from "./helpers.ts";
 
 const spec = { image: "dev-base", network: { mode: "none" as const }, labels: {} };
 
-/** Pi's own checks of an `ExecutionEnv`, against spoond's REST API: 3.11, and an older spoond (no ranges, no codes). */
-for (const modern of [true, false]) {
-	describe(`spoond REST environment conformance${modern ? "" : " (older spoond: no ranged reads or error codes)"}`, () => {
-		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-spoond-rest-")));
-		let spoond: Awaited<ReturnType<typeof fakeSpoond>>;
+/**
+ * Pi's own checks of an `ExecutionEnv`, against spoond's REST API. `start` opens the environment's sandbox and says
+ * where cases may write; `listFiles` runs the listing cases, which need spoond's real .gitignore handling.
+ */
+function conformance(name: string, start: () => Promise<{ connect: (cwd: string) => ExecutionEnv; root: string; stop: () => Promise<void> }>, listFiles: boolean, skip?: string): void {
+	describe(name, { ...(skip === undefined ? {} : { skip }) }, () => {
 		let connect: (cwd: string) => ExecutionEnv;
+		let root: string;
+		let stop = async () => {};
 		before(async () => {
-			spoond = await fakeSpoond("sdt-test", { ranges: modern, codes: modern });
-			const driver = new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest"), transport: "rest" });
-			const handle = await driver.open("conformance", spec);
-			connect = (cwd) => handle.connect!({ id: "sandbox:conformance", cwd });
+			({ connect, root, stop } = await start());
 		});
-		after(() => spoond.close());
+		after(() => stop());
 
 		let n = 0;
 		const cases = createEnvConformance({
+			listFiles,
 			assertions: {
 				ok: (value, message) => assert.ok(value, message ?? "expected a truthy value"),
 				strictEqual: (actual, expected) => assert.strictEqual(actual, expected),
@@ -45,11 +46,29 @@ for (const modern of [true, false]) {
 			},
 		});
 		for (const c of cases) {
-			const skip = c.name.startsWith("watch") && "spoond can't watch files yet (spoond-j87e)";
+			const skip = c.name.startsWith("watch") && "Scout doesn't use spoond's watch (#22)";
 			it(c.name, { skip, timeout: c.timeoutMs ?? 30_000 }, () => c.run());
 		}
 	});
 }
+
+for (const modern of [true, false]) {
+	conformance(`spoond REST environment conformance${modern ? "" : " (older spoond: no ranged reads or error codes)"}`, async () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-spoond-rest-")));
+		const spoond = await fakeSpoond("sdt-test", { ranges: modern, codes: modern });
+		const driver = new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest"), transport: "rest" });
+		const handle = await driver.open("conformance", spec);
+		return { connect: (cwd) => handle.connect!({ id: "sandbox:conformance", cwd }), root, stop: () => spoond.close() };
+	}, false);
+}
+
+/** The same against a real spoond, listing included: `SCOUT_SPOOND_TESTS=1 SCOUT_SPOOND_URL=… SCOUT_SPOOND_TOKEN=…`. */
+conformance("spoond REST environment conformance against spoond", async () => {
+	const driver = new SpoondDriver({ url: process.env.SCOUT_SPOOND_URL ?? "", token: process.env.SCOUT_SPOOND_TOKEN ?? "", transport: "rest" });
+	const key = `conformance-${process.pid}`;
+	const handle = await driver.open(key, { ...spec, labels: { purpose: "conformance" } });
+	return { connect: (cwd) => handle.connect!({ id: `sandbox:${key}`, cwd }), root: "/root/conformance", stop: () => driver.remove(key) };
+}, true, process.env.SCOUT_SPOOND_TESTS === "1" ? undefined : "set SCOUT_SPOOND_TESTS=1 with SCOUT_SPOOND_URL and SCOUT_SPOOND_TOKEN");
 
 describe("spoond REST environment", () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-spoond-rest-")));
@@ -121,6 +140,28 @@ describe("spoond REST environment", () => {
 		} finally {
 			await short.close();
 		}
+	});
+
+	it("lists a tree within Pi's bounds: an exact fit isn't truncated, a limit of 0 lists nothing", async () => {
+		const dir = join(root, "tree");
+		for (const file of ["b.txt", "a/z.txt", "a/b/c.txt", ".hidden/x"]) assert.ok((await env.writeFile(join(dir, file), "", context)).ok);
+		const listed = await env.listFiles!(dir, undefined, context);
+		assert.ok(listed.ok);
+		assert.deepEqual(listed.value.entries.map((e) => `${e.kind[0]} ${e.path}`), ["d .hidden", "f .hidden/x", "d a", "d a/b", "f a/b/c.txt", "f a/z.txt", "f b.txt"]);
+		const exact = await env.listFiles!(dir, { maxEntries: 7 }, context);
+		assert.ok(exact.ok && !exact.value.truncated && exact.value.entries.length === 7);
+		const none = await env.listFiles!(dir, { maxEntries: 0 }, context);
+		assert.ok(none.ok && none.value.truncated && none.value.entries.length === 0);
+		// Pi counts each entry's path plus two bytes: ".hidden" (9) and ".hidden/x" (11) fit in 20, "a" doesn't.
+		const bytes = await env.listFiles!(dir, { maxBytes: 20 }, context);
+		assert.ok(bytes.ok && bytes.value.truncated);
+		assert.deepEqual(bytes.value.entries.map((e) => e.path), [".hidden", ".hidden/x"]);
+		const missing = await env.listFiles!(join(dir, "nope"), undefined, context);
+		assert.ok(!missing.ok && missing.error.code === "not_found");
+		const file = await env.listFiles!(join(dir, "b.txt"), undefined, context);
+		assert.ok(!file.ok && file.error.code === "not_directory");
+		const bad = await env.listFiles!(dir, { timeoutMs: 1.5 }, context);
+		assert.ok(!bad.ok && bad.error.code === "invalid");
 	});
 
 	it("keeps a script's mode when it's rewritten", async () => {
