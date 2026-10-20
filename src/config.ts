@@ -31,7 +31,8 @@ export type SandboxConfig = {
 	size?: string;
 	/** Docker's network for `open`. */
 	dockerNetwork: string;
-	spoond?: { url: string; token: string };
+	/** `transport`: the pi-env daemon over spoond's stream WebSocket, or spoond's REST API with no connection held. */
+	spoond?: { url: string; token: string; transport: "stream" | "rest" };
 };
 
 export type Config = {
@@ -126,13 +127,15 @@ function sandboxConfig(env: NodeJS.ProcessEnv): SandboxConfig {
 	const network = env.SCOUT_SANDBOX_NETWORK ?? "none";
 	if (network !== "none" && network !== "open") throw new Error("SCOUT_SANDBOX_NETWORK must be none or open");
 	const size = env.SCOUT_SANDBOX_SIZE ?? (driver === "docker" ? "4g" : undefined);
+	const transport = env.SCOUT_SPOOND_TRANSPORT ?? "stream";
+	if (transport !== "stream" && transport !== "rest") throw new Error("SCOUT_SPOOND_TRANSPORT must be stream or rest");
 	return {
 		driver,
 		image: env.SCOUT_SANDBOX_IMAGE ?? (driver === "spoond" ? "dev-base" : "scout-sandbox:latest"),
 		network,
 		...(size === undefined ? {} : { size }),
 		dockerNetwork: env.SCOUT_DOCKER_NETWORK ?? "bridge",
-		...(driver === "spoond" ? { spoond: { url: required(env, "SCOUT_SPOOND_URL"), token: required(env, "SCOUT_SPOOND_TOKEN") } } : {}),
+		...(driver === "spoond" ? { spoond: { url: required(env, "SCOUT_SPOOND_URL"), token: required(env, "SCOUT_SPOOND_TOKEN"), transport } } : {}),
 	};
 }
 

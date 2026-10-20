@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { Connection, type ConnectionOptions, type Reply, RemoteExecutionEnv, type RequestOptions } from "@earendil-works/pi-env";
 import type { NetworkPolicy, SandboxDriver, SandboxHandle, SandboxSpec } from "./drivers/types.ts";
 import { Mirror } from "./sandbox.ts";
@@ -63,7 +64,8 @@ class TrackedConnection extends Connection {
 	}
 }
 
-type Opened = { handle: SandboxHandle; connection: TrackedConnection; repo: WorkspaceRepo };
+/** A prepared workspace; `connection` is its daemon's, absent on substrates that serve files and commands themselves. */
+type Opened = { handle: SandboxHandle; connection?: TrackedConnection; repo: WorkspaceRepo };
 
 /** How long a sandbox connection may sit unused before it's closed; the next tool call opens it again. */
 const IDLE_DISCONNECT_MS = 2 * 60 * 1000;
@@ -81,6 +83,7 @@ export class Workspaces {
 	readonly #dataDir: string;
 	readonly #mirrors = new Map<string, Mirror>();
 	readonly #open = new Map<number, Promise<Opened>>();
+	readonly #connected = new Set<number>();
 	/** Which repository a conversation works in; set once the harness exists. */
 	repoOf: (conversationId: number) => Promise<string | undefined> = async () => undefined;
 	readonly #sweep: ReturnType<typeof setInterval>;
@@ -102,11 +105,13 @@ export class Workspaces {
 		let closed = 0;
 		for (const [id, pending] of this.#open) {
 			const opened = await pending.catch(() => undefined);
-			if (opened === undefined || opened.connection.inFlight > 0 || now - opened.connection.lastUsed < idleMs) continue;
+			const connection = opened?.connection;
+			if (connection === undefined || connection.inFlight > 0 || now - connection.lastUsed < idleMs) continue;
 			if (this.#open.get(id) !== pending) continue;
 			this.#open.delete(id);
+			this.#connected.delete(id);
 			try {
-				opened.connection.close();
+				connection.close();
 			} catch {}
 			closed++;
 		}
@@ -115,7 +120,7 @@ export class Workspaces {
 
 	/** Conversations with a daemon connection open right now. */
 	get connected(): number {
-		return this.#open.size;
+		return this.#connected.size;
 	}
 
 	get driver(): SandboxDriver {
@@ -163,17 +168,20 @@ export class Workspaces {
 	}
 
 	/** The conversation's environment: its repository's working tree, in its sandbox. Prepared on first use. */
-	async env(conversationId: number): Promise<RemoteExecutionEnv> {
+	async env(conversationId: number): Promise<ExecutionEnv> {
 		const opened = await this.#ensure(conversationId);
 		return this.#envAt(conversationId, opened, `${opened.handle.workdir}/repo`);
 	}
 
-	#envAt(conversationId: number, opened: Opened, cwd: string): RemoteExecutionEnv {
+	#envAt(conversationId: number, opened: Opened, cwd: string): ExecutionEnv {
+		const id = `sandbox:${this.key(conversationId)}`;
+		const shellEnv = opened.handle.env;
+		if (opened.connection === undefined) return opened.handle.connect!({ id, cwd, ...(shellEnv === undefined ? {} : { shellEnv }) });
 		return new RemoteExecutionEnv({
 			connection: opened.connection,
-			id: `sandbox:${this.key(conversationId)}`,
+			id,
 			cwd,
-			...(opened.handle.env === undefined ? {} : { shellEnv: opened.handle.env }),
+			...(shellEnv === undefined ? {} : { shellEnv }),
 		});
 	}
 
@@ -190,15 +198,19 @@ export class Workspaces {
 	async #prepare(conversationId: number): Promise<Opened> {
 		const repo = this.repo(await this.repoOf(conversationId));
 		const handle = await this.#config.driver.open(this.key(conversationId), this.spec(repo, conversationId));
-		const options: ConnectionOptions = {
-			command: handle.daemonCommand,
-			// Once Scout closes it (idle, or the lease going), its transport's last words are about that (spoond: the stream).
-			onLog: (text) => {
-				if (!connection.closing) console.error(`sandbox ${this.key(conversationId)}: ${text.trimEnd()}`);
-			},
-		};
-		const connection: TrackedConnection = new TrackedConnection(options);
-		const opened = { handle, connection, repo };
+		let connection: TrackedConnection | undefined;
+		if (handle.connect === undefined) {
+			const options: ConnectionOptions = {
+				command: handle.daemonCommand,
+				// Once Scout closes it (idle, or the lease going), its transport's last words are about that (spoond: the stream).
+				onLog: (text) => {
+					if (connection?.closing !== true) console.error(`sandbox ${this.key(conversationId)}: ${text.trimEnd()}`);
+				},
+			};
+			connection = new TrackedConnection(options);
+			this.#connected.add(conversationId);
+		}
+		const opened = { handle, ...(connection === undefined ? {} : { connection }), repo };
 		const env = this.#envAt(conversationId, opened, handle.workdir);
 		const clone = `${handle.workdir}/repo`;
 		const cloned = await env.exists(`${clone}/.git`, BACKGROUND_CONTEXT);
@@ -206,7 +218,7 @@ export class Workspaces {
 		return opened;
 	}
 
-	async #clone(env: RemoteExecutionEnv, opened: Opened, clone: string, conversationId: number): Promise<void> {
+	async #clone(env: ExecutionEnv, opened: Opened, clone: string, conversationId: number): Promise<void> {
 		const { repo } = opened;
 		const mirror = this.mirrorFor(repo.name);
 		await mirror.refresh();
@@ -288,7 +300,8 @@ export class Workspaces {
 	async #close(conversationId: number): Promise<void> {
 		const opened = this.#open.get(conversationId);
 		this.#open.delete(conversationId);
-		await opened?.then((o) => o.connection.close()).catch(() => {});
+		this.#connected.delete(conversationId);
+		await opened?.then((o) => o.connection?.close()).catch(() => {});
 	}
 
 	async close(): Promise<void> {
@@ -297,7 +310,7 @@ export class Workspaces {
 	}
 }
 
-async function copyIn(env: RemoteExecutionEnv, path: string, bytes: Uint8Array): Promise<void> {
+async function copyIn(env: ExecutionEnv, path: string, bytes: Uint8Array): Promise<void> {
 	const parent = path.slice(0, path.lastIndexOf("/"));
 	await env.createDir(parent, { recursive: true }, BACKGROUND_CONTEXT);
 	for (let offset = 0; offset === 0 || offset < bytes.length; offset += CHUNK) {
@@ -308,14 +321,14 @@ async function copyIn(env: RemoteExecutionEnv, path: string, bytes: Uint8Array):
 	}
 }
 
-async function exec(env: RemoteExecutionEnv, argv: string[], context: Context = BACKGROUND_CONTEXT): Promise<{ code: number; output: string }> {
+async function exec(env: ExecutionEnv, argv: string[], context: Context = BACKGROUND_CONTEXT): Promise<{ code: number; output: string }> {
 	let output = "";
 	const result = await env.exec(argv, { onOutput: (text) => (output += text) }, context);
 	if (!result.ok) throw result.error;
 	return { code: result.value.exitCode, output };
 }
 
-async function must(env: RemoteExecutionEnv, argv: string[]): Promise<string> {
+async function must(env: ExecutionEnv, argv: string[]): Promise<string> {
 	const { code, output } = await exec(env, argv);
 	if (code !== 0) throw new Error(`${argv.slice(0, 3).join(" ")} failed (${code}): ${output.trim()}`);
 	return output;

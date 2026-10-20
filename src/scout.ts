@@ -64,7 +64,8 @@ function driverFor(config: Config, dataDir: string, instance: string): SandboxDr
 	if (sandbox.driver === "spoond") {
 		// The relay that carries the daemon's stream reads the token from here (see drivers/spoond-relay.ts).
 		process.env.SCOUT_SPOOND_TOKEN = sandbox.spoond!.token;
-		return new SpoondDriver({ url: sandbox.spoond!.url, token: sandbox.spoond!.token });
+		const { url, token, transport } = sandbox.spoond!;
+		return new SpoondDriver({ url, token, transport });
 	}
 	if (sandbox.driver === "local") {
 		console.error("SCOUT_SANDBOX_DRIVER=local: commands run on this host with no isolation. Never with people you don't fully trust.");

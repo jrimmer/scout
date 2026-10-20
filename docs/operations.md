@@ -30,6 +30,13 @@ threads can be *working* at once. Ask a spoond admin to raise it for Scout's acc
 thread, plus a few for short commands. (`POST /api/users/{id}/quota` with `{"exec_concurrency": N}`, from the spoond
 release after `c95af19`.) Then set Scout's concurrency limits (below) under it.
 
+`SCOUT_SPOOND_TRANSPORT=rest` (spoond 3.11 and later) reaches leases through spoond's REST API instead: commands
+run as background jobs that Scout follows with long polls and reads by offset, file contents go through the files API,
+and the rest (renames, listings) runs as short commands in the lease. Scout then holds no connection at all, so only
+commands running at that moment count against the account's limit, and nothing is lost when Scout restarts mid-command
+(the command finishes in the lease). Output arrives a second or so later than over the stream, and file watching isn't
+available (Scout's tools don't use it).
+
 When spoond is nearly full it answers new leases with "wait" or "full", and Scout retries for up to ten minutes
 before the thread hears that no sandbox was free. spoond also pauses leases to keep memory free; a paused lease
 resumes on its next use, so a thread's first command after a quiet spell can take longer.

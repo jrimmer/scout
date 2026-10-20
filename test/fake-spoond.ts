@@ -1,19 +1,24 @@
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { dirname } from "node:path";
 import type { Duplex } from "node:stream";
 
 /**
  * Enough of spoond's lease API to drive the spoond driver for real, on this host: leases, keepalive, suspend, delete,
- * buffered exec, the files API, and the stream WebSocket in binary mode, which runs the uploaded pi-env daemon. Guest
- * paths are host paths (the driver's `home` points into a temporary directory).
+ * buffered and background exec (jobs with output by offset, an output cap, signals), the files API (with `Range` unless
+ * `ranges: false`, like spoond before 3.11), and the stream WebSocket in binary mode, which runs the uploaded pi-env
+ * daemon. Guest paths are host paths (the driver's `home` points into a temporary directory).
  */
 export type FakeLease = { id: string; holder: string; state: string; body: Record<string, unknown> };
 
-export async function fakeSpoond(token: string) {
+type Stream = { kept: Buffer; base: number; dropped: { bytes: number; newlines: number; ends_with_newline: boolean } };
+type FakeJob = { child: ChildProcess; state: "running" | "exited"; exit: number | null; out: Stream; err: Stream; cap: number; exited: Promise<void> };
+
+export async function fakeSpoond(token: string, options: { ranges?: boolean } = {}) {
 	const leases = new Map<string, FakeLease>();
+	const jobs = new Map<string, FakeJob>();
 	const calls: string[] = [];
 	let next = 1;
 
@@ -52,21 +57,116 @@ export async function fakeSpoond(token: string) {
 			return json(200, { id: lease.id, status: "suspended" });
 		}
 		if (rest === "exec") {
-			const { cmd } = JSON.parse(body.toString()) as { cmd: string };
-			const stdout = execFileSync("bash", ["-c", cmd], { encoding: "utf8" });
-			return json(200, { stdout, stderr: "", exit: 0 });
+			const exec = JSON.parse(body.toString()) as { cmd: string; background?: boolean; env?: Record<string, string>; output_max_bytes?: number };
+			if (!exec.background) {
+				const ran = spawnSync("bash", ["-c", exec.cmd], { encoding: "utf8" });
+				return json(200, { stdout: ran.stdout, stderr: ran.stderr, exit: ran.status ?? 128 });
+			}
+			const child = spawn("bash", ["-c", exec.cmd], { env: { ...process.env, ...exec.env }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+			const stream = (): Stream => ({ kept: Buffer.alloc(0), base: 0, dropped: { bytes: 0, newlines: 0, ends_with_newline: false } });
+			const job: FakeJob = { child, state: "running", exit: null, out: stream(), err: stream(), cap: exec.output_max_bytes ?? 0, exited: Promise.resolve() };
+			const append = (s: Stream, data: Buffer) => {
+				s.kept = Buffer.concat([s.kept, data]);
+				if (job.cap > 0 && s.kept.length > job.cap) {
+					const front = s.kept.subarray(0, s.kept.length - job.cap);
+					s.dropped.bytes += front.length;
+					for (const byte of front) if (byte === 10) s.dropped.newlines++;
+					s.dropped.ends_with_newline = front[front.length - 1] === 10;
+					s.base += front.length;
+					s.kept = s.kept.subarray(front.length);
+				}
+			};
+			child.stdout?.on("data", (data: Buffer) => append(job.out, data));
+			child.stderr?.on("data", (data: Buffer) => append(job.err, data));
+			job.exited = new Promise((resolve) =>
+				child.on("close", (code, signal) => {
+					job.state = "exited";
+					job.exit = code ?? (signal === null ? null : 128 + (signal === "SIGKILL" ? 9 : 15));
+					resolve();
+				}),
+			);
+			const id = randomBytes(6).toString("hex");
+			jobs.set(id, job);
+			return json(202, { job_id: id, started_at: new Date().toISOString() });
+		}
+		const jobMatch = /^jobs\/([^/]+)(?:\/(output|signal))?$/.exec(rest ?? "");
+		if (jobMatch !== null) {
+			const [, jobId, what] = jobMatch;
+			const job = jobs.get(jobId!);
+			if (job === undefined) return json(404, { error: "no such job" });
+			if (what === undefined && req.method === "DELETE") {
+				if (job.state === "running") return json(409, { error: "job is running" });
+				jobs.delete(jobId!);
+				res.writeHead(204).end();
+				return;
+			}
+			if (what === undefined) {
+				const wait = Number(url.searchParams.get("wait") ?? 0);
+				if (job.state === "running" && wait > 0) await Promise.race([job.exited, new Promise((r) => setTimeout(r, wait * 1000))]);
+				const skipped = Object.fromEntries((["stdout", "stderr"] as const).flatMap((n) => {
+					const s = n === "stdout" ? job.out : job.err;
+					return s.dropped.bytes > 0 ? [[n, s.dropped]] : [];
+				}));
+				return json(200, {
+					job: { job_id: jobId, state: job.state, exit_code: job.exit, ...(Object.keys(skipped).length === 0 ? {} : { skipped }) },
+					stdout: job.out.kept.subarray(-65536).toString(),
+					stderr: job.err.kept.subarray(-65536).toString(),
+				});
+			}
+			if (what === "signal") {
+				if (job.state !== "running") return json(409, { error: "job is not running" });
+				const { signal } = JSON.parse(body.toString()) as { signal: string };
+				process.kill(-job.child.pid!, signal === "KILL" ? "SIGKILL" : "SIGTERM");
+				return json(200, { ok: true });
+			}
+			const s = url.searchParams.get("stream") === "stderr" ? job.err : job.out;
+			const limit = Number(url.searchParams.get("limit") ?? 1048576);
+			const start = Math.max(Number(url.searchParams.get("offset") ?? 0), s.base);
+			const headers: Record<string, string> = { "content-type": "application/octet-stream" };
+			if (s.dropped.bytes > 0) {
+				headers["x-output-offset"] = String(start);
+				headers["x-output-skipped"] = JSON.stringify(s.dropped);
+			}
+			res.writeHead(200, headers).end(s.kept.subarray(start - s.base, start - s.base + limit));
+			return;
 		}
 		if (rest?.startsWith("files/")) {
-			const path = `/${rest.slice("files/".length)}`;
+			const path = decodeURIComponent(`/${rest.slice("files/".length)}`);
 			if (req.method === "GET" && url.searchParams.has("stat")) {
 				if (!existsSync(path)) return json(404, { error: "no such file" });
-				return json(200, { name: path, size: statSync(path).size });
+				const stat = statSync(path);
+				return json(200, { name: path, size: stat.size, mode: (stat.mode & 0o777).toString(8), is_dir: stat.isDirectory() });
+			}
+			if (req.method === "GET") {
+				if (!existsSync(path)) return json(404, { error: "no such file" });
+				if (statSync(path).isDirectory()) return json(400, { error: "is a directory" });
+				const bytes = readFileSync(path);
+				const range = /^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range ?? ""));
+				if (range === null || options.ranges === false) {
+					res.writeHead(200, { "content-type": "application/octet-stream" }).end(bytes);
+					return;
+				}
+				const from = Number(range[1]);
+				const to = Math.min(range[2] === "" ? bytes.length - 1 : Number(range[2]), bytes.length - 1);
+				if (from >= bytes.length) return json(416, { error: "range not satisfiable" });
+				res.writeHead(206, { "content-range": `bytes ${from}-${to}/${bytes.length}`, "accept-ranges": "bytes" }).end(bytes.subarray(from, to + 1));
+				return;
 			}
 			if (req.method === "PUT") {
+				if (existsSync(path) && lstatSync(path).isDirectory()) return json(409, { error: "a directory is in the way" });
 				mkdirSync(dirname(path), { recursive: true });
-				writeFileSync(path, body);
-				chmodSync(path, Number.parseInt(url.searchParams.get("mode") ?? "0644", 8));
+				// Into place by rename, as spoond does: an open file keeps its old content.
+				const landing = `${path}.landing-${randomBytes(4).toString("hex")}`;
+				writeFileSync(landing, body);
+				chmodSync(landing, Number.parseInt(url.searchParams.get("mode") ?? "0644", 8));
+				renameSync(landing, path);
 				return json(201, { name: path });
+			}
+			if (req.method === "DELETE") {
+				if (!existsSync(path)) return json(404, { error: "no such file" });
+				rmSync(path, { recursive: url.searchParams.get("recursive") === "1" });
+				res.writeHead(204).end();
+				return;
 			}
 		}
 		json(404, { error: "not here" });
@@ -91,8 +191,13 @@ export async function fakeSpoond(token: string) {
 	return {
 		url: `http://127.0.0.1:${port}`,
 		leases,
+		jobs,
 		calls,
-		close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+		close: () => {
+			for (const job of jobs.values()) if (job.state === "running") process.kill(-job.child.pid!, "SIGKILL");
+			server.closeAllConnections();
+			return new Promise<void>((resolve) => server.close(() => resolve()));
+		},
 	};
 }
 

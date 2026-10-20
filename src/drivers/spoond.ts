@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { packagedDaemon } from "@earendil-works/pi-env";
+import { SpoondRestEnv } from "./spoond-rest.ts";
 import type { NetworkPolicy, SandboxDriver, SandboxHandle, SandboxSpec } from "./types.ts";
 
 /**
@@ -9,8 +10,10 @@ import type { NetworkPolicy, SandboxDriver, SandboxHandle, SandboxSpec } from ".
  * memory survive suspend), suspends itself when idle, and is checkpointed so a host crash doesn't lose it. Network
  * policy maps onto spoond's: `none`, `internet` for open, and `restricted` with an egress allowlist.
  *
- * spoond's exec is buffered and takes no input, so the pi-env daemon runs over its stream WebSocket in binary mode,
- * through a small relay process (spoond-relay.ts). Only the bearer token is needed; no SSH keys.
+ * Two transports. `stream` (the default): spoond's exec is buffered and takes no input, so the pi-env daemon runs over
+ * its stream WebSocket in binary mode, through a small relay process (spoond-relay.ts); that holds one of the account's
+ * exec slots while tools run. `rest`: files and commands go straight to spoond's files and background-job APIs
+ * (spoond-rest.ts), and Scout holds no connection at all. Only the bearer token is needed either way; no SSH keys.
  */
 export type SpoondOptions = {
 	/** The lease API, e.g. `https://spoond.lan:8890`. */
@@ -26,7 +29,13 @@ export type SpoondOptions = {
 	home?: string;
 	/** Seconds to keep retrying while spoond is full or busy (default 600). */
 	patience?: number;
+	/** How commands and files reach the lease: a pi-env daemon over the stream WebSocket, or spoond's REST API. */
+	transport?: "stream" | "rest";
 };
+
+/** One request to spoond, waiting out busy and full answers. */
+export type SpoondRequest = (method: string, path: string, init?: RequestOptions) => Promise<Response>;
+type RequestOptions = { body?: string | Uint8Array<ArrayBuffer>; headers?: Record<string, string>; signal?: AbortSignal };
 
 type Lease = { id: string; holder?: string; state?: string };
 
@@ -56,8 +65,18 @@ export class SpoondDriver implements SandboxDriver {
 		}
 		if (lease === undefined) lease = await this.#create(key, spec);
 		else await this.#api("POST", `/api/leases/${lease.id}/keepalive`, { ttl: 0 });
-		const daemon = await this.#daemon(lease.id);
 		const home = this.#options.home ?? "/root";
+		if (this.#options.transport === "rest") {
+			const leaseId = lease.id;
+			const request: SpoondRequest = (method, path, init) => this.#request(method, `/api/leases/${leaseId}${path}`, init);
+			return {
+				daemonCommand: [],
+				workdir: `${home}/work`,
+				env: { HOME: home },
+				connect: (options) => new SpoondRestEnv({ ...options, request, home }),
+			};
+		}
+		const daemon = await this.#daemon(lease.id);
 		return {
 			// The relay reads the token from SCOUT_SPOOND_TOKEN in its environment, never from its arguments.
 			daemonCommand: [process.execPath, RELAY, this.#options.url, lease.id, daemon, home],
@@ -113,7 +132,7 @@ export class SpoondDriver implements SandboxDriver {
 		const path = `${this.#options.home ?? "/root"}/.scout/pi-env-${createHash("sha256").update(binary).digest("hex").slice(0, 12)}`;
 		const stat = await this.#request("GET", `/api/leases/${leaseId}/files${path}?stat=1`);
 		if (stat.status === 404) {
-			const put = await this.#request("PUT", `/api/leases/${leaseId}/files${path}?mode=0755`, binary);
+			const put = await this.#request("PUT", `/api/leases/${leaseId}/files${path}?mode=0755`, { body: binary });
 			if (!put.ok) throw new Error(`uploading pi-env to ${leaseId}: spoond answered ${put.status}`);
 		} else if (!stat.ok) {
 			throw new Error(`checking pi-env in ${leaseId}: spoond answered ${stat.status}`);
@@ -123,7 +142,7 @@ export class SpoondDriver implements SandboxDriver {
 	}
 
 	async #api(method: string, path: string, body?: unknown): Promise<unknown> {
-		const response = await this.#request(method, path, body === undefined ? undefined : JSON.stringify(body));
+		const response = await this.#request(method, path, body === undefined ? {} : { body: JSON.stringify(body) });
 		if (!response.ok) {
 			throw new Error(`spoond ${method} ${path}: ${response.status} ${(await response.text()).slice(0, 300)}`);
 		}
@@ -134,7 +153,8 @@ export class SpoondDriver implements SandboxDriver {
 	 * One request, waiting and retrying when spoond is full or busy (it says how long with Retry-After). Near full it
 	 * answers creates with 503 or 429 more often, and pauses leases to keep memory free, so this waits minutes, not tries.
 	 */
-	async #request(method: string, path: string, body?: string | Uint8Array<ArrayBuffer>): Promise<Response> {
+	async #request(method: string, path: string, init: RequestOptions = {}): Promise<Response> {
+		const { body, signal } = init;
 		const deadline = Date.now() + (this.#options.patience ?? 600) * 1000;
 		for (;;) {
 			const response = await this.#fetch(`${this.#options.url}${path}`, {
@@ -142,18 +162,32 @@ export class SpoondDriver implements SandboxDriver {
 				headers: {
 					authorization: `Bearer ${typeof this.#options.token === "function" ? this.#options.token() : this.#options.token}`,
 					...(typeof body === "string" ? { "content-type": "application/json" } : {}),
+					...init.headers,
 				},
 				...(body === undefined ? {} : { body }),
+				...(signal === undefined ? {} : { signal }),
 			});
-			const busy = response.status === 409 || response.status === 429 || response.status === 503;
-			if (!busy) return response;
+			if (!(await busy(response))) return response;
 			const seconds = Number(response.headers.get("retry-after") ?? 5);
 			const wait = Math.min(60, Number.isFinite(seconds) && seconds >= 0 ? seconds : 5) * 1000;
 			if (Date.now() + wait >= deadline) return response;
 			await response.body?.cancel();
 			await new Promise((resolve) => setTimeout(resolve, wait));
+			signal?.throwIfAborted();
 		}
 	}
+}
+
+/**
+ * Whether spoond means "try again": full (429, 503) or a lease busy with a lifecycle operation (409 with Retry-After,
+ * or `lease_busy`). Other 409s are answers (a directory in the way, a job still running).
+ */
+async function busy(response: Response): Promise<boolean> {
+	if (response.status === 429 || response.status === 503) return true;
+	if (response.status !== 409) return false;
+	if (response.headers.has("retry-after")) return true;
+	const answer = (await response.clone().json().catch(() => ({}))) as { code?: string };
+	return answer.code === "lease_busy";
 }
 
 function holder(key: string): string {

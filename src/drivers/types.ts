@@ -1,9 +1,11 @@
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+
 /**
  * Where a thread's commands and files live: a sandbox on some substrate (Docker on this host, a spoond microVM, …).
  *
  * The harness, credentials and Slack stay with Scout; a driver only provides a place to work and a way to start a
- * pi-env daemon inside it. Every file operation and command then goes through that daemon (`RemoteExecutionEnv`), so
- * Scout never touches a sandbox's files directly, and git moves in and out as bundles, so no sandbox needs
+ * pi-env daemon inside it (or, where the substrate serves files and commands itself, the environment: `connect`).
+ * Every file operation and command then goes through that, so Scout never touches a sandbox's files directly, and git moves in and out as bundles, so no sandbox needs
  * credentials. A new substrate is a new driver.
  */
 export type NetworkPolicy =
@@ -26,6 +28,8 @@ export type SandboxSpec = {
 export type SandboxHandle = {
 	/** Starts the pi-env daemon inside the sandbox, speaking on stdin and stdout (pi-env appends `serve --token …`). */
 	daemonCommand: readonly string[];
+	/** For a substrate that serves files and commands itself: the environment, instead of a daemon. */
+	connect?: (options: { id: string; cwd: string; shellEnv?: Record<string, string> }) => ExecutionEnv;
 	/** A directory inside the sandbox the work can use, writable and kept while the sandbox is kept. */
 	workdir: string;
 	/** Environment for commands in the sandbox. */

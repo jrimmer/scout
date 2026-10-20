@@ -111,6 +111,18 @@ describe("spoond driver when spoond is full", () => {
 		assert.equal(spoond.calls, 4);
 	});
 
+	it("retries a busy lease, but takes any other 409 as the answer", async () => {
+		let calls = 0;
+		const answers = [
+			() => Response.json({ code: "lease_busy" }, { status: 409 }),
+			() => new Response("", { status: 409, headers: { "retry-after": "0" } }),
+			() => Response.json({ error: "a directory is in the way" }, { status: 409 }),
+		];
+		const fetch = (async () => answers[calls++]!()) as typeof globalThis.fetch;
+		await assert.rejects(new SpoondDriver({ url: "http://spoond", token: "t", fetch }).remove("t-1"), /409 .*directory is in the way/);
+		assert.equal(calls, 3);
+	});
+
 	it("gives up when spoond stays full past its patience", async () => {
 		const spoond = answering([503, 503]);
 		const driver = new SpoondDriver({ url: "http://spoond", token: "t", fetch: spoond.fetch, patience: 0 });
