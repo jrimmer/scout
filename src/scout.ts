@@ -4,7 +4,7 @@ import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { type AgentChange, type ConversationId, createRegistry, Harness, type Storage } from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
-import { createCodeHostExtension } from "./codehost.ts";
+import { createCodeHostExtension, type OpenedPull } from "./codehost.ts";
 import type { Config, RepoConfig } from "./config.ts";
 import { modelsFor } from "./gateway.ts";
 import { Audit } from "./audit.ts";
@@ -47,6 +47,8 @@ export type ScoutOptions = {
 	threadLink?: (thread: ThreadRow) => Promise<string | undefined>;
 	/** Say something in Scout's home channel. */
 	announce?: (text: string) => void;
+	/** Scout opened a new pull request from a conversation (not an update to one). */
+	pullOpened?: (conversationId: number, pull: OpenedPull) => void;
 	/** Off for one-off jobs. */
 	watchProfile?: boolean;
 	/** Where sandboxes run; by default the one `config.sandbox.driver` names. */
@@ -203,7 +205,7 @@ export async function openScout(options: ScoutOptions) {
 			};
 		},
 		onPullRequest: (id, pull) => {
-			pulls.opened({ ...pull, kind: "work", conversationId: id });
+			if (pulls.opened({ ...pull, kind: "work", conversationId: id })) options.pullOpened?.(id, pull);
 			audit.record("pull_opened", { actor: "scout", conversationId: id, detail: { url: pull.url, title: pull.title } });
 		},
 		maxChangedLines: config.maxPullLines,

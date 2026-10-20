@@ -19,8 +19,8 @@ describe("pulls", () => {
 	it("follows pull requests until they are decided", async () => {
 		const pulls = new Pulls(":memory:");
 		const now = Date.parse("2026-10-19T10:00:00Z");
-		pulls.opened({ url: "u1", number: 1, slug: "o/r", kind: "work", conversationId: 1, title: "A" }, now - DAY);
-		pulls.opened({ url: "u1", number: 1, slug: "o/r", kind: "work", conversationId: 1, title: "A again" }, now);
+		assert.equal(pulls.opened({ url: "u1", number: 1, slug: "o/r", kind: "work", conversationId: 1, title: "A" }, now - DAY), true);
+		assert.equal(pulls.opened({ url: "u1", number: 1, slug: "o/r", kind: "work", conversationId: 1, title: "A again" }, now), false, "an update isn't new");
 		pulls.opened({ url: "u2", number: 2, slug: "o/r", kind: "work", conversationId: 2, title: "B" }, now - DAY);
 
 		const host = codeHost({ 1: { state: "closed", merged: true } });

@@ -66,14 +66,15 @@ export class Pulls {
 		`);
 	}
 
-	/** Record a pull request Scout opened; reopening the same one (an update) keeps its first record. */
-	opened(pull: Omit<PullRow, "state" | "decidedAt" | "openedAt">, now = Date.now()): void {
-		this.#db
+	/** Record a pull request Scout opened; reopening the same one (an update) keeps its first record. True if new. */
+	opened(pull: Omit<PullRow, "state" | "decidedAt" | "openedAt">, now = Date.now()): boolean {
+		const { changes } = this.#db
 			.prepare(
 				`INSERT OR IGNORE INTO pulls (url, number, slug, kind, conversation_id, title, opened_at)
 				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.run(pull.url, pull.number, pull.slug, pull.kind, pull.conversationId, pull.title, now);
+		return changes > 0;
 	}
 
 	/** Scout's pull requests that are still open, as of the last check. */

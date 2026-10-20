@@ -69,6 +69,14 @@ const scout = await openScout({
 	},
 	threadLink: (thread) => slack.permalink(thread.channel, thread.threadTs),
 	announce,
+	// Threads start with someone's request, so in the channel nothing says which pull request came of which thread.
+	pullOpened: (id, pull) => {
+		const thread = scout.threads.byConversation(id);
+		if (thread === undefined) return;
+		slack
+			.broadcast(thread.channel, thread.threadTs, `Opened <${pull.url}|${pull.slug}#${pull.number}>: ${pull.title.replace(/[&<>]/g, (c) => `&${{ "&": "amp", "<": "lt", ">": "gt" }[c]};`)}`)
+			.catch((error: unknown) => console.error("pull request notice failed:", error));
+	},
 	groupMembers: (group) => slack.groupMembers(group),
 	emailOf: (user) => slack.emailOf(user),
 });

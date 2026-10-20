@@ -224,6 +224,14 @@ export class Slack {
 		return undefined;
 	}
 
+	/**
+	 * A reply that also shows in the channel ("Also send to #channel"), so people scanning the channel can see what came
+	 * of a thread they'd otherwise have to open.
+	 */
+	async broadcast(channel: string, threadTs: string, text: string): Promise<void> {
+		await this.app.client.chat.postMessage({ channel, thread_ts: threadTs, reply_broadcast: true, text, unfurl_links: false });
+	}
+
 	async permalink(channel: string, ts: string): Promise<string | undefined> {
 		const link = await this.app.client.chat.getPermalink({ channel, message_ts: ts }).catch(() => undefined);
 		return link?.permalink;
