@@ -68,6 +68,26 @@ describe("spoond driver", () => {
 		assert.ok(spoond.calls.includes("POST /api/leases/lease1/keepalive"));
 	});
 
+	it("starts a repository's threads from its snapshot, when it names one", async () => {
+		const warm = new Workspaces({
+			dataDir: join(root, "data-warm"),
+			instance: "w",
+			repos: [{ name: "app", gitUrl: remote, base: "main", snapshot: "scout/node24" }],
+			driver: new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest-warm") }),
+			sandbox: { image: "dev-base", network: "none" },
+			git: { name: "Scout", email: "scout@localhost" },
+		});
+		try {
+			await warm.env(7);
+			const lease = [...spoond.leases.values()].find((l) => l.holder === "scout:w-7");
+			assert.equal(lease?.body.snapshot, "scout/node24");
+			assert.equal(lease?.body.image, undefined, "a snapshot carries its own image");
+			await warm.remove(7);
+		} finally {
+			await warm.close();
+		}
+	});
+
 	it("deletes the lease when the work is over", async () => {
 		await workspaces.remove(1);
 		assert.equal(spoond.leases.size, 0);

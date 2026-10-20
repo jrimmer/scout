@@ -20,7 +20,9 @@ sandboxes may reach (`egress` in `SCOUT_REPOS_FILE`, or `SCOUT_REPO_EGRESS` for 
 substrates with an egress firewall can enforce a list: spoond can (its `restricted` policy and allowlist), Docker
 can't, and Scout falls back to the default network there and says so.
 
-**spoond.** Set `SCOUT_SPOOND_URL` and `SCOUT_SPOOND_TOKEN`. The image (`SCOUT_SANDBOX_IMAGE`, default `dev-base`)
+**spoond.** Set `SCOUT_SPOOND_URL` and `SCOUT_SPOOND_TOKEN`. A repository whose toolchain isn't in a spoond image can
+start from a named snapshot instead (`snapshot` in `SCOUT_REPOS_FILE`, or `SCOUT_REPO_SNAPSHOT`): save a lease with the
+toolchain installed and its package cache warm, under Scout's spoond identity. The image (`SCOUT_SANDBOX_IMAGE`, default `dev-base`)
 needs git; `SCOUT_SANDBOX_SIZE` is a spoond size class. Scout reaches each lease's daemon over spoond's stream
 WebSocket and keeps that connection only while tools run (it closes after two idle minutes). spoond limits each
 account's concurrent execs and streams together (`EXEC_CONCURRENCY_MAX`, 8 by default), so that limit bounds how many

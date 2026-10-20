@@ -20,6 +20,8 @@ export type WorkspaceRepo = {
 	base: string;
 	/** This repository's own sandbox image. */
 	image?: string;
+	/** A saved sandbox its threads start from (spoond). */
+	snapshot?: string;
 	/** Hosts its sandboxes may reach, on substrates that can limit egress; otherwise the default network. */
 	egress?: string[];
 };
@@ -146,6 +148,7 @@ export class Workspaces {
 		}
 		return {
 			image: repo.image ?? sandbox.image,
+			...(repo.snapshot === undefined ? {} : { snapshot: repo.snapshot }),
 			network,
 			...(sandbox.size === undefined ? {} : { size: sandbox.size }),
 			labels: { conversation: String(conversationId), repo: repo.name, instance: this.#config.instance },

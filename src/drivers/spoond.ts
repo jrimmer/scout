@@ -84,7 +84,8 @@ export class SpoondDriver implements SandboxDriver {
 
 	async #create(key: string, spec: SandboxSpec): Promise<Lease> {
 		const lease = (await this.#api("POST", "/api/leases", {
-			image: spec.image,
+			// A snapshot carries its own image; naming a different one would be refused.
+			...(spec.snapshot === undefined ? { image: spec.image } : { snapshot: spec.snapshot }),
 			persistent: true,
 			ttl: 0,
 			...(spec.size !== undefined && SIZES.has(spec.size) ? { size: spec.size } : {}),

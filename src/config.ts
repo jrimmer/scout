@@ -15,6 +15,8 @@ export type RepoConfig = {
 	slug: string;
 	/** The sandbox image for this repository's threads, if it needs its own toolchain; else SCOUT_SANDBOX_IMAGE. */
 	image?: string;
+	/** spoond: a named snapshot its threads start from (toolchain installed, caches warm), instead of `image`. */
+	snapshot?: string;
 	/** Hosts this repository's sandboxes may reach, on substrates with an egress firewall (spoond). */
 	egress?: string[];
 };
@@ -98,7 +100,7 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
 	return value;
 }
 
-/** More repositories, from a JSON file: `[{ "name", "gitUrl", "slug", "base"?, "image"?, "egress"? }]`. */
+/** More repositories, from a JSON file: `[{ "name", "gitUrl", "slug", "base"?, "image"?, "snapshot"?, "egress"? }]`. */
 function moreRepos(path: string | undefined): RepoConfig[] {
 	if (path === undefined || path === "") return [];
 	const list = JSON.parse(readFileSync(path, "utf8")) as Partial<RepoConfig>[];
@@ -110,6 +112,7 @@ function moreRepos(path: string | undefined): RepoConfig[] {
 			slug: r.slug,
 			base: r.base ?? "main",
 			...(r.image ? { image: r.image } : {}),
+			...(r.snapshot ? { snapshot: r.snapshot } : {}),
 			...(Array.isArray(r.egress) ? { egress: r.egress } : {}),
 		};
 	});
@@ -140,6 +143,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		gitUrl: required(env, "SCOUT_REPO_URL"),
 		base: env.SCOUT_REPO_BASE ?? "main",
 		slug,
+		...(env.SCOUT_REPO_SNAPSHOT ? { snapshot: env.SCOUT_REPO_SNAPSHOT } : {}),
 		...(env.SCOUT_REPO_EGRESS ? { egress: env.SCOUT_REPO_EGRESS.split(",").map((h) => h.trim()).filter(Boolean) } : {}),
 	};
 	const [provider, ...rest] = (env.SCOUT_MODEL ?? "anthropic/claude-opus-5-5").split("/");

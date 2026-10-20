@@ -14,6 +14,8 @@ export type NetworkPolicy =
 
 export type SandboxSpec = {
 	image: string;
+	/** A saved sandbox to start from instead of a fresh `image`, on substrates that keep them (spoond's named snapshots). */
+	snapshot?: string;
 	network: NetworkPolicy;
 	/** A size the substrate understands (Docker: memory like `4g`; spoond: a size class). */
 	size?: string;
