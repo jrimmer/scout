@@ -195,6 +195,11 @@ const alertWatcher = new AlertWatcher({
 			const minutes = Math.max(1, Math.round((Date.now() - alert.openedAt) / MINUTE));
 			await slack.surface.post(alert.channel, alert.threadTs, { text: `🟢 Resolved after ${minutes} min.`, blocks: [{ type: "markdown", text: `🟢 Resolved after ${minutes} min.` }] });
 		},
+		returned: async (alert) => {
+			if (alert.channel === undefined || alert.threadTs === undefined) return;
+			const text = `🔴 It's back (${alert.returns === 1 ? "once" : `${alert.returns} times`} since it first fired). Same incident, so I'm keeping it here rather than starting over; ask me if you want another look.`;
+			await slack.surface.post(alert.channel, alert.threadTs, { text, blocks: [{ type: "markdown", text }] });
+		},
 		baseline: async (alerts) => {
 			const id = home === undefined ? undefined : await slack.channelId(home);
 			if (id === undefined) return;

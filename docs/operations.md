@@ -82,6 +82,8 @@ existing destinations are untouched.
   Gatus group or endpoint name, or any Grafana label value), or the home channel. Its thread is an investigation: the
   profile's `responder.md` says how. Scout mentions the channel's `oncall:` people.
 - When the alert clears, Scout says so in the same thread. People can join, steer, or ask it to fix what it found.
+- An alert that clears and comes back within six hours is the same incident: Scout says so in its thread instead of
+  opening another and investigating again.
 - Investigations count against the channel's budget and concurrency like any request.
 
 ## Asking for behavior in the profile

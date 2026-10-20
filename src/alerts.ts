@@ -28,7 +28,10 @@ export const DEFAULT_RESPONDER_INSTRUCTIONS =
 	"what changed around then, and say what's broken, the likely cause, how sure you are, and the next step a person " +
 	"should take. Don't change anything unless someone asks. Verdict first, then the evidence.";
 
-export type OpenAlert = Alert & { openedAt: number; channel?: string; threadTs?: string };
+export type OpenAlert = Alert & { openedAt: number; channel?: string; threadTs?: string; returns: number };
+
+/** How long a cleared alert's thread stays its thread: if it fires again within this, it's the same incident. */
+export const FLAP_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 type Check = { success: boolean; status?: number; timestamp: string; errors?: string[]; conditionResults?: { condition: string; success: boolean }[] };
 type Endpoint = { key: string; name: string; group?: string; results: Check[] };
@@ -104,10 +107,16 @@ export class AlertLog {
 				alert TEXT NOT NULL,
 				opened_at INTEGER NOT NULL,
 				channel TEXT,
-				thread_ts TEXT
+				thread_ts TEXT,
+				resolved_at INTEGER,
+				returns INTEGER NOT NULL DEFAULT 0
 			);
 			CREATE TABLE IF NOT EXISTS alert_watch (id INTEGER PRIMARY KEY CHECK (id = 1), started_at INTEGER NOT NULL);
 		`);
+		// Tables from before flapping alerts kept their thread.
+		const columns = new Set(this.#db.prepare("PRAGMA table_info(alerts)").all().map((c) => (c as { name: string }).name));
+		if (!columns.has("resolved_at")) this.#db.exec("ALTER TABLE alerts ADD COLUMN resolved_at INTEGER");
+		if (!columns.has("returns")) this.#db.exec("ALTER TABLE alerts ADD COLUMN returns INTEGER NOT NULL DEFAULT 0");
 	}
 
 	/** Whether Scout has looked before; the first look only records what's firing. */
@@ -119,11 +128,19 @@ export class AlertLog {
 		this.#db.prepare("INSERT OR IGNORE INTO alert_watch (id, started_at) VALUES (1, ?)").run(now);
 	}
 
+	/** Alerts firing as far as Scout knows. */
 	open(): OpenAlert[] {
-		return this.#db.prepare("SELECT * FROM alerts").all().map((row) => {
-			const r = row as { alert: string; opened_at: number; channel: string | null; thread_ts: string | null };
-			return { ...(JSON.parse(r.alert) as Alert), openedAt: r.opened_at, ...(r.channel ? { channel: r.channel } : {}), ...(r.thread_ts ? { threadTs: r.thread_ts } : {}) };
-		});
+		return this.#db.prepare("SELECT * FROM alerts WHERE resolved_at IS NULL").all().map(toOpenAlert);
+	}
+
+	/** An alert that cleared since `since`: if it fires again, it's the same incident, in the same thread. */
+	recentlyResolved(key: string, since: number): OpenAlert | undefined {
+		const row = this.#db.prepare("SELECT * FROM alerts WHERE key = ? AND resolved_at >= ?").get(key, since);
+		return row === undefined ? undefined : toOpenAlert(row);
+	}
+
+	reopened(key: string): void {
+		this.#db.prepare("UPDATE alerts SET resolved_at = NULL, returns = returns + 1 WHERE key = ?").run(key);
 	}
 
 	opened(alert: Alert, where?: { channel: string; threadTs: string }, now = Date.now()): void {
@@ -132,8 +149,13 @@ export class AlertLog {
 			.run(alert.key, JSON.stringify(alert), now, where?.channel ?? null, where?.threadTs ?? null);
 	}
 
-	resolved(key: string): void {
-		this.#db.prepare("DELETE FROM alerts WHERE key = ?").run(key);
+	resolved(key: string, now = Date.now()): void {
+		this.#db.prepare("UPDATE alerts SET resolved_at = ? WHERE key = ?").run(now, key);
+	}
+
+	/** Forget alerts that cleared before `before`. */
+	prune(before: number): void {
+		this.#db.prepare("DELETE FROM alerts WHERE resolved_at IS NOT NULL AND resolved_at < ?").run(before);
 	}
 
 	close(): void {
@@ -141,10 +163,23 @@ export class AlertLog {
 	}
 }
 
+function toOpenAlert(row: unknown): OpenAlert {
+	const r = row as { alert: string; opened_at: number; channel: string | null; thread_ts: string | null; returns: number };
+	return {
+		...(JSON.parse(r.alert) as Alert),
+		openedAt: r.opened_at,
+		returns: r.returns,
+		...(r.channel ? { channel: r.channel } : {}),
+		...(r.thread_ts ? { threadTs: r.thread_ts } : {}),
+	};
+}
+
 export type AlertHandlers = {
 	/** A new alert: say so where it belongs and look into it; where that conversation lives, if anywhere. */
 	firing(alert: Alert): Promise<{ channel: string; threadTs: string } | undefined>;
 	resolved(alert: OpenAlert): Promise<void>;
+	/** It cleared and came back within the flap window: the same incident, in its thread, without a new investigation. */
+	returned(alert: OpenAlert): Promise<void>;
 	/** The first look: what was already firing when Scout started watching. */
 	baseline(alerts: Alert[]): Promise<void>;
 };
@@ -185,9 +220,16 @@ export class AlertWatcher {
 				await this.#handlers.baseline([...firing.values()]);
 				return;
 			}
+			this.#log.prune(now - FLAP_WINDOW_MS);
 			const open = new Map(this.#log.open().map((alert) => [alert.key, alert]));
 			for (const [key, alert] of firing) {
 				if (open.has(key)) continue;
+				const back = this.#log.recentlyResolved(key, now - FLAP_WINDOW_MS);
+				if (back !== undefined) {
+					this.#log.reopened(key);
+					await this.#handlers.returned({ ...back, returns: back.returns + 1 }).catch((error: unknown) => console.error(`${alert.title} came back, but saying so failed:`, error));
+					continue;
+				}
 				const where = await this.#handlers.firing(alert).catch((error: unknown) => {
 					console.error(`raising ${alert.title} failed:`, error);
 					return undefined;
@@ -196,7 +238,7 @@ export class AlertWatcher {
 			}
 			for (const [key, alert] of open) {
 				if (firing.has(key) || unread.has(alert.source)) continue;
-				this.#log.resolved(key);
+				this.#log.resolved(key, now);
 				await this.#handlers.resolved(alert).catch((error: unknown) => console.error(`resolving ${alert.title} failed:`, error));
 			}
 		} finally {

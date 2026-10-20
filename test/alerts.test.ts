@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type Alert, AlertLog, AlertWatcher, gatusAlerts, grafanaAlerts } from "../src/alerts.ts";
 
 const check = (success: boolean, timestamp = "2026-10-20T06:00:00Z") => ({ success, timestamp, status: success ? 200 : 502, conditionResults: [{ condition: "[STATUS] < 400", success }] });
@@ -53,6 +57,7 @@ describe("alerts", () => {
 				baseline: async (alerts) => void events.push(`baseline ${alerts.map((a) => a.key)}`),
 				firing: async (a) => (events.push(`firing ${a.key}`), { channel: "C1", threadTs: "1.1" }),
 				resolved: async (a) => void events.push(`resolved ${a.key} in ${a.threadTs ?? "no thread"}`),
+				returned: async (a) => void events.push(`returned ${a.key} in ${a.threadTs} (${a.returns})`),
 			},
 		});
 		await watcher.poll();
@@ -66,5 +71,42 @@ describe("alerts", () => {
 		now = [];
 		await watcher.poll();
 		assert.deepEqual(events, ["baseline gatus:a", "firing gatus:b", "resolved gatus:a in no thread", "resolved gatus:b in 1.1"]);
+	});
+
+	it("upgrades an alert table from before flapping was handled", () => {
+		const path = join(mkdtempSync(join(tmpdir(), "scout-alerts-")), "scout.sqlite");
+		const old = new DatabaseSync(path);
+		old.exec("CREATE TABLE alerts (key TEXT PRIMARY KEY, alert TEXT NOT NULL, opened_at INTEGER NOT NULL, channel TEXT, thread_ts TEXT)");
+		old.prepare("INSERT INTO alerts VALUES (?, ?, ?, NULL, NULL)").run("gatus:x", JSON.stringify({ key: "gatus:x", source: "gatus", title: "x", detail: "", labels: {} }), 1);
+		old.close();
+		const log = new AlertLog(path);
+		assert.deepEqual(log.open().map((a) => [a.key, a.returns]), [["gatus:x", 0]]);
+		log.close();
+	});
+
+	it("keeps a flapping alert in its thread instead of starting over each time", async () => {
+		const flapping: Alert = { key: "grafana:disk", source: "grafana", title: "DiskSpaceHigh", detail: "80%", labels: {} };
+		let firing = false;
+		const events: string[] = [];
+		const watcher = new AlertWatcher({
+			log: new AlertLog(":memory:"),
+			sources: [{ source: "grafana", read: async () => (firing ? [flapping] : []) }],
+			handlers: {
+				baseline: async () => {},
+				firing: async (a) => (events.push(`firing ${a.key}`), { channel: "C1", threadTs: "2.2" }),
+				resolved: async () => void events.push("resolved"),
+				returned: async (a) => void events.push(`returned in ${a.threadTs} (${a.returns})`),
+			},
+		});
+		const hour = 60 * 60 * 1000;
+		await watcher.poll(0);
+		for (const [at, state] of [[hour, true], [2 * hour, false], [3 * hour, true], [4 * hour, false], [5 * hour, true], [6 * hour, false]] as const) {
+			firing = state;
+			await watcher.poll(at);
+		}
+		// Long after it last cleared, it's a new incident again.
+		firing = true;
+		await watcher.poll(13 * hour);
+		assert.deepEqual(events, ["firing grafana:disk", "resolved", "returned in 2.2 (1)", "resolved", "returned in 2.2 (2)", "resolved", "firing grafana:disk"]);
 	});
 });
