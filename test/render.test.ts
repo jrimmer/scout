@@ -36,6 +36,29 @@ describe("render", () => {
 		const message = finalMessage({ startedAt: 0, steps: [], error: "model overloaded" }, 1000);
 		assert.match(message.text, /ran into a problem.*model overloaded/);
 	});
+
+	it("says the model didn't answer instead of \"Done.\" when its calls failed", async () => {
+		const posted: string[] = [];
+		const surface = {
+			post: async () => "1.1",
+			update: async (_c: string, _ts: string, m: ChatMessage) => void posted.push(m.text),
+		};
+		const failed = { role: "assistant", content: [], stopReason: "error", errorMessage: '400: {"type":"server_error","message":"scheduler admission timeout"}' };
+		const view = new ThreadView({ surface, channel: "C", threadTs: "1" });
+		view.handle([{ type: "run_start", inputs: [] }]);
+		view.handle([{ type: "message_end", entry: { model: [failed] } } as never]);
+		view.handle([{ type: "run_end", inputs: [] }]);
+		await view.settled();
+		assert.match(posted.at(-1) ?? "", /^I ran into a problem and stopped: the model didn't answer \(scheduler admission timeout\)/);
+
+		const said = { role: "assistant", content: [{ type: "text", text: "Checking the disk." }], stopReason: "toolUse" };
+		view.handle([{ type: "run_start", inputs: [] }]);
+		view.handle([{ type: "message_end", entry: { model: [said] } } as never]);
+		view.handle([{ type: "message_end", entry: { model: [failed] } } as never]);
+		view.handle([{ type: "run_end", inputs: [] }]);
+		await view.settled();
+		assert.match(posted.at(-1) ?? "", /^Checking the disk\.\n\n_Then I ran into a problem and stopped: the model didn't answer/);
+	});
 });
 
 describe("etiquette", () => {

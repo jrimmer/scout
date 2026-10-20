@@ -119,8 +119,12 @@ export class ThreadView {
 				return;
 			case "message_end": {
 				if (this.#run === undefined) return;
+				// A model call that failed ends the run without an answer; without this the reply would read "Done."
+				const failure = assistantError(event.entry.model);
+				if (failure !== undefined) this.#run.error = `the model didn't answer (${failure})`;
 				const text = assistantText(event.entry.model);
 				if (text === undefined) return;
+				delete this.#run.error;
 				this.#run.text = text;
 				this.#run.note = text;
 				this.#schedule();
@@ -204,8 +208,13 @@ export function finalMessage(
 	const answer =
 		run.stoppedBy !== undefined
 			? `Stopped by ${run.stoppedBy}.${stoppedAt(run)}`
-			: (run.text ??
-				(run.error === undefined ? "Done." : `I ran into a problem and stopped: ${clip(run.error, 500)}`));
+			: run.text === undefined
+				? run.error === undefined
+					? "Done."
+					: `I ran into a problem and stopped: ${clip(run.error, 500)}`
+				: run.error === undefined
+					? run.text
+					: `${run.text}\n\n_Then I ran into a problem and stopped: ${clip(run.error, 500)}_`;
 	const steps = run.steps.length;
 	const footer = `${steps} step${steps === 1 ? "" : "s"} · ${duration(now - run.startedAt)}`;
 	return {
@@ -255,6 +264,17 @@ function assistantText(messages: readonly unknown[] | undefined): string | undef
 	}
 	const text = parts.join("\n\n").trim();
 	return text === "" ? undefined : text;
+}
+
+/** Why a model call failed (the gateway's own message when it sent JSON), or undefined if none did. */
+function assistantError(messages: readonly unknown[] | undefined): string | undefined {
+	for (const message of messages ?? []) {
+		const m = message as { role?: string; stopReason?: string; errorMessage?: string };
+		if (m.role !== "assistant" || m.stopReason !== "error") continue;
+		const error = m.errorMessage ?? "no reason given";
+		return error.match(/"message"\s*:\s*"([^"]+)"/)?.[1] ?? clip(error, 300);
+	}
+	return undefined;
 }
 
 function duration(ms: number): string {
