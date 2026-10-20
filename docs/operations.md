@@ -80,6 +80,13 @@ job's log (the CI tools) and fix what its change broke, or say it isn't from its
 request, then Scout asks the person who requested the work to look. A commit nobody reports CI for within 15 minutes
 is taken as having none. Fixes count against the channel's budget and concurrency.
 
+Scout has its own runner for repositories that have no CI of their own: spoond's runner (`spoond runner`), run as
+`scout-runner.service` next to Scout, registered with the label `scout`. A workflow asks for it with `runs-on: scout`;
+each job gets a fresh microVM from Scout's spoond account, in the image Scout's sandboxes use (`IMAGE_MAP`), so
+nothing a job runs touches Scout's host. Its settings are in `/opt/scout-runner/runner.env`; the registration token
+(`runner-registration-token`) and the lease token (`spoond-token`) are files in Scout's config directory. The profile
+tells Scout to use it when it writes a workflow, and to leave other repositories' runners alone.
+
 ## Alerts
 
 Scout can watch the monitoring you already have and look into each new alert in public. It reads Gatus's checks
