@@ -137,6 +137,7 @@ const bridge = new Bridge({
 	channelOffer: (user) => slack.channelOffer(user),
 	search: scout.search,
 	repoFor: scout.repoFor,
+	approve: (conversationId, user) => scout.approvals.grant(conversationId, user),
 	audit,
 	admit: scout.admitter(async () => Promise.all(bridge.working().map(async (w) => ({ channel: await channelOf(w.conversationId) })))),
 	modelFor: scout.modelFor,

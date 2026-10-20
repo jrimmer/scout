@@ -15,6 +15,11 @@ import { ThreadDoc } from "./docs.ts";
  * and the same rule as `open_pull_request`. The agent sees tools; the tokens stay here. A server can be limited to the
  * channels whose teams should have it.
  *
+ * Changes go through code by default: a server's tools that don't say they're read-only (MCP's `readOnlyHint`) aren't
+ * offered, so a team keeps what Scout may change in a repository and reviews it as a pull request. `writes: "approve"`
+ * offers them, but a call waits for a person in the thread to reply "approve" (it lasts 15 minutes); `writes: "allow"`
+ * offers every tool as it is, for a trusted server that doesn't mark its tools.
+ *
  * `SCOUT_MCP_FILE` lists the servers. `${NAME}` in `env` and `headers` is read from Scout's environment:
  *
  *     { "servers": {
@@ -30,7 +35,26 @@ export type McpServerConfig = {
 	headers?: Record<string, string>;
 	/** Only threads in these channels get this server's tools; absent, every thread does. */
 	channels?: string[];
+	/** Tools that change things: `off` (default) leaves them out, `approve` asks a person first, `allow` doesn't. */
+	writes?: Writes;
 };
+
+export type Writes = "off" | "approve" | "allow";
+
+/** Who approved changes in which thread, and until when (in memory: a restart asks again). */
+export class Approvals {
+	readonly #given = new Map<number, { by: string; until: number }>();
+
+	grant(conversationId: number, by: string, now = Date.now(), forMs = 15 * 60 * 1000): void {
+		this.#given.set(conversationId, { by, until: now + forMs });
+	}
+
+	/** Who approved, while it lasts. */
+	by(conversationId: number, now = Date.now()): string | undefined {
+		const given = this.#given.get(conversationId);
+		return given !== undefined && given.until > now ? given.by : undefined;
+	}
+}
 
 export type McpConfig = { servers: Record<string, McpServerConfig> };
 
@@ -55,6 +79,9 @@ export function loadMcpConfig(path: string, env: NodeJS.ProcessEnv = process.env
 	const servers: Record<string, McpServerConfig> = {};
 	for (const [name, server] of Object.entries(raw.servers ?? {})) {
 		if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error(`${path}: server name ${name} must be letters, digits, - or _`);
+		if (server.writes !== undefined && !["off", "approve", "allow"].includes(server.writes)) {
+			throw new Error(`${path}: server ${name}'s writes must be off, approve or allow`);
+		}
 		if ((server.command === undefined) === (server.url === undefined)) {
 			throw new Error(`${path}: server ${name} needs either command or url`);
 		}
@@ -80,7 +107,7 @@ function transportFor(server: McpServerConfig): Transport {
 	});
 }
 
-export type McpConnection = { name: string; client: Client; channels?: string[] };
+export type McpConnection = { name: string; client: Client; channels?: string[]; writes?: Writes };
 
 /** Connect to every configured server; one that fails is reported and left out. */
 export async function connectMcp(
@@ -92,7 +119,12 @@ export async function connectMcp(
 		const client = new Client({ name: "scout", version: "0.1.0" });
 		try {
 			await client.connect(transport(name, server));
-			connections.push({ name, client, ...(server.channels === undefined ? {} : { channels: server.channels }) });
+			connections.push({
+				name,
+				client,
+				...(server.channels === undefined ? {} : { channels: server.channels }),
+				...(server.writes === undefined ? {} : { writes: server.writes }),
+			});
 		} catch (error) {
 			console.error(`MCP server ${name} is unavailable:`, error);
 		}
@@ -100,18 +132,27 @@ export async function connectMcp(
 	return connections;
 }
 
-/** Every connected server's tools as Scout tools, named `mcp__<server>__<tool>`. */
-export async function mcpExtension(connections: readonly McpConnection[]) {
+/** Every connected server's tools as Scout tools, named `mcp__<server>__<tool>`, as its `writes` allows. */
+export async function mcpExtension(connections: readonly McpConnection[], approvals?: Approvals) {
 	const tools: ToolRegistration[] = [];
 	for (const connection of connections) {
 		const listed = await connection.client.listTools();
+		const writes = connection.writes ?? "off";
 		for (const tool of listed.tools) {
+			const readOnly = tool.annotations?.readOnlyHint === true;
+			if (!readOnly && writes === "off") continue;
+			const gated = !readOnly && writes === "approve";
 			tools.push(
 				defineTool({
 					name: `mcp__${connection.name}__${tool.name}`,
-					description: `${tool.description ?? tool.name} (from ${connection.name})`,
+					description: `${tool.description ?? tool.name} (from ${connection.name}${gated ? "; it changes things, so a person in the thread has to approve first" : ""})`,
 					parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
 					execute: async (args, api, context) => {
+						if (gated && approvals?.by(api.conversationId) === undefined) {
+							throw new Error(
+								`${tool.name} changes ${connection.name}, so it needs a person's approval first. Say exactly what you'll change and why, ask the people in this thread to reply "approve", and call it again once someone has. (An approval lasts 15 minutes.)`,
+							);
+						}
 						if (connection.channels !== undefined) {
 							const channel = (await api.snapshot(ThreadDoc, api.conversationId as ConversationId, context))?.channelName ?? "";
 							if (!connection.channels.includes(channel)) {

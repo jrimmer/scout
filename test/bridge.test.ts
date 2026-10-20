@@ -48,6 +48,7 @@ describe("bridge", () => {
 	let bridge: Bridge;
 	let faux: ReturnType<typeof fauxProvider>;
 	let search: ThreadSearch;
+	let approved: string[];
 
 	const message = (overrides: Partial<IncomingMessage>): IncomingMessage => ({
 		channel: "C1",
@@ -91,7 +92,9 @@ describe("bridge", () => {
 			agent: { model: { provider: "faux", modelId: "faux-model" } },
 			context,
 			search,
+			approve: (conversationId, user) => void approved.push(`${conversationId} ${user}`),
 		});
+		approved = [];
 	});
 
 	afterEach(async () => {
@@ -139,6 +142,23 @@ describe("bridge", () => {
 		assert.match(seen, /Photos is down\./);
 		assert.equal(surface.sent[0]?.ref, "700.1", "the answer is in the alert's thread");
 		assert.match(surface.texts().at(-1) ?? "", /its disk is full/);
+	});
+
+	it("takes \"approve\" from anyone in the thread as approval, and goes on; nothing else counts", async () => {
+		faux.setResponses([fauxAssistantMessage("I'd raise the threshold to 90%. Reply approve to go ahead.")]);
+		await bridge.onMessage(message({}));
+		const thread = threads.get(threadKey("C1", "100.1"))!;
+		await settle(thread.conversationId);
+
+		await bridge.onMessage(message({ user: "UBOB", text: "I don't approve", ts: "100.2", threadTs: "100.1" }));
+		await settle(thread.conversationId);
+		assert.deepEqual(approved, []);
+
+		faux.setResponses([fauxAssistantMessage("Done: raised to 90%.")]);
+		await bridge.onMessage(message({ user: "UBOB", text: "Approve.", ts: "100.3", threadTs: "100.1" }));
+		await settle(thread.conversationId);
+		assert.deepEqual(approved, [`${thread.conversationId} UBOB`]);
+		assert.match(surface.texts().at(-1) ?? "", /raised to 90%/, "an approval wakes Scout even without a mention");
 	});
 
 	it("starts a thread on a mention and answers in one message", async () => {

@@ -12,7 +12,7 @@ import { observeExtension, type Observer } from "./observe.ts";
 import { loadPeople, Permissions } from "./permissions.ts";
 import { Pricing } from "./pricing.ts";
 import { Counters, Tracer } from "./telemetry.ts";
-import { closeMcp, connectMcp, loadMcpConfig, type McpConnection, mcpExtension } from "./mcp.ts";
+import { Approvals, closeMcp, connectMcp, loadMcpConfig, type McpConnection, mcpExtension } from "./mcp.ts";
 import { ThreadDoc } from "./docs.ts";
 import { consolidationExtension, Memory, memoryExtension } from "./memory.ts";
 import { cloneProfile, loadProfile, type Profile, profileExtension, watchProfile } from "./profile.ts";
@@ -203,7 +203,8 @@ export async function openScout(options: ScoutOptions) {
 	});
 	const consolidation = consolidationExtension(memory);
 	const mcp = options.mcp ?? (config.mcpFile === undefined ? [] : await connectMcp(loadMcpConfig(config.mcpFile)));
-	const mcpTools = await mcpExtension(mcp);
+	const approvals = new Approvals();
+	const mcpTools = await mcpExtension(mcp, approvals);
 	if (mcp.length > 0) console.log(`MCP: ${mcp.map((c) => c.name).join(", ")} (${mcpTools.tools?.length ?? 0} tools)`);
 	// Reviewing other people's pull requests when asked: read-only files, the profile's reviewer.md, and the MCP tools
 	// (CI logs above all) a thread outside any channel gets.
@@ -336,6 +337,7 @@ export async function openScout(options: ScoutOptions) {
 		harness,
 		repoFor,
 		channelOf,
+		approvals,
 		alertChannel,
 		responder,
 		admitter,

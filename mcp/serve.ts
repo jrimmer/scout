@@ -16,7 +16,8 @@ export type Tool = {
 export async function serve(name: string, tools: readonly Tool[]): Promise<void> {
 	const server = new Server({ name, version: "1.0.0" }, { capabilities: { tools: {} } });
 	server.setRequestHandler(ListToolsRequestSchema, async () => ({
-		tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+		// Every tool here only reads, and says so (Scout offers tools that change things only when configured to).
+		tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema, annotations: { readOnlyHint: true, openWorldHint: false } })),
 	}));
 	server.setRequestHandler(CallToolRequestSchema, async (request) => {
 		const tool = tools.find((t) => t.name === request.params.name);

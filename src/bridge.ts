@@ -45,6 +45,8 @@ export type BridgeOptions = {
 	/** Where what's said in threads is indexed, for `search_threads`. */
 	search?: ThreadSearch;
 	/** The repository a channel's threads work in. */
+	/** A person replied "approve" in a thread: let changes that need approval go ahead there (mcp.ts). */
+	approve?: (conversationId: number, user: string) => void;
 	/** The repository a thread starts in, from its channel and its first message. */
 	repoFor?: (channelName: string, text?: string) => string;
 	/** A channel's own model, if its profile names one; otherwise `agent`'s. */
@@ -214,14 +216,23 @@ export class Bridge {
 		if (conversation === undefined) throw new Error(`conversation ${thread.conversationId} is missing`);
 		const view = await this.#view(thread);
 
+		// "approve" from someone who may ask for work in this repository lets a waiting change go ahead, and wakes Scout.
+		const threadRepo = (await harness.snapshot(ThreadDoc, thread.conversationId as ConversationId, context))?.repo;
+		let approving = false;
+		if (this.#options.approve !== undefined && APPROVAL.test(this.#withoutMention(message.text))) {
+			approving = (await this.#admit(message, false, threadRepo)).ok;
+			if (approving) {
+				this.#options.approve(thread.conversationId, message.user);
+				this.#options.audit?.record("approved", { actor: message.user, conversationId: thread.conversationId, channel: message.channelName, detail: { ts: message.ts } });
+			}
+		}
 		let how = delivery({
-			mentionsScout: mentions,
+			mentionsScout: mentions || approving,
 			followsScout: thread.lastSpeaker === "scout" && thread.lastAsker === message.user,
 			busy: view.busy,
 		});
 		if (how !== "note") {
 			const starting = !view.busy;
-			const threadRepo = (await harness.snapshot(ThreadDoc, thread.conversationId as ConversationId, context))?.repo;
 			const admission = await this.#admit(message, starting, threadRepo);
 			if (!admission.ok) {
 				if (admission.wait === true && starting) {
@@ -439,6 +450,9 @@ export class Bridge {
 		}
 	}
 }
+
+/** A reply that approves a change waiting in the thread: the word alone, so "I don't approve" never counts. */
+const APPROVAL = /^(approve|approved|go ahead)[.!]*$/i;
 
 function plain(text: string): ChatMessage {
 	return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };

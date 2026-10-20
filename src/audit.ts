@@ -20,6 +20,7 @@ export type AuditKind =
 	| "pull_opened"
 	| "pull_decided"
 	| "alert"
+	| "approved"
 	| "note_kept"
 	| "note_forgotten"
 	| "reflection"

@@ -107,6 +107,16 @@ posts becomes a real Slack mention when it matches someone's handle or display n
 shape is in `src/mcp.ts`). A server can be limited to some channels. Give Scout read-only access: a viewer account, a
 read-only token.
 
+**Changes go through code by default.** Scout offers only the tools a server marks read-only (MCP's `readOnlyHint`),
+so what it may change lives in a repository and lands as a reviewed pull request: alert rules and dashboards as
+provisioning files or Git Sync, infrastructure as Terraform. A server's `writes` setting changes that, for tools with
+no configuration as code (a SaaS console, say):
+
+- `"writes": "approve"`: tools that change things are offered, but a call waits until a person in the thread replies
+  `approve` (alone; "I don't approve" never counts). The approver must be allowed to request work there; the approval
+  lasts 15 minutes in that thread, and the audit trail records it. Give the server credentials that can write.
+- `"writes": "allow"`: every tool, no gate; for a trusted server that doesn't mark its tools.
+
 - **Grafana**: Grafana Labs' [`mcp-grafana`](https://github.com/grafana/mcp-grafana) with `--disable-write` and a
   Viewer service account: metrics and logs queries, dashboards, alerts.
 - **Forgejo CI** (`mcp/forgejo-ci.ts`): a repository's runs, a run's jobs, a job's log (tail or matching lines),
