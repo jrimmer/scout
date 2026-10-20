@@ -9,6 +9,7 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
   - It survives restarts.
   - Anyone in the thread can redirect the work.
   - A stop sign (or "@Scout stop") stops it.
+  - A change made through a tool that needs approval waits for "approve", or a 👍 on Scout's request.
 - **Its own sandbox.** Each thread gets its own clone, in its channel's repository, and its own Docker container.
   Credentials never enter it.
 - **Reviewed before you review it.** Scout reviews its own diff before opening a pull request, and keeps pull

@@ -33,7 +33,7 @@ export class ThreadView {
 	readonly #surface: ChatSurface;
 	readonly #channel: string;
 	readonly #threadTs: string;
-	readonly #onRunEnd: (answer: string | undefined) => void;
+	readonly #onRunEnd: (answer: string | undefined, ts: string | undefined) => void;
 	readonly #now: () => number;
 	readonly #onRunMessage: (ts: string | undefined) => void;
 	#resumeTs: string | undefined;
@@ -46,7 +46,8 @@ export class ThreadView {
 		channel: string;
 		threadTs: string;
 		/** After the run's final message is in Slack, with Scout's answer when it gave one. */
-		onRunEnd?: (answer: string | undefined) => void;
+		/** The run's answer (none when it was stopped), and the message it's in. */
+		onRunEnd?: (answer: string | undefined, ts: string | undefined) => void;
 		/** The Slack message of a run in progress before a restart, to keep editing instead of posting another. */
 		resumeTs?: string;
 		/** A run's message was posted (its ts), or the run ended (undefined): remember it across restarts. */
@@ -179,7 +180,7 @@ export class ThreadView {
 			if (run.ts === undefined) await this.#surface.post(this.#channel, this.#threadTs, message);
 			else await this.#surface.update(this.#channel, run.ts, message);
 			this.#onRunMessage(undefined);
-			this.#onRunEnd(run.stoppedBy === undefined ? run.text : undefined);
+			this.#onRunEnd(run.stoppedBy === undefined ? run.text : undefined, run.ts);
 		});
 	}
 

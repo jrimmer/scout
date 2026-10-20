@@ -47,6 +47,8 @@ export type BridgeOptions = {
 	/** The repository a channel's threads work in. */
 	/** A person replied "approve" in a thread: let changes that need approval go ahead there (mcp.ts). */
 	approve?: (conversationId: number, user: string) => void;
+	/** Whether a change waited for approval in this run (mcp.ts): its answer is then where a 👍 approves. */
+	approvalAsked?: (conversationId: number) => boolean;
 	/** The repository a thread starts in, from its channel and its first message. */
 	repoFor?: (channelName: string, text?: string) => string;
 	/** A channel's own model, if its profile names one; otherwise `agent`'s. */
@@ -69,6 +71,8 @@ const REFUSAL_QUIET_MS = 60 * 60 * 1000;
 
 /** Reactions that stop Scout's work in a thread, on the thread's first message or on Scout's progress message. */
 export const STOP_REACTIONS = new Set(["octagonal_sign", "no_entry", "no_entry_sign"]);
+/** Reactions that approve, on the answer where Scout asked for approval. */
+export const APPROVE_REACTIONS = new Set(["+1", "thumbsup", "white_check_mark", "heavy_check_mark"]);
 
 const STOP_WORDS = /^\s*(stop|cancel|halt)\b/i;
 
@@ -85,6 +89,8 @@ export const DECLINE_PRIVATE =
 export class Bridge {
 	readonly #options: BridgeOptions;
 	readonly #views = new Map<number, ThreadView>();
+	/** Threads whose last answer asks for approval, and that answer's message (in memory: after a restart, reply instead). */
+	readonly #approvalAsks = new Map<number, string>();
 	readonly #locks = new Map<string, Promise<unknown>>();
 	readonly #refused = new Map<string, number>();
 	#draining = false;
@@ -151,8 +157,21 @@ export class Bridge {
 		}
 	}
 
-	/** A reaction on a message: a stop sign on a thread's first message or on Scout's progress message stops it. */
-	async onReaction(reaction: { channel: string; ts: string; name: string; user: string }): Promise<void> {
+	/**
+	 * A reaction on a message: a stop sign on a thread's first message or on Scout's progress message stops it; a 👍 on
+	 * the answer where Scout asked for approval is that person replying "approve".
+	 */
+	async onReaction(reaction: { channel: string; ts: string; name: string; user: string; eventTs: string }): Promise<void> {
+		if (APPROVE_REACTIONS.has(reaction.name)) {
+			for (const [conversationId, ts] of this.#approvalAsks) {
+				const thread = this.#options.threads.byConversation(conversationId);
+				if (ts !== reaction.ts || thread?.channel !== reaction.channel) continue;
+				const { harness, context } = this.#options;
+				const channelName = (await harness.snapshot(ThreadDoc, conversationId as ConversationId, context))?.channelName ?? "";
+				await this.onMessage({ channel: reaction.channel, channelType: "channel", channelName, user: reaction.user, text: "approve", ts: reaction.eventTs, threadTs: thread.threadTs });
+			}
+			return;
+		}
 		if (!STOP_REACTIONS.has(reaction.name)) return;
 		let thread = this.#options.threads.get(threadKey(reaction.channel, reaction.ts));
 		if (thread === undefined) {
@@ -416,7 +435,9 @@ export class Bridge {
 			threadTs: thread.threadTs,
 			...(thread.runTs === undefined ? {} : { resumeTs: thread.runTs }),
 			onRunMessage: (ts) => threads.runMessage(thread.key, ts),
-			onRunEnd: (answer) => {
+			onRunEnd: (answer, ts) => {
+				if (ts !== undefined && this.#options.approvalAsked?.(thread.conversationId) === true) this.#approvalAsks.set(thread.conversationId, ts);
+				else this.#approvalAsks.delete(thread.conversationId);
 				threads.spoke(thread.key, "scout");
 				threads.ranOnce(thread.conversationId);
 				void this.drain().catch((error: unknown) => console.error("starting queued requests failed:", error));

@@ -9,7 +9,7 @@ const CREATE_CHANNEL_ACTION = "scout_create_channel";
 
 export type SlackHandlers = {
 	onMessage: (message: IncomingMessage) => Promise<void>;
-	onReaction: (reaction: { channel: string; ts: string; name: string; user: string }) => Promise<void>;
+	onReaction: (reaction: { channel: string; ts: string; name: string; user: string; eventTs: string }) => Promise<void>;
 };
 
 /**
@@ -122,7 +122,7 @@ export class Slack {
 		this.app.event("reaction_added", async ({ event }) => {
 			if (event.item.type !== "message") return;
 			try {
-				await handlers.onReaction({ channel: event.item.channel, ts: event.item.ts, name: event.reaction, user: event.user });
+				await handlers.onReaction({ channel: event.item.channel, ts: event.item.ts, name: event.reaction, user: event.user, eventTs: event.event_ts });
 			} catch (error) {
 				console.error(`reaction ${event.item.channel}/${event.item.ts} failed:`, error);
 			}

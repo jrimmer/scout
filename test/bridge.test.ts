@@ -17,14 +17,15 @@ import { threadKey, Threads } from "../src/threads.ts";
 
 const BOT = "UBOT";
 
-type Sent = { op: "post" | "update"; channel: string; ref?: string; message: ChatMessage };
+type Sent = { op: "post" | "update"; channel: string; ref?: string; message: ChatMessage; ts?: string };
 
 class FakeSurface implements ChatSurface {
 	sent: Sent[] = [];
 	#ts = 0;
 	async post(channel: string, threadTs: string | undefined, message: ChatMessage) {
-		this.sent.push({ op: "post", channel, ...(threadTs === undefined ? {} : { ref: threadTs }), message });
-		return `9000.${++this.#ts}`;
+		const ts = `9000.${++this.#ts}`;
+		this.sent.push({ op: "post", channel, ...(threadTs === undefined ? {} : { ref: threadTs }), message, ts });
+		return ts;
 	}
 	async update(channel: string, ts: string, message: ChatMessage) {
 		this.sent.push({ op: "update", channel, ref: ts, message });
@@ -50,6 +51,8 @@ describe("bridge", () => {
 	let faux: ReturnType<typeof fauxProvider>;
 	let search: ThreadSearch;
 	let approved: string[];
+	/** Whether the next run's answer asks for approval, as mcp.ts would say. */
+	let asking: boolean;
 
 	const message = (overrides: Partial<IncomingMessage>): IncomingMessage => ({
 		channel: "C1",
@@ -94,8 +97,14 @@ describe("bridge", () => {
 			context,
 			search,
 			approve: (conversationId, user) => void approved.push(`${conversationId} ${user}`),
+			approvalAsked: () => {
+				const was = asking;
+				asking = false;
+				return was;
+			},
 		});
 		approved = [];
+		asking = false;
 	});
 
 	afterEach(async () => {
@@ -162,6 +171,29 @@ describe("bridge", () => {
 		await settle(thread.conversationId);
 		assert.deepEqual(approved, [`${thread.conversationId} UBOB`]);
 		assert.match(surface.texts().at(-1) ?? "", /raised to 90%/, "an approval wakes Scout even without a mention");
+	});
+
+	it("takes a 👍 on the answer that asked for approval as approval, and nowhere else", async () => {
+		faux.setResponses([fauxAssistantMessage("I'd rename the dashboard to Scout test (renamed). React 👍 to go ahead.")]);
+		asking = true;
+		await bridge.onMessage(message({}));
+		const thread = threads.get(threadKey("C1", "100.1"))!;
+		await settle(thread.conversationId);
+		const asked = surface.sent.find((s) => s.op === "post" && s.ref === "100.1")?.ts;
+		assert.ok(asked);
+
+		await bridge.onReaction({ channel: "C1", ts: "100.1", name: "+1", user: "UBOB", eventTs: "300.1" });
+		await bridge.onReaction({ channel: "C2", ts: asked, name: "+1", user: "UBOB", eventTs: "300.2" });
+		assert.deepEqual(approved, [], "not on the thread's first message, nor the same ts in another channel");
+
+		faux.setResponses([fauxAssistantMessage("Renamed.")]);
+		await bridge.onReaction({ channel: "C1", ts: asked, name: "+1", user: "UBOB", eventTs: "300.3" });
+		await settle(thread.conversationId);
+		assert.deepEqual(approved, [`${thread.conversationId} UBOB`]);
+		assert.match(surface.texts().at(-1) ?? "", /Renamed\./, "the reaction wakes Scout like a reply would");
+
+		await bridge.onReaction({ channel: "C1", ts: asked, name: "+1", user: "UANN", eventTs: "300.4" });
+		assert.deepEqual(approved, [`${thread.conversationId} UBOB`], "an answer that didn't ask for approval takes none");
 	});
 
 	it("starts a thread on a mention and answers in one message", async () => {
@@ -242,7 +274,7 @@ describe("bridge", () => {
 			if (how === "message") {
 				await bridge.onMessage(message({ user: "UBOB", text: `<@${BOT}> stop`, ts: "100.2", threadTs: "100.1" }));
 			} else {
-				await bridge.onReaction({ channel: "C1", ts: bridge.view(thread.conversationId)!.runTs!, name: "octagonal_sign", user: "UBOB" });
+				await bridge.onReaction({ channel: "C1", ts: bridge.view(thread.conversationId)!.runTs!, name: "octagonal_sign", user: "UBOB", eventTs: "200.1" });
 			}
 			await settle(thread.conversationId);
 			assert.match(surface.texts().at(-1) ?? "", /Stopped by bob\./);
@@ -269,8 +301,8 @@ describe("bridge", () => {
 		const thread = threads.get(threadKey("C1", "100.1"))!;
 		await settle(thread.conversationId);
 		const sent = surface.sent.length;
-		await bridge.onReaction({ channel: "C1", ts: "100.1", name: "octagonal_sign", user: "UBOB" });
-		await bridge.onReaction({ channel: "C1", ts: "100.1", name: "thumbsup", user: "UBOB" });
+		await bridge.onReaction({ channel: "C1", ts: "100.1", name: "octagonal_sign", user: "UBOB", eventTs: "200.1" });
+		await bridge.onReaction({ channel: "C1", ts: "100.1", name: "thumbsup", user: "UBOB", eventTs: "200.2" });
 		await bridge.onMessage(message({ text: `<@${BOT}> stop`, ts: "100.2", threadTs: "100.1" }));
 		assert.equal(surface.sent.length, sent);
 	});

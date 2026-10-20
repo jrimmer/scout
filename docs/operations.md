@@ -131,7 +131,8 @@ provisioning files or Git Sync, infrastructure as Terraform. A server's `writes`
 no configuration as code (a SaaS console, say):
 
 - `"writes": "approve"`: tools that change things are offered, but a call waits until a person in the thread replies
-  `approve` (alone; "I don't approve" never counts). The approver must be allowed to request work there (and be in a
+  `approve` (alone; "I don't approve" never counts) or reacts 👍 or ✅ to the answer where Scout asked (only that one,
+  and only until Scout answers again; after a restart, reply instead). The approver must be allowed to request work there (and be in a
   group `SCOUT_ROLES_FILE` names for that server). One approval covers one change, within 15 minutes; the next needs
   its own. The audit trail records each. Give the server credentials that can write.
 - `"writes": "allow"`: every tool, no gate; for a trusted server that doesn't mark its tools.

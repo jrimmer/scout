@@ -134,6 +134,8 @@ describe("MCP tools", () => {
 			return seen;
 		};
 		assert.match(await write(), /needs a person's approval first/);
+		assert.equal(approvals.takeAsked(conversation.id), true, "the answer after this is where a 👍 approves");
+		assert.equal(approvals.takeAsked(conversation.id), false);
 		approvals.grant(conversation.id, "UANN");
 		assert.match(await write(), /written/);
 		assert.match(await write(), /needs a person's approval first/, "an approval covers one change, not the next");

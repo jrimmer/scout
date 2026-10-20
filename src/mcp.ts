@@ -45,6 +45,17 @@ export type Writes = "off" | "approve" | "allow";
 /** Who approved a change in which thread, until it's used or 15 minutes pass (in memory: a restart asks again). */
 export class Approvals {
 	readonly #given = new Map<number, { by: string; until: number }>();
+	readonly #asked = new Set<number>();
+
+	/** A change in this thread waited for approval: the answer Scout gives next is where people can react 👍. */
+	ask(conversationId: number): void {
+		this.#asked.add(conversationId);
+	}
+
+	/** Whether a change waited for approval since the last time this was asked. */
+	takeAsked(conversationId: number): boolean {
+		return this.#asked.delete(conversationId);
+	}
 
 	grant(conversationId: number, by: string, now = Date.now(), forMs = 15 * 60 * 1000): void {
 		this.#given.set(conversationId, { by, until: now + forMs });
@@ -161,12 +172,13 @@ export async function mcpExtension(
 					execute: async (args, api, context) => {
 						const approver = gated ? approvals?.by(api.conversationId) : undefined;
 						if (gated && approver === undefined) {
+							approvals?.ask(api.conversationId);
 							throw new Error(
-								`${tool.name} changes ${connection.name}, so it needs a person's approval first. Say exactly what you'll change and why, ask the people in this thread to reply "approve", and call it again once someone has. An approval covers this one change, for 15 minutes; each further change needs its own.`,
+								`${tool.name} changes ${connection.name}, so it needs a person's approval first. Say exactly what you'll change and why, ask the people in this thread to reply "approve" or react 👍 to your answer, and call it again once someone has. An approval covers this one change, for 15 minutes; each further change needs its own.`,
 							);
 						}
 						const refused = approver === undefined ? undefined : await refuseApprover?.(approver, connection.name);
-						if (refused !== undefined) throw new Error(`The approval doesn't cover this: ${refused} Ask someone who may to reply "approve".`);
+						if (refused !== undefined) throw new Error(`The approval doesn't cover this: ${refused} Ask someone who may to reply "approve" or react 👍.`);
 						if (gated) approvals?.use(api.conversationId);
 						if (connection.channels !== undefined) {
 							const channel = (await api.snapshot(ThreadDoc, api.conversationId as ConversationId, context))?.channelName ?? "";

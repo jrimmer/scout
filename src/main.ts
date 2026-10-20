@@ -142,6 +142,7 @@ const bridge = new Bridge({
 	search: scout.search,
 	repoFor: scout.repoFor,
 	approve: (conversationId, user) => scout.approvals.grant(conversationId, user),
+	approvalAsked: (conversationId) => scout.approvals.takeAsked(conversationId),
 	audit,
 	admit: scout.admitter(async () => Promise.all(bridge.working().map(async (w) => ({ channel: await channelOf(w.conversationId) })))),
 	modelFor: scout.modelFor,
