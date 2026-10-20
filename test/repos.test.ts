@@ -60,6 +60,38 @@ describe("repositories and zones", () => {
 		assert.equal(loadConfig(env).repo.snapshot, undefined, "no snapshot unless it is named");
 	});
 
+	it("takes each additional repository's snapshot from SCOUT_REPOS_FILE, and only when it names one", () => {
+		const file = join(root, "snapshots.json");
+		writeFileSync(
+			file,
+			JSON.stringify([
+				{ name: "web", gitUrl: web, slug: "team/web", base: "develop", snapshot: "scout/node22" },
+				{ name: "cold", gitUrl: web, slug: "team/cold" },
+			]),
+		);
+		const env = {
+			SCOUT_REPO_URL: api,
+			SCOUT_REPO_SLUG: "team/api",
+			SCOUT_REPOS_FILE: file,
+			SCOUT_CODEHOST_TOKEN: "t",
+			SCOUT_CODEHOST_API: "http://forge/api/v1",
+		};
+		const config = loadConfig({ ...env, SCOUT_REPO_SNAPSHOT: "scout/node24" });
+		assert.deepEqual(
+			config.repos.map((r) => [r.name, r.snapshot]),
+			[
+				["api", "scout/node24"],
+				["web", "scout/node22"],
+				["cold", undefined],
+			],
+		);
+		assert.equal(
+			loadConfig(env).repos[1]?.snapshot,
+			"scout/node22",
+			"a file repository's snapshot doesn't need SCOUT_REPO_SNAPSHOT",
+		);
+	});
+
 	it("starts each channel's threads in its repository", async () => {
 		const config = loadConfig({
 			SCOUT_REPO_URL: api,
