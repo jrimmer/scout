@@ -16,11 +16,15 @@ export type FakeLease = { id: string; holder: string; state: string; body: Recor
 type Stream = { kept: Buffer; base: number; dropped: { bytes: number; newlines: number; ends_with_newline: boolean } };
 type FakeJob = { child: ChildProcess; state: "running" | "exited"; exit: number | null; out: Stream; err: Stream; cap: number; exited: Promise<void> };
 
-export async function fakeSpoond(token: string, options: { ranges?: boolean } = {}) {
+/** `ranges` and `codes` (default on) are spoond 3.11's ranged file reads and stable error codes; off, an older spoond. */
+export async function fakeSpoond(token: string, options: { ranges?: boolean; codes?: boolean } = {}) {
 	const leases = new Map<string, FakeLease>();
 	const jobs = new Map<string, FakeJob>();
 	const calls: string[] = [];
 	let next = 1;
+
+	/** A failed file route's answer, with spoond's code unless this fake plays an older spoond. */
+	const coded = (error: string, code: string) => (options.codes === false ? { error } : { error, code });
 
 	const server = createServer(async (req, res) => {
 		const url = new URL(req.url ?? "/", "http://spoond");
@@ -133,13 +137,13 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean } = 
 		if (rest?.startsWith("files/")) {
 			const path = decodeURIComponent(`/${rest.slice("files/".length)}`);
 			if (req.method === "GET" && url.searchParams.has("stat")) {
-				if (!existsSync(path)) return json(404, { error: "no such file" });
+				if (!existsSync(path)) return json(404, coded("no such file", "ENOENT"));
 				const stat = statSync(path);
 				return json(200, { name: path, size: stat.size, mode: (stat.mode & 0o777).toString(8), is_dir: stat.isDirectory() });
 			}
 			if (req.method === "GET") {
-				if (!existsSync(path)) return json(404, { error: "no such file" });
-				if (statSync(path).isDirectory()) return json(400, { error: "is a directory" });
+				if (!existsSync(path)) return json(404, coded("no such file", "ENOENT"));
+				if (statSync(path).isDirectory()) return json(409, coded("is a directory", "EISDIR"));
 				const bytes = readFileSync(path);
 				const range = /^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range ?? ""));
 				if (range === null || options.ranges === false) {
@@ -153,7 +157,7 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean } = 
 				return;
 			}
 			if (req.method === "PUT") {
-				if (existsSync(path) && lstatSync(path).isDirectory()) return json(409, { error: "a directory is in the way" });
+				if (existsSync(path) && lstatSync(path).isDirectory()) return json(409, coded("a directory is in the way", "EISDIR"));
 				mkdirSync(dirname(path), { recursive: true });
 				// Into place by rename, as spoond does: an open file keeps its old content.
 				const landing = `${path}.landing-${randomBytes(4).toString("hex")}`;
@@ -163,7 +167,7 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean } = 
 				return json(201, { name: path });
 			}
 			if (req.method === "DELETE") {
-				if (!existsSync(path)) return json(404, { error: "no such file" });
+				if (!existsSync(path)) return json(404, coded("no such file", "ENOENT"));
 				rmSync(path, { recursive: url.searchParams.get("recursive") === "1" });
 				res.writeHead(204).end();
 				return;

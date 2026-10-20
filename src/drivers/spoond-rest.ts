@@ -122,8 +122,9 @@ export class SpoondRestEnv implements ExecutionEnv {
 		try {
 			const response = await this.#files("GET", resolved);
 			if (response.status === 200) return ok(new Uint8Array(await response.arrayBuffer()));
-			await response.body?.cancel();
-			// spoond says only that it can't: ask the lease why, the way Node would.
+			const coded = await spoondFileError(response, resolved);
+			if (coded !== undefined) return err(coded);
+			// An older spoond says only that it can't: ask the lease why, the way Node would.
 			const why = await this.#fileSh(resolved, `cat -- ${q(resolved)} >/dev/null`, context);
 			return err(why.ok ? new FileError("unknown", `spoond answered ${response.status}`, resolved) : why.error);
 		} catch (error) {
@@ -191,7 +192,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 				this.#ranges = false;
 				return new Uint8Array(await response.arrayBuffer()).slice(offset, offset + length);
 			}
-			throw new Error(`spoond answered ${response.status} reading ${path}`);
+			throw (await spoondFileError(response, path)) ?? new Error(`spoond answered ${response.status} reading ${path}`);
 		}
 		const read = await this.#sh(`tail -c +${offset + 1} -- ${q(path)} | head -c ${length} | base64 -w0`);
 		if (read.exit !== 0) throw fileError(read.stderr, path);
@@ -217,8 +218,9 @@ export class SpoondRestEnv implements ExecutionEnv {
 			const stat = await this.#files("GET", resolved, "?stat=1");
 			const mode = stat.ok ? ((await stat.json()) as { mode?: string }).mode : (await stat.body?.cancel(), undefined);
 			const put = await this.#files("PUT", resolved, `?mode=0${mode ?? "644"}`, { body: bytesOf(content) });
-			await put.body?.cancel();
-			if (put.status === 201 || put.status === 200) return ok(undefined);
+			if (put.status === 201 || put.status === 200) return (await put.body?.cancel(), ok(undefined));
+			const coded = await spoondFileError(put, resolved);
+			if (coded !== undefined) return err(coded);
 			if (put.status === 409) return err(new FileError("is_directory", "Is a directory", resolved));
 			return err(new FileError("unknown", `spoond answered ${put.status}`, resolved));
 		} catch (error) {
@@ -354,7 +356,10 @@ export class SpoondRestEnv implements ExecutionEnv {
 				...(signal === undefined ? {} : { signal }),
 			});
 			if (started.status !== 202 && started.status !== 200) {
-				return err(new ExecutionError("unknown", `spoond answered ${started.status}: ${(await started.text()).slice(0, 200)}`));
+				const body = (await started.json().catch(() => undefined)) as { error?: string; code?: string } | undefined;
+				// spawn_error: the job never started (spoond 3.11); anything else is spoond's, not the command's.
+				const code = body?.code === "spawn_error" ? "spawn_error" : "unknown";
+				return err(new ExecutionError(code, `spoond answered ${started.status}: ${body?.error ?? body?.code ?? ""}`.trim()));
 			}
 			jobId = ((await started.json()) as { job_id: string }).job_id;
 		} catch (error) {
@@ -652,6 +657,25 @@ function toInfo(row: string, dir: string): FileInfo | undefined {
 }
 
 /** A failed shell file operation as a `FileError`: our own `E:<code>`, else what coreutils said. */
+/** spoond's stable error codes (3.11, spoond-wir9) for the file routes, as Pi's. */
+const FILE_CODES: Record<string, FileErrorCode> = {
+	ENOENT: "not_found",
+	ENOTDIR: "not_directory",
+	EISDIR: "is_directory",
+	EACCES: "permission_denied",
+	EINVAL: "invalid",
+	EEXIST: "invalid",
+	ENOTEMPTY: "invalid",
+	EFBIG: "invalid",
+};
+
+/** A failed file route's answer as a `FileError`, by spoond's `code`; undefined from a spoond too old to say. */
+async function spoondFileError(response: Response, path: string): Promise<FileError | undefined> {
+	const body = (await response.json().catch(() => undefined)) as { error?: string; code?: string } | undefined;
+	if (body?.code === undefined) return undefined;
+	return new FileError(FILE_CODES[body.code] ?? "unknown", body.error ?? body.code, path);
+}
+
 function fileError(stderr: string, path: string): FileError {
 	const own = /E:([a-z_]+)/.exec(stderr)?.[1];
 	const message = stderr.trim() || "failed";

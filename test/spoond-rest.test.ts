@@ -13,14 +13,14 @@ import { bareRepo } from "./helpers.ts";
 
 const spec = { image: "dev-base", network: { mode: "none" as const }, labels: {} };
 
-/** Pi's own checks of an `ExecutionEnv`, against spoond's REST API (with and without ranged reads). */
-for (const ranges of [true, false]) {
-	describe(`spoond REST environment conformance${ranges ? "" : " (spoond without ranged reads)"}`, () => {
+/** Pi's own checks of an `ExecutionEnv`, against spoond's REST API: 3.11, and an older spoond (no ranges, no codes). */
+for (const modern of [true, false]) {
+	describe(`spoond REST environment conformance${modern ? "" : " (older spoond: no ranged reads or error codes)"}`, () => {
 		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-spoond-rest-")));
 		let spoond: Awaited<ReturnType<typeof fakeSpoond>>;
 		let connect: (cwd: string) => ExecutionEnv;
 		before(async () => {
-			spoond = await fakeSpoond("sdt-test", { ranges });
+			spoond = await fakeSpoond("sdt-test", { ranges: modern, codes: modern });
 			const driver = new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest"), transport: "rest" });
 			const handle = await driver.open("conformance", spec);
 			connect = (cwd) => handle.connect!({ id: "sandbox:conformance", cwd });
@@ -96,6 +96,13 @@ describe("spoond REST environment", () => {
 		assert.ok(after.endsWith("end\n"));
 		const total = skipped.bytes + Buffer.byteLength(after);
 		assert.equal(total, 2097152 + Math.floor(2097152 / 99) + 4, "skipped plus delivered is all of it");
+	});
+
+	it("takes spoond's error code at its word, with no command to ask the lease why", async () => {
+		const before = spoond.calls.length;
+		const read = await env.readTextFile(join(root, "missing.txt"), context);
+		assert.ok(!read.ok && read.error.code === "not_found", JSON.stringify(read));
+		assert.deepEqual(spoond.calls.slice(before).filter((c) => c.endsWith("/exec")), []);
 	});
 
 	it("keeps a script's mode when it's rewritten", async () => {
