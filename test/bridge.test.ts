@@ -126,6 +126,7 @@ describe("bridge", () => {
 		assert.equal((await harness.snapshot(ThreadDoc, thread.conversationId as never, context))?.base, "their-feature", "it works on the reviewed branch");
 		assert.match(seen, /why the test\?/);
 		assert.match(surface.texts().at(-1) ?? "", /nothing covers the empty case/);
+		assert.equal(search.search("asked for a test")[0]?.key, threadKey("C1", "500.1"), "what it opened the thread with is searchable");
 	});
 
 	it("investigates in a thread it opened, with the context it was given", async () => {

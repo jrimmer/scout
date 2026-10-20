@@ -107,7 +107,7 @@ const pullReviewer = new PullReviewer({
 		const text = [
 			`I ${VERDICTS[review.verdict]} <${posted.url}|${posted.title}>${posted.author === undefined ? "" : ` by ${posted.author}`}${lines}.`,
 			gist,
-			"Ask me about it here.",
+			"Reply in this thread to ask me about it, or to have me fix what I flagged.",
 		]
 			.filter(Boolean)
 			.join("\n\n");

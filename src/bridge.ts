@@ -340,6 +340,8 @@ export class Bridge {
 			context,
 		);
 		threads.spoke(key, "scout");
+		// So a later "fix what you flagged" outside this thread can still find it.
+		this.#options.search?.add({ key, conversationId: row.conversationId, channelName: thread.channelName, speaker: "Scout", text: thread.about ?? thread.context });
 	}
 
 	/**
