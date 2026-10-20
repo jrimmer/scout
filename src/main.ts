@@ -169,7 +169,7 @@ const alertSources: AlertSource[] = [
 	...(config.alerts.gatusUrl === undefined ? [] : [{ source: "gatus" as const, read: () => gatusAlerts(config.alerts.gatusUrl!) }]),
 	...(config.alerts.grafana === undefined ? [] : [{ source: "grafana" as const, read: () => grafanaAlerts(config.alerts.grafana!.url, config.alerts.grafana!.token) }]),
 ];
-const home = config.reflect.channel;
+const alertHome = config.alerts.channel ?? config.reflect.channel;
 const alertLog = new AlertLog(join(config.dataDir, "scout.sqlite"));
 const describeAlert = (alert: Alert) => `${alert.title}: ${alert.detail}${alert.url === undefined ? "" : ` (${alert.url})`}`;
 const alertWatcher = new AlertWatcher({
@@ -178,10 +178,10 @@ const alertWatcher = new AlertWatcher({
 	handlers: {
 		firing: async (alert) => {
 			const route = scout.alertChannel(alert);
-			const name = route?.name ?? home;
+			const name = route?.name ?? alertHome;
 			const id = name === undefined ? undefined : await slack.channelId(name);
 			if (name === undefined || id === undefined) {
-				console.log(`alert with nowhere to go (no channel claims it, no SCOUT_REFLECT_CHANNEL): ${alert.title}`);
+				console.log(`alert with nowhere to go (no channel claims it, and no SCOUT_ALERTS_CHANNEL or SCOUT_REFLECT_CHANNEL): ${alert.title}`);
 				return undefined;
 			}
 			const text = [`🔴 *${alert.title}*`, alert.detail, `${route?.oncall === undefined ? "" : `${route.oncall} `}I'm looking into it in this thread.`].join("\n");
@@ -208,7 +208,7 @@ const alertWatcher = new AlertWatcher({
 			await slack.surface.post(alert.channel, alert.threadTs, { text, blocks: [{ type: "markdown", text }] });
 		},
 		baseline: async (alerts) => {
-			const id = home === undefined ? undefined : await slack.channelId(home);
+			const id = alertHome === undefined ? undefined : await slack.channelId(alertHome);
 			if (id === undefined) return;
 			const names = alertSources.map((s) => (s.source === "gatus" ? "Gatus" : "Grafana")).join(" and ");
 			const listed = alerts.slice(0, 15).map((a) => `• ${a.title}`);

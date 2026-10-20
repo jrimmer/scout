@@ -77,9 +77,10 @@ Scout can watch the monitoring you already have and look into each new alert in 
 (`SCOUT_ALERTS_GRAFANA_URL` and `SCOUT_ALERTS_GRAFANA_TOKEN`, a Viewer service account), once a minute. Your alerts'
 existing destinations are untouched.
 
-- The first look only records what's already firing, and lists it in Scout's home channel (`SCOUT_REFLECT_CHANNEL`).
+- The first look only records what's already firing, and lists it in the alerts channel (`SCOUT_ALERTS_CHANNEL`, or
+  else Scout's home channel, `SCOUT_REFLECT_CHANNEL`).
 - Each new alert gets a message in the channel whose profile claims it (`alerts:` in its `instructions.md`, matching a
-  Gatus group or endpoint name, or any Grafana label value), or the home channel. Its thread is an investigation: the
+  Gatus group or endpoint name, or any Grafana label value), or the alerts channel. Its thread is an investigation: the
   profile's `responder.md` says how. Scout mentions the channel's `oncall:` people.
 - When the alert clears, Scout says so in the same thread. People can join, steer, or ask it to fix what it found.
 - An alert that clears and comes back within six hours is the same incident: Scout says so in its thread instead of

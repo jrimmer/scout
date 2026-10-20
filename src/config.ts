@@ -56,7 +56,7 @@ export type Config = {
 	/** Local hour (0-23) for the nightly reflection, and Scout's home channel: proposals and the weekly report. */
 	reflect: { hour: number; channel?: string };
 	/** Monitoring Scout watches for alerts to investigate (alerts.ts); none set, it watches none. */
-	alerts: { gatusUrl?: string; grafana?: { url: string; token: string } };
+	alerts: { gatusUrl?: string; grafana?: { url: string; token: string }; channel?: string };
 	sandbox: SandboxConfig;
 	/** Governance (see pricing.ts, limits.ts, permissions.ts, retention.ts, telemetry.ts). All optional. */
 	governance: {
@@ -180,6 +180,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 				}
 			: {}),
 		alerts: {
+			// Where alerts no channel claims go, and the first look's list; unset, the home channel.
+			...(env.SCOUT_ALERTS_CHANNEL?.replace(/^#/, "") ? { channel: env.SCOUT_ALERTS_CHANNEL.replace(/^#/, "") } : {}),
 			...(env.SCOUT_ALERTS_GATUS_URL ? { gatusUrl: env.SCOUT_ALERTS_GATUS_URL.replace(/\/$/, "") } : {}),
 			...(env.SCOUT_ALERTS_GRAFANA_URL
 				? { grafana: { url: env.SCOUT_ALERTS_GRAFANA_URL.replace(/\/$/, ""), token: required(env, "SCOUT_ALERTS_GRAFANA_TOKEN") } }
