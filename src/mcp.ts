@@ -17,7 +17,8 @@ import { ThreadDoc } from "./docs.ts";
  *
  * Changes go through code by default: a server's tools that don't say they're read-only (MCP's `readOnlyHint`) aren't
  * offered, so a team keeps what Scout may change in a repository and reviews it as a pull request. `writes: "approve"`
- * offers them, but a call waits for a person in the thread to reply "approve" (it lasts 15 minutes); `writes: "allow"`
+ * offers them, but each call waits for a person in the thread to reply "approve" (one approval, one change, within 15
+ * minutes); `writes: "allow"`
  * offers every tool as it is, for a trusted server that doesn't mark its tools.
  *
  * `SCOUT_MCP_FILE` lists the servers. `${NAME}` in `env` and `headers` is read from Scout's environment:
@@ -41,7 +42,7 @@ export type McpServerConfig = {
 
 export type Writes = "off" | "approve" | "allow";
 
-/** Who approved changes in which thread, and until when (in memory: a restart asks again). */
+/** Who approved a change in which thread, until it's used or 15 minutes pass (in memory: a restart asks again). */
 export class Approvals {
 	readonly #given = new Map<number, { by: string; until: number }>();
 
@@ -49,10 +50,15 @@ export class Approvals {
 		this.#given.set(conversationId, { by, until: now + forMs });
 	}
 
-	/** Who approved, while it lasts. */
+	/** Who approved, while it lasts and hasn't been used. */
 	by(conversationId: number, now = Date.now()): string | undefined {
 		const given = this.#given.get(conversationId);
 		return given !== undefined && given.until > now ? given.by : undefined;
+	}
+
+	/** An approval covers one change: using it ends it, so the next change needs its own. */
+	use(conversationId: number): void {
+		this.#given.delete(conversationId);
 	}
 }
 
@@ -156,11 +162,12 @@ export async function mcpExtension(
 						const approver = gated ? approvals?.by(api.conversationId) : undefined;
 						if (gated && approver === undefined) {
 							throw new Error(
-								`${tool.name} changes ${connection.name}, so it needs a person's approval first. Say exactly what you'll change and why, ask the people in this thread to reply "approve", and call it again once someone has. (An approval lasts 15 minutes.)`,
+								`${tool.name} changes ${connection.name}, so it needs a person's approval first. Say exactly what you'll change and why, ask the people in this thread to reply "approve", and call it again once someone has. An approval covers this one change, for 15 minutes; each further change needs its own.`,
 							);
 						}
 						const refused = approver === undefined ? undefined : await refuseApprover?.(approver, connection.name);
 						if (refused !== undefined) throw new Error(`The approval doesn't cover this: ${refused} Ask someone who may to reply "approve".`);
+						if (gated) approvals?.use(api.conversationId);
 						if (connection.channels !== undefined) {
 							const channel = (await api.snapshot(ThreadDoc, api.conversationId as ConversationId, context))?.channelName ?? "";
 							if (!connection.channels.includes(channel)) {

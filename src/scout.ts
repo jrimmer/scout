@@ -13,7 +13,7 @@ import { observeExtension, type Observer } from "./observe.ts";
 import { loadPeople, Permissions } from "./permissions.ts";
 import { Pricing } from "./pricing.ts";
 import { Counters, Tracer } from "./telemetry.ts";
-import { AutheliaFile, approversOf, loadRoles } from "./directory.ts";
+import { AutheliaFile, approversOf, loadRoles, requestersOf } from "./directory.ts";
 import { Approvals, closeMcp, connectMcp, loadMcpConfig, type McpConnection, mcpExtension } from "./mcp.ts";
 import { ThreadDoc } from "./docs.ts";
 import { consolidationExtension, Memory, memoryExtension } from "./memory.ts";
@@ -127,9 +127,13 @@ export async function openScout(options: ScoutOptions) {
 	const tracer = governance.otlp === undefined ? undefined : new Tracer({ ...governance.otlp, pricing });
 	// The identity provider: who a Slack user is (by email), their code host login, and their groups.
 	const directory = governance.directory === undefined ? undefined : new AutheliaFile(sourceReader(governance.directory.source, config.codeHost, options.fetch ?? fetch));
+	const people = loadPeople(governance.peopleFile);
+	/** A Slack user in the directory: by the people file's login, or else by their Slack email. */
 	const personOf = async (user: string) => {
-		if (directory === undefined || options.emailOf === undefined) return undefined;
-		const email = await options.emailOf(user);
+		if (directory === undefined) return undefined;
+		const login = people[user];
+		if (login !== undefined) return directory.byUsername(login);
+		const email = await options.emailOf?.(user);
 		return email === undefined ? undefined : directory.byEmail(email);
 	};
 	const roles = loadRoles(governance.rolesFile);
@@ -140,11 +144,20 @@ export async function openScout(options: ScoutOptions) {
 		if (person?.groups.some((g) => groups.includes(g)) === true) return undefined;
 		return `changes to ${server} need someone in ${groups.join(" or ")}${person === undefined ? ", and I couldn't find who approved in the directory" : ""}.`;
 	};
+	/** May this person ask for work in this repository: by the roles file's groups, or else the code host's say. */
+	const mayRequest = async (user: string, repo: RepoConfig): Promise<Admission> => {
+		const groups = requestersOf(roles, repo.name);
+		if (groups === undefined || !permissions.enforcing) return permissions.admit(user, repo.slug);
+		const person = await personOf(user).catch(() => undefined);
+		if (person === undefined) return { ok: false, reason: "I can't find you in the directory, so I can't check you may ask me for work here. Ask whoever runs me to link your account." };
+		if (person.groups.some((g) => groups.includes(g))) return { ok: true };
+		return { ok: false, reason: `I can only take work in ${repo.name} from people in ${groups.join(" or ")}. Ask an admin to add you.` };
+	};
 	const permissions = new Permissions({
 		loginOf: async (user) => (await personOf(user))?.username,
 		config: {
 			mode: governance.requesterCheck,
-			people: loadPeople(governance.peopleFile),
+			people,
 			...(governance.allowedUserGroup === undefined ? {} : { userGroup: governance.allowedUserGroup }),
 		},
 		codeHost: config.codeHost,
@@ -348,7 +361,7 @@ export async function openScout(options: ScoutOptions) {
 		(working: () => Promise<{ channel: string }[]>) =>
 		async (request: { user: string; channelName: string; repo?: string; starting: boolean }): Promise<Admission> => {
 			// Work Scout starts itself (an alert's investigation) answers to budgets and concurrency, not to a person's access.
-			const allowed = request.user === "scout" ? ({ ok: true } as const) : await permissions.admit(request.user, repoNamed(request.repo).slug);
+			const allowed = request.user === "scout" ? ({ ok: true } as const) : await mayRequest(request.user, repoNamed(request.repo));
 			if (!allowed.ok || !request.starting) return allowed;
 			return limits.admit(request.channelName, await working());
 		};

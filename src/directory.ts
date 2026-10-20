@@ -13,6 +13,7 @@ export type Person = { username: string; email: string; groups: string[] };
 
 export interface Directory {
 	byEmail(email: string): Promise<Person | undefined>;
+	byUsername(username: string): Promise<Person | undefined>;
 }
 
 /**
@@ -30,10 +31,18 @@ export class AutheliaFile implements Directory {
 	}
 
 	async byEmail(email: string): Promise<Person | undefined> {
+		return (await this.#people()).find((p) => p.email.toLowerCase() === email.toLowerCase());
+	}
+
+	async byUsername(username: string): Promise<Person | undefined> {
+		return (await this.#people()).find((p) => p.username === username);
+	}
+
+	async #people(): Promise<Person[]> {
 		if (this.#cache === undefined || Date.now() - this.#cache.at > this.#ttlMs) {
 			this.#cache = { at: Date.now(), people: parseAutheliaUsers(await this.#read()) };
 		}
-		return this.#cache.people.find((p) => p.email.toLowerCase() === email.toLowerCase());
+		return this.#cache.people;
 	}
 }
 
@@ -82,10 +91,14 @@ function unquote(value: string): string {
 }
 
 /**
- * Who may approve a change made through a tool (mcp.ts `writes: "approve"`), by group, per MCP server or `*` for the
- * rest. The operator's file, not the profile Scout edits: `{ "approve": { "*": ["admins"], "grafana": ["admins"] } }`.
+ * Roles, by the identity provider's groups. The operator's file, not the profile Scout edits:
+ * - `request`: who may ask for work (start, steer, approve) in a repository, by its name or `*`. With it, Scout checks
+ *   groups instead of asking the code host (which tells only its admins what permission someone else has).
+ * - `approve`: who may approve a change made through a tool (mcp.ts `writes: "approve"`), per MCP server or `*`.
+ *
+ *     { "request": { "*": ["admins", "users"] }, "approve": { "*": ["admins"] } }
  */
-export type Roles = { approve?: Record<string, string[]> };
+export type Roles = { request?: Record<string, string[]>; approve?: Record<string, string[]> };
 
 export function loadRoles(path: string | undefined): Roles {
 	return path === undefined ? {} : (JSON.parse(readFileSync(path, "utf8")) as Roles);
@@ -94,4 +107,9 @@ export function loadRoles(path: string | undefined): Roles {
 /** The groups that may approve changes to `server`; undefined when the roles file says nothing (anyone admitted may). */
 export function approversOf(roles: Roles, server: string): string[] | undefined {
 	return roles.approve?.[server] ?? roles.approve?.["*"];
+}
+
+/** The groups that may ask for work in `repo`; undefined when the roles file says nothing (the code host decides). */
+export function requestersOf(roles: Roles, repo: string): string[] | undefined {
+	return roles.request?.[repo] ?? roles.request?.["*"];
 }

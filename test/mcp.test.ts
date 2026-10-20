@@ -136,6 +136,7 @@ describe("MCP tools", () => {
 		assert.match(await write(), /needs a person's approval first/);
 		approvals.grant(conversation.id, "UANN");
 		assert.match(await write(), /written/);
+		assert.match(await write(), /needs a person's approval first/, "an approval covers one change, not the next");
 		approvals.grant(conversation.id, "UANN", Date.now() - 16 * 60 * 1000);
 		assert.match(await write(), /needs a person's approval first/, "an approval runs out");
 		approvals.grant(conversation.id, "UBOB");

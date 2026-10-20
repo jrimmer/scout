@@ -113,8 +113,9 @@ provisioning files or Git Sync, infrastructure as Terraform. A server's `writes`
 no configuration as code (a SaaS console, say):
 
 - `"writes": "approve"`: tools that change things are offered, but a call waits until a person in the thread replies
-  `approve` (alone; "I don't approve" never counts). The approver must be allowed to request work there; the approval
-  lasts 15 minutes in that thread, and the audit trail records it. Give the server credentials that can write.
+  `approve` (alone; "I don't approve" never counts). The approver must be allowed to request work there (and be in a
+  group `SCOUT_ROLES_FILE` names for that server). One approval covers one change, within 15 minutes; the next needs
+  its own. The audit trail records each. Give the server credentials that can write.
 - `"writes": "allow"`: every tool, no gate; for a trusted server that doesn't mark its tools.
 
 - **Grafana**: Grafana Labs' [`mcp-grafana`](https://github.com/grafana/mcp-grafana) with `--disable-write` and a
@@ -183,9 +184,17 @@ they can change the repository themselves:
 
 Everyone can still talk in threads. Their words are kept as context, and Scout tells them why it isn't acting on them.
 
-`SCOUT_ROLES_FILE` names who may approve changes made through tools (MCP servers with `writes: "approve"`), by the
-identity provider's groups, per server or `*`: `{ "approve": { "*": ["admins"] } }`. Merging and deploying stay with
-the code host: branch protection says who may merge, and deploys run from merges and protected tags.
+`SCOUT_ROLES_FILE` gives roles by the identity provider's groups:
+- `request`: who may ask for work (start, steer, approve) in a repository, by its name or `*`. With it, Scout checks
+  groups instead of asking the code host, which tells only its own admins what permission someone else has.
+- `approve`: who may approve changes made through tools (MCP servers with `writes: "approve"`), per server or `*`.
+
+```json
+{ "request": { "*": ["admins", "users"] }, "approve": { "*": ["admins"] } }
+```
+
+Merging and deploying stay with the code host: branch protection says who may merge, and deploys run from merges
+and protected tags.
 
 ## Budgets and limits
 
