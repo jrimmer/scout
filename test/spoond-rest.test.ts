@@ -105,6 +105,24 @@ describe("spoond REST environment", () => {
 		assert.deepEqual(spoond.calls.slice(before).filter((c) => c.endsWith("/exec")), []);
 	});
 
+	it("reads on when spoond serves a range short", async () => {
+		const short = await fakeSpoond("sdt-test", { maxRange: 3 });
+		try {
+			const driver = new SpoondDriver({ url: short.url, token: "sdt-test", home: join(root, "guest"), transport: "rest" });
+			const shortEnv = (await driver.open("short", spec)).connect!({ id: "sandbox:short", cwd: root });
+			const path = join(root, "letters.txt");
+			assert.ok((await shortEnv.writeFile(path, "abcdefghij", context)).ok);
+			const reader = await shortEnv.openBinaryReader(path, undefined, context);
+			assert.ok(reader.ok);
+			const read = await reader.value.read(2, 7, context);
+			assert.ok(read.ok);
+			assert.equal(Buffer.from(read.value).toString(), "cdefghi");
+			await reader.value.close(context);
+		} finally {
+			await short.close();
+		}
+	});
+
 	it("keeps a script's mode when it's rewritten", async () => {
 		assert.ok((await env.writeFile("run.sh", "#!/bin/sh\necho one\n", context)).ok);
 		assert.ok((await env.exec(["chmod", "755", "run.sh"], undefined, context)).ok);

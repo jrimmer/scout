@@ -17,7 +17,7 @@ type Stream = { kept: Buffer; base: number; dropped: { bytes: number; newlines: 
 type FakeJob = { child: ChildProcess; state: "running" | "exited"; exit: number | null; out: Stream; err: Stream; cap: number; exited: Promise<void> };
 
 /** `ranges` and `codes` (default on) are spoond 3.11's ranged file reads and stable error codes; off, an older spoond. */
-export async function fakeSpoond(token: string, options: { ranges?: boolean; codes?: boolean } = {}) {
+export async function fakeSpoond(token: string, options: { ranges?: boolean; codes?: boolean; maxRange?: number } = {}) {
 	const leases = new Map<string, FakeLease>();
 	const jobs = new Map<string, FakeJob>();
 	const calls: string[] = [];
@@ -151,7 +151,8 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 					return;
 				}
 				const from = Number(range[1]);
-				const to = Math.min(range[2] === "" ? bytes.length - 1 : Number(range[2]), bytes.length - 1);
+				// spoond serves at most 256 MiB per answer; `maxRange` makes that limit small enough to test.
+				const to = Math.min(range[2] === "" ? bytes.length - 1 : Number(range[2]), bytes.length - 1, from + (options.maxRange ?? Number.POSITIVE_INFINITY) - 1);
 				if (from >= bytes.length) return json(416, { error: "range not satisfiable" });
 				res.writeHead(206, { "content-range": `bytes ${from}-${to}/${bytes.length}`, "accept-ranges": "bytes" }).end(bytes.subarray(from, to + 1));
 				return;

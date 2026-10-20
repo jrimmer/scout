@@ -186,7 +186,17 @@ export class SpoondRestEnv implements ExecutionEnv {
 		if (length === 0) return new Uint8Array(0);
 		if (this.#ranges) {
 			const response = await this.#files("GET", path, "", { headers: { range: `bytes=${offset}-${offset + length - 1}` } });
-			if (response.status === 206) return new Uint8Array(await response.arrayBuffer());
+			if (response.status === 206) {
+				const bytes = new Uint8Array(await response.arrayBuffer());
+				// spoond serves at most 256 MiB at once; short of the end of the file, read on from where it stopped.
+				const size = Number(/\/(\d+)$/.exec(response.headers.get("content-range") ?? "")?.[1]);
+				if (bytes.length === 0 || bytes.length >= length || !(offset + bytes.length < size)) return bytes;
+				const rest = await this.readRange(path, offset + bytes.length, length - bytes.length);
+				const all = new Uint8Array(bytes.length + rest.length);
+				all.set(bytes);
+				all.set(rest, bytes.length);
+				return all;
+			}
 			if (response.status === 416) return new Uint8Array(0);
 			if (response.status === 200) {
 				this.#ranges = false;
