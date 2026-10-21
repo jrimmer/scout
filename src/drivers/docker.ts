@@ -52,9 +52,10 @@ export class DockerDriver implements SandboxDriver {
 		if (spec.network.mode === "allow") {
 			throw new Error("Docker can't limit a sandbox to some hosts; use none or open, or a substrate with an egress firewall");
 		}
-		// A new volume belongs to root; hand it to the sandbox's user once, before anything runs in it.
+		// A new volume belongs to root; hand it to the sandbox's user once, before anything runs in it. It must not stay
+		// empty: Docker gives an empty volume the image's ownership of the mount point (root) each time it's mounted.
 		await run("docker", ["volume", "create", "--label", `scout.sandbox=${name}`, name]);
-		await run("docker", ["run", "--rm", "--network", "none", "--volume", `${name}:${WORKDIR}`, "--user", "0:0", spec.image, "chown", USER, WORKDIR]);
+		await run("docker", ["run", "--rm", "--network", "none", "--volume", `${name}:${WORKDIR}`, "--user", "0:0", spec.image, "sh", "-c", `mkdir -p ${WORKDIR}/home && chown -R ${USER} ${WORKDIR}`]);
 		const daemon = dirname(packagedDaemon({ platform: "linux", arch: process.arch === "arm64" ? "arm64" : "x64" }));
 		await run("docker", [
 			"run", "--detach", "--name", name,
@@ -66,7 +67,7 @@ export class DockerDriver implements SandboxDriver {
 			"--security-opt", "no-new-privileges",
 			"--user", USER,
 			"--env", `HOME=${WORKDIR}/home`,
-			"--volume", `${name}:${WORKDIR}`,
+			"--mount", `type=volume,source=${name},target=${WORKDIR},volume-nocopy`,
 			"--volume", `${daemon}:${DAEMON_DIR}:ro`,
 			"--workdir", WORKDIR,
 			spec.image,
