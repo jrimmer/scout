@@ -293,5 +293,14 @@ function capacityLines(c: NonNullable<Snapshot["capacity"]>, _now: number): Line
 		if (w.count === 0) continue;
 		lines.push({ left: [{ text: "last day     ", style: "dim" }, { text: `${w.count} ${waitWords[w.kind] ?? w.kind}: half over ${Math.round(w.p50 / 1000)}s, slowest tenth over ${Math.round(w.p90 / 1000)}s` }] });
 	}
+	const start = c.firstToken;
+	if (start !== undefined && start.count > 0) {
+		lines.push({
+			left: [
+				{ text: "model start  ", style: "dim" },
+				{ text: `${start.count} calls: half started answering within ${Math.round(start.p50 / 1000)}s, slowest tenth over ${Math.round(start.p90 / 1000)}s`, style: start.p90 >= 30_000 ? "warn" : "text" },
+			],
+		});
+	}
 	return lines;
 }

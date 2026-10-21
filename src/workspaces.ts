@@ -525,7 +525,8 @@ async function copyIn(env: ExecutionEnv, path: string, bytes: Uint8Array): Promi
 async function exec(env: ExecutionEnv, argv: string[], context: Context = BACKGROUND_CONTEXT, timeout?: number): Promise<{ code: number; output: string }> {
 	let output = "";
 	const result = await env.exec(argv, { onOutput: (text) => (output += text), ...(timeout === undefined ? {} : { timeout }) }, context);
-	if (!result.ok) throw result.error;
+	// Say what was being run: the sandbox's own error ("unknown: fetch failed") doesn't.
+	if (!result.ok) throw new Error(`${argv.slice(0, 3).join(" ")} in the sandbox didn't run (${result.error.code}): ${result.error.message}`, { cause: result.error });
 	return { code: result.value.exitCode, output };
 }
 

@@ -105,7 +105,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 			if (result.exit !== 0) return err(fileError(result.stderr, path));
 			return ok(result.stdout);
 		} catch (error) {
-			return err(new FileError("unknown", error instanceof Error ? error.message : String(error), path));
+			return err(new FileError("unknown", reason(error), path));
 		}
 	}
 
@@ -133,7 +133,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 			const why = await this.#fileSh(resolved, `cat -- ${q(resolved)} >/dev/null`, context);
 			return err(why.ok ? new FileError("unknown", `spoond answered ${response.status}`, resolved) : why.error);
 		} catch (error) {
-			return err(new FileError("unknown", error instanceof Error ? error.message : String(error), resolved));
+			return err(new FileError("unknown", reason(error), resolved));
 		}
 	}
 
@@ -239,7 +239,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 			if (put.status === 409) return err(new FileError("is_directory", "Is a directory", resolved));
 			return err(new FileError("unknown", `spoond answered ${put.status}`, resolved));
 		} catch (error) {
-			return err(new FileError("unknown", error instanceof Error ? error.message : String(error), resolved));
+			return err(new FileError("unknown", reason(error), resolved));
 		}
 	}
 
@@ -326,7 +326,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 			}
 			return ok({ entries, truncated });
 		} catch (error) {
-			return err(new FileError("unknown", error instanceof Error ? error.message : String(error), resolved));
+			return err(new FileError("unknown", reason(error), resolved));
 		}
 	}
 
@@ -418,7 +418,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 			jobId = ((await started.json()) as { job_id: string }).job_id;
 		} catch (error) {
 			if (signal?.aborted) return err(new ExecutionError("aborted", "aborted"));
-			return err(new ExecutionError("unknown", error instanceof Error ? error.message : String(error)));
+			return err(new ExecutionError("unknown", reason(error)));
 		}
 		this.#running.add(jobId);
 		const output = new JobOutput(this.#request, jobId, options, context);
@@ -450,7 +450,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 			}
 		} catch (error) {
 			if (error instanceof ExecutionError) return err(error);
-			return err(new ExecutionError("unknown", error instanceof Error ? error.message : String(error)));
+			return err(new ExecutionError("unknown", reason(error)));
 		} finally {
 			this.#running.delete(jobId);
 			void this.#request("DELETE", `/jobs/${jobId}`).then((r) => r.body?.cancel()).catch(() => {});
@@ -711,6 +711,14 @@ function toInfo(row: string, dir: string): FileInfo | undefined {
 }
 
 /** A failed shell file operation as a `FileError`: our own `E:<code>`, else what coreutils said. */
+/** Why a request to spoond failed, cause and all: fetch says only "fetch failed", and the cause says why. */
+export function reason(error: unknown): string {
+	if (!(error instanceof Error)) return String(error);
+	const cause = error.cause as { code?: string; message?: string } | undefined;
+	const why = cause === undefined ? "" : [cause.code, cause.message].filter((x) => x !== undefined && x !== "" && !error.message.includes(x)).join(": ");
+	return why === "" ? `spoond: ${error.message}` : `spoond: ${error.message} (${why})`;
+}
+
 /** spoond's stable error codes (3.11, spoond-wir9) for the file routes, as Pi's. */
 const FILE_CODES: Record<string, FileErrorCode> = {
 	ENOENT: "not_found",

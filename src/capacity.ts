@@ -14,6 +14,8 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/e
  *   room) and of how long runs take, so Scout can say what to expect ("about 3–8 minutes") and only when it knows.
  * - **The board**: who's waiting on what right now, so each run's progress message can say so.
  * - **Trends**: when waiting becomes common or grows, Scout tells whoever runs it, with numbers and what would help.
+ * - **The model's start**: how long each model call takes to start answering once it's sent (the gateway queueing, the
+ *   model warming up). Scout can't shorten it, but it's often most of a run, so a slow spell gets said too.
  */
 export type WaitKind = "run" | "model" | "sandbox";
 export const WAIT_KINDS: readonly WaitKind[] = ["run", "model", "sandbox"];
@@ -34,6 +36,8 @@ export class Capacity {
 			CREATE TABLE IF NOT EXISTS capacity_runs (at INTEGER NOT NULL, duration_ms INTEGER NOT NULL);
 			CREATE INDEX IF NOT EXISTS capacity_runs_at ON capacity_runs (at);
 			CREATE TABLE IF NOT EXISTS capacity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+			CREATE TABLE IF NOT EXISTS capacity_first_tokens (at INTEGER NOT NULL, ms INTEGER NOT NULL);
+			CREATE INDEX IF NOT EXISTS capacity_first_tokens_at ON capacity_first_tokens (at);
 		`);
 	}
 
@@ -48,6 +52,22 @@ export class Capacity {
 		this.#db.prepare("INSERT INTO capacity_runs (at, duration_ms) VALUES (?, ?)").run(now, Math.round(ms));
 		this.#db.prepare("DELETE FROM capacity_runs WHERE at < ?").run(now - 30 * DAY);
 		this.#db.prepare("DELETE FROM capacity_waits WHERE at < ?").run(now - 30 * DAY);
+		this.#db.prepare("DELETE FROM capacity_first_tokens WHERE at < ?").run(now - 30 * DAY);
+	}
+
+	/** A model call started answering `ms` after it was sent (its wait for a slot not included). */
+	firstToken(ms: number, now = Date.now()): void {
+		this.#db.prepare("INSERT INTO capacity_first_tokens (at, ms) VALUES (?, ?)").run(now, Math.round(ms));
+	}
+
+	/** How long model calls took to start answering, from the last `since` ms (the median and slow end). */
+	firstTokens(since: number, now = Date.now()): { count: number; p50: number; p90: number } {
+		return this.#firstTokensIn(now - since, now + 1);
+	}
+
+	#firstTokensIn(from: number, to: number): { count: number; p50: number; p90: number } {
+		const rows = (this.#db.prepare("SELECT ms FROM capacity_first_tokens WHERE at >= ? AND at < ?").all(from, to) as { ms: number }[]).map((r) => r.ms).sort((a, b) => a - b);
+		return { count: rows.length, p50: rows.length === 0 ? 0 : quantile(rows, 0.5), p90: rows.length === 0 ? 0 : quantile(rows, 0.9) };
 	}
 
 	/** Recent run durations, the latest 50 of the last week, shortest first. */
@@ -89,7 +109,8 @@ export class Capacity {
 	/**
 	 * What's worth telling whoever runs Scout about waiting, if anything, at most once a day: when a meaningful share of
 	 * requests waited over a minute for their turn in the last day, when model calls or sandboxes kept people waiting,
-	 * or when waits grew a lot on the week before. With the numbers, and what would help.
+	 * when the model was slow to start answering, or when waits grew a lot on the week before. With the numbers, and
+	 * what would help.
 	 */
 	notice(settings: { maxRuns: number; maxModelCalls: number }, now = Date.now()): string | undefined {
 		const day = new Date(now).toISOString().slice(0, 10);
@@ -113,6 +134,14 @@ export class Capacity {
 		if (sandbox.count >= 3) {
 			findings.push(`${sandbox.count} sandboxes waited for room on the sandbox host (half over ${minutes(sandbox.p50)})`);
 			help.push("a larger share for Scout on spoond, or fewer runs at once");
+		}
+		const start = this.firstTokens(DAY, now);
+		const startBefore = this.#firstTokensIn(now - 8 * DAY, now - DAY);
+		const slowStart = start.p90 >= 30_000 || (startBefore.count >= 20 && start.p50 >= 2 * startBefore.p50 && start.p50 >= 10_000);
+		if (start.count >= 20 && slowStart) {
+			const before = startBefore.count >= 20 ? `, against ${minutes(startBefore.p50)} the week before` : "";
+			findings.push(`the model was slow to start answering: half of its ${start.count} calls in the last day took over ${minutes(start.p50)} before the first word${before}, the slowest tenth over ${minutes(start.p90)}`);
+			help.push("that's the model gateway or its provider, not Scout: check the gateway's queue and the provider's status, or try a model that starts sooner (SCOUT_MODEL)");
 		}
 		const thisWeek = this.waits("run", 7 * DAY, now);
 		const lastWeek = this.#waitsIn("run", now - 14 * DAY, now - 7 * DAY);
@@ -144,6 +173,8 @@ export class Capacity {
 			const what = kind === "run" ? "requests waited for their turn" : kind === "model" ? "model calls waited for a slot" : "sandboxes waited for room";
 			return [`${w.count} ${what} (half over ${minutes(w.p50)}, the slowest tenth over ${minutes(w.p90)})`];
 		});
+		const start = this.firstTokens(7 * DAY, now);
+		if (start.count > 0) parts.push(`the model took ${minutes(start.p50)} to start answering, half the time (the slowest tenth over ${minutes(start.p90)})`);
 		return parts.length === 0 ? undefined : `Waiting last week: ${parts.join("; ")}.`;
 	}
 
@@ -267,17 +298,27 @@ export class ModelLimiter {
 
 /**
  * The same models, with every streamed call taking its turn through the limiter. Everything else passes straight
- * through. A call is held before it starts, so the provider never sees more than the limit at once.
+ * through. A call is held before it starts, so the provider never sees more than the limit at once. Each call also
+ * reports how long, once sent, it took to start answering: the first thing it says, not the provider's "started",
+ * which arrives with the response's headers.
  */
-export function limitModels(models: Models, limiter: ModelLimiter): Models {
-	if (limiter.max <= 0) return models;
+export function limitModels(models: Models, limiter: ModelLimiter, onFirstToken: (ms: number, session: string) => void = () => {}): Models {
 	const limited = (model: Parameters<Models["streamSimple"]>[0], context: Parameters<Models["streamSimple"]>[1], options?: Parameters<Models["streamSimple"]>[2]) => {
 		const out = createAssistantMessageEventStream();
 		void (async () => {
-			const release = await limiter.acquire(options?.sessionId ?? "unknown", options?.signal);
+			const session = options?.sessionId ?? "unknown";
+			const release = await limiter.acquire(session, options?.signal);
 			try {
+				const sent = Date.now();
+				let started = false;
 				const inner = models.streamSimple(model, context, options);
-				for await (const event of inner) out.push(event);
+				for await (const event of inner) {
+					if (!started && event.type !== "start" && event.type !== "error") {
+						started = true;
+						onFirstToken(Date.now() - sent, session);
+					}
+					out.push(event);
+				}
 				out.end(await inner.result());
 			} catch (error) {
 				out.end(failure(model, error));

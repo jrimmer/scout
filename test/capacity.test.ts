@@ -111,7 +111,26 @@ describe("model calls take turns", () => {
 		assert.equal(results.length, 6);
 		assert.equal(most, 2);
 		assert.equal((limited as unknown as { getModel: () => string }).getModel(), "passed through");
-		assert.equal(limitModels(models, new ModelLimiter({ max: 0 })), models, "0: no limit, the models as they are");
+		const started: string[] = [];
+		const unlimited = limitModels(models, new ModelLimiter({ max: 0 }), (ms, session) => started.push(`${session}:${ms >= 0}`));
+		await Promise.all(Array.from({ length: 4 }, (_, i) => unlimited.streamSimple(model, { messages: [] }, { sessionId: `u${i}` }).result()));
+		assert.equal(most, 4, "0: no limit");
+		assert.deepEqual(started.sort(), ["u0:true", "u1:true", "u2:true", "u3:true"], "each call says when it started answering, by session");
+	});
+
+	it("tells whoever runs Scout when the model has been slow to start answering, and says it's not Scout", () => {
+		const capacity = new Capacity(":memory:");
+		const settings = { maxRuns: 8, maxModelCalls: 6 };
+		for (let i = 0; i < 30; i++) capacity.firstToken(4_000, NOW - 3 * DAY - i * MINUTE);
+		for (let i = 0; i < 30; i++) capacity.firstToken(5_000, NOW - i * MINUTE);
+		assert.equal(capacity.notice(settings, NOW), undefined, "a steady 5 seconds isn't news");
+		for (let i = 0; i < 40; i++) capacity.firstToken(12_000 + i * 1000, NOW - i * 10_000);
+		const notice = capacity.notice(settings, NOW)!;
+		assert.match(notice, /the model was slow to start answering: half of its 70 calls in the last day took over \d+ seconds before the first word, against 4 seconds the week before/);
+		assert.match(notice, /that's the model gateway or its provider, not Scout/);
+		assert.deepEqual(capacity.firstTokens(DAY, NOW).count, 70);
+		assert.match(capacity.weekLine(NOW)!, /the model took \d+ seconds to start answering, half the time/);
+		capacity.close();
 	});
 });
 

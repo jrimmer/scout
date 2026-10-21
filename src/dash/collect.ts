@@ -16,6 +16,8 @@ export type CapacitySnapshot = {
 	progressWaiting: number;
 	loopLag: { mean: number; p99: number };
 	waits: { kind: string; count: number; p50: number; p90: number }[];
+	/** How long model calls took to start answering over the last day. */
+	firstToken?: { count: number; p50: number; p90: number };
 };
 
 export type Snapshot = {

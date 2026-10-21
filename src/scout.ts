@@ -64,6 +64,10 @@ export type ScoutOptions = {
 	watchProfile?: boolean;
 	/** Where sandboxes run; by default the one `config.sandbox.driver` names. */
 	driver?: SandboxDriver;
+	/** A model call for provider session `session` started answering `ms` after it was sent: for the evals. */
+	modelStarted?: (session: string, ms: number) => void;
+	/** A pull request's self-review took `ms` (a model run of its own, inside `open_pull_request`): for the evals. */
+	selfReviewed?: (conversationId: number, ms: number) => void;
 	/** Model access; by default the Anthropic and OpenAI providers, with keys from the environment. */
 	models?: Models;
 	/** MCP servers already connected; by default, the ones in `config.mcpFile`. */
@@ -126,7 +130,10 @@ export async function openScout(options: ScoutOptions) {
 	// Model calls take turns: at most SCOUT_MAX_MODEL_CALLS at once, so a busy moment queues instead of overrunning the
 	// gateway, and each run can say it's waiting.
 	const modelLimiter = new ModelLimiter({ max: config.capacity.maxModelCalls, board, onWaited: (ms) => capacity.waited("model", ms) });
-	const models = limitModels(options.models ?? modelsFor(config.gateway), modelLimiter);
+	const models = limitModels(options.models ?? modelsFor(config.gateway), modelLimiter, (ms, session) => {
+		capacity.firstToken(ms);
+		options.modelStarted?.(session, ms);
+	});
 
 	// What Scout knows. With a profile repo, the directory is a clone kept pulled, so merged changes just arrive.
 	if (config.profileRepo !== undefined) await cloneProfile(config.profileDir, config.profileRepo);
@@ -261,17 +268,23 @@ export async function openScout(options: ScoutOptions) {
 			audit.record("pull_opened", { actor: "scout", conversationId: id, detail: { url: pull.url, title: pull.title } });
 		},
 		maxChangedLines: config.maxPullLines,
-		selfReview: (change, api, ctx) =>
-			reviewAsSubtask(
-				api,
-				{
-					agent: reviewerAgent,
-					workspace: { sandbox: api.conversationId },
-					prompt: [`# ${change.title}`, change.body, "```", change.stat, "```", "```diff", change.diff, "```"].join("\n\n"),
-					requestId: `review:${change.sha}`,
-				},
-				ctx,
-			),
+		selfReview: async (change, api, ctx) => {
+			const started = Date.now();
+			try {
+				return await reviewAsSubtask(
+					api,
+					{
+						agent: reviewerAgent,
+						workspace: { sandbox: api.conversationId },
+						prompt: [`# ${change.title}`, change.body, "```", change.stat, "```", "```diff", change.diff, "```"].join("\n\n"),
+						requestId: `review:${change.sha}`,
+					},
+					ctx,
+				);
+			} finally {
+				options.selfReviewed?.(api.conversationId, Date.now() - started);
+			}
+		},
 	});
 	const searchTools = searchExtension(search, threads, options.threadLink ?? (async () => undefined));
 	const memoryTools = memoryExtension(memory, audit);

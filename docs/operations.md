@@ -543,11 +543,16 @@ waiting on and roughly how long, and tells whoever runs it when waiting becomes 
   would help (raise `SCOUT_MAX_RUNS` or a channel's limit, give the gateway more room, a bigger share on spoond):
   when over a fifth of the day's requests waited over a minute, model waits were long (p90 over 30 s), sandboxes
   ran out, or waiting doubled from the week before. Only with team initiative (`SCOUT_INITIATIVE=team`).
+- **The model's start**: every model call's time from being sent to its first token is kept too. That's the gateway
+  queueing and the model starting up, which Scout can't shorten, but it's often much of a run. When the slowest tenth
+  of the day's calls took over 30 s, or the median doubled on the week before (and is over 10 s), the same daily
+  notice says so, and that it's the gateway or its provider, not Scout.
 - **Each Monday** the weekly report adds a line on last week's waits, and the nightly reflection gets the same line,
   so it can propose working differently when its own long runs are why people waited.
 - **Gauges** on `/metrics`: `scout_runs_queued`, `scout_model_calls_in_flight`, `scout_model_calls_waiting`,
   `scout_sandboxes_open`, `scout_sandboxes_waiting`, `scout_progress_edits_waiting`, `scout_event_loop_lag_ms` and
-  `_p99_ms`, and `scout_wait_{run,model,sandbox}_p50_seconds` / `_p90_seconds` over the last day. The dashboard's
+  `_p99_ms`, `scout_wait_{run,model,sandbox}_p50_seconds` / `_p90_seconds`, and
+  `scout_model_first_token_p50_seconds` / `_p90_seconds` over the last day. The dashboard's
   "capacity" panel shows the same.
 
 ## Audit trail and retention

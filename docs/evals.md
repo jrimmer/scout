@@ -56,6 +56,10 @@ npm run eval -- --profile . --baseline /tmp/main --comment jrimmer/scout-profile
 - Without `--baseline`, it runs the candidate alone and reports passes.
 - `--comment owner/repo#N` posts the report on that pull request (a profile proposal, say) as Scout.
 - It exits 1 if any run with the candidate failed.
+- The report says where a run's time went: model calls waiting for their first token (timed on the stream, from
+  sending the call), the model answering, the first tool call (the sandbox and the clone), other tools by name,
+  pull requests' self-reviews (a model run inside `open_pull_request`), retries, and the rest: Scout and Pi Durable
+  between steps.
 
 **Nothing leaves the host.** Each task runs in a fresh sandbox from the configured driver, on a local copy of the
 repository at `ref` (made from Scout's mirror), and its pull request goes to a stand-in code host that only agrees.

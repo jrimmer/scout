@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord";
-import { AssistantEntry, type ConversationId, watchEvents } from "@earendil-works/pi-durable";
+import { AssistantEntry, type ConversationId, ProviderDoc, watchEvents } from "@earendil-works/pi-durable";
 import type { Config, RepoConfig } from "./config.ts";
 import { ThreadDoc } from "./docs.ts";
 import type { Scout } from "./scout.ts";
@@ -41,20 +41,38 @@ export type EvalTask = {
 
 export type Side = "candidate" | "baseline";
 
+/** What Scout measures as a run goes that the run's events don't show: set up by eval-cli's `openScout`. */
+export type Measures = { selfReviews: Map<number, number>; modelStarts: Map<string, number> };
+
+export function measures(): Measures & { selfReviewed: (id: number, ms: number) => void; modelStarted: (session: string, ms: number) => void } {
+	const m: Measures = { selfReviews: new Map(), modelStarts: new Map() };
+	return {
+		...m,
+		selfReviewed: (id, ms) => m.selfReviews.set(id, (m.selfReviews.get(id) ?? 0) + ms),
+		modelStarted: (session, ms) => m.modelStarts.set(session, (m.modelStarts.get(session) ?? 0) + ms),
+	};
+}
+
 /**
  * Where a run's time went: waiting on the model, in tools (the first call apart, since it makes the sandbox and the
  * clone), retrying the model, and checking afterwards (not part of `ms`).
  */
 export type Timing = {
-	/** From starting a model turn to its answer starting to arrive: queueing in the gateway and the model starting up. */
+	/**
+	 * Model calls from being sent to their first token (the gateway queueing, the model starting up), timed on the
+	 * stream itself. The self-review's calls are in `selfReview`.
+	 */
 	firstToken: number;
 	/** The answer arriving, start to end. */
 	model: number;
+	/** Tool time, the first call and the self-reviews apart. */
 	tools: number;
 	firstTool: number;
+	/** Pull requests' self-reviews: model runs of their own, inside `open_pull_request`. */
+	selfReview: number;
 	retries: number;
 	check: number;
-	/** Tool time by tool name (the first call included). */
+	/** Tool time by tool name (the first call included, the self-reviews not). */
 	byTool: Record<string, { calls: number; ms: number }>;
 };
 
@@ -170,8 +188,9 @@ export function report(results: readonly RunResult[], sides: readonly Side[]): s
 		const model = part((t) => t.model);
 		const first = part((t) => t.firstTool);
 		const tools = part((t) => t.tools);
+		const review = part((t) => t.selfReview ?? 0);
 		const retries = part((t) => t.retries);
-		const other = Math.max(0, total - firstToken - model - first - tools - retries);
+		const other = Math.max(0, total - firstToken - model - first - tools - review - retries);
 		const byTool = new Map<string, { calls: number; ms: number }>();
 		for (const r of timed) for (const [name, t] of Object.entries(r.timing!.byTool)) {
 			const sum = byTool.get(name) ?? { calls: 0, ms: 0 };
@@ -183,7 +202,7 @@ export function report(results: readonly RunResult[], sides: readonly Side[]): s
 		const share = (ms: number) => (total === 0 ? "" : ` (${Math.round((ms / total) * 100)}%)`);
 		lines.push(
 			"",
-			`Where a run's ${time(total)} went, on average: waiting for the model's first token ${time(firstToken)}${share(firstToken)}, the model answering ${time(model)}${share(model)}, the first tool call (making the sandbox and the clone) ${time(first)}${share(first)}, other tools ${time(tools)}${share(tools)}, retrying the model ${time(retries)}${share(retries)}, the rest ${time(other)}${share(other)}. Checking afterwards took ${time(part((t) => t.check))} more. ${Math.round(avg(timed, (r) => r.steps))} steps on average.`,
+			`Where a run's ${time(total)} went, on average: waiting for the model's first token ${time(firstToken)}${share(firstToken)}, the model answering ${time(model)}${share(model)}, the first tool call (making the sandbox and the clone) ${time(first)}${share(first)}, other tools ${time(tools)}${share(tools)}, self-reviewing pull requests ${time(review)}${share(review)}, retrying the model ${time(retries)}${share(retries)}, the rest ${time(other)}${share(other)}. Checking afterwards took ${time(part((t) => t.check))} more. ${Math.round(avg(timed, (r) => r.steps))} steps on average.`,
 			...(toolLine === "" ? [] : ["", `Tools: ${toolLine}.`]),
 		);
 	}
@@ -270,7 +289,7 @@ export function evalConfig(base: Config, options: { repos: RepoConfig[]; profile
  * One run of one task: a new conversation in the task's repository, the request, then the checks in its sandbox
  * before the sandbox goes. Pass means every check the task names passed.
  */
-export async function runTask(scout: Scout, task: EvalTask, repoName: string, side: Side, context: Context): Promise<RunResult> {
+export async function runTask(scout: Scout, task: EvalTask, repoName: string, side: Side, context: Context, measured?: Measures): Promise<RunResult> {
 	const started = Date.now();
 	const conversation = await scout.harness.createConversation(
 		{
@@ -285,20 +304,14 @@ export async function runTask(scout: Scout, task: EvalTask, repoName: string, si
 	const events = await watchEvents(scout.harness, conversation.id as ConversationId, context);
 	let answer = "";
 	let steps = 0;
-	const timing: Timing = { firstToken: 0, model: 0, tools: 0, firstTool: 0, retries: 0, check: 0, byTool: {} };
+	const timing: Timing = { firstToken: 0, model: 0, tools: 0, firstTool: 0, selfReview: 0, retries: 0, check: 0, byTool: {} };
 	let modelFrom: number | undefined;
-	let turnFrom: number | undefined;
 	let retryFrom: number | undefined;
 	const toolFrom = new Map<string, { at: number; first: boolean; name: string }>();
 	events.start(async (batch) => {
 		const now = Date.now();
 		for (const event of batch) {
 			// Times are when the events arrive, which is close enough to see where minutes go.
-			if (event.type === "turn_start") turnFrom = now;
-			if (event.type === "message_start" && turnFrom !== undefined) {
-				timing.firstToken += now - turnFrom;
-				turnFrom = undefined;
-			}
 			if (event.type === "message_start") modelFrom ??= now;
 			if (event.type === "message_end" && modelFrom !== undefined) {
 				timing.model += now - modelFrom;
@@ -388,6 +401,15 @@ export async function runTask(scout: Scout, task: EvalTask, repoName: string, si
 	const ended = Date.now();
 	const checked = typeof ran === "number" ? ended - ran : 0;
 	timing.check = checked;
+	if (measured !== undefined) {
+		const session = (await scout.harness.snapshot(ProviderDoc, conversation.id as ConversationId, context).catch(() => undefined))?.sessionId;
+		timing.firstToken = session === undefined ? 0 : (measured.modelStarts.get(session) ?? 0);
+		// The self-review runs inside open_pull_request: its time comes out of that tool's, to be shown apart.
+		timing.selfReview = measured.selfReviews.get(conversation.id) ?? 0;
+		const pull = timing.byTool.open_pull_request;
+		if (pull !== undefined) pull.ms = Math.max(0, pull.ms - timing.selfReview);
+		timing.tools = Math.max(0, timing.tools - timing.selfReview);
+	}
 	return { task: task.name, side, pass, why: why.join("; ") || "passed", cost: scout.spend.spentOn(conversation.id, 0).cost, ms: ended - started - checked, steps, timing };
 }
 

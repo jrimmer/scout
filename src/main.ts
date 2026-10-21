@@ -864,6 +864,7 @@ function capacityNow() {
 		progressWaiting: bridge.pacer.waiting,
 		loopLag: loopLag(),
 		waits: WAIT_KINDS.map((kind) => ({ kind, ...scout.capacity.waits(kind, 24 * HOUR) })),
+		firstToken: scout.capacity.firstTokens(24 * HOUR),
 	};
 }
 function capacityGauges(): Record<string, { help: string; value: number }> {
@@ -882,6 +883,8 @@ function capacityGauges(): Record<string, { help: string; value: number }> {
 		gauges[`scout_wait_${w.kind}_p50_seconds`] = { help: `Median wait for ${w.kind} over the last day.`, value: Math.round(w.p50 / 1000) };
 		gauges[`scout_wait_${w.kind}_p90_seconds`] = { help: `90th percentile wait for ${w.kind} over the last day.`, value: Math.round(w.p90 / 1000) };
 	}
+	gauges.scout_model_first_token_p50_seconds = { help: "Median time for a model call to start answering, over the last day.", value: Math.round(c.firstToken.p50 / 100) / 10 };
+	gauges.scout_model_first_token_p90_seconds = { help: "90th percentile time for a model call to start answering, over the last day.", value: Math.round(c.firstToken.p90 / 100) / 10 };
 	return gauges;
 }
 

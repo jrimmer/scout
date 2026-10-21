@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { loadConfig, useScoutsKey } from "./config.ts";
-import { evalConfig, evalRepos, fakeCodeHost, guard, loadTasks, report, type RunResult, runTask, type Side } from "./evals.ts";
+import { evalConfig, evalRepos, fakeCodeHost, guard, loadTasks, measures, report, type RunResult, runTask, type Side } from "./evals.ts";
 import { forgeFor } from "./forge.ts";
 import { openScout } from "./scout.ts";
 import { resolveSecrets } from "./secrets.ts";
@@ -84,6 +84,7 @@ if (import.meta.main) {
 			const profileDir = side === "candidate" ? candidate : baseline!;
 			const instance = `eval${randomBytes(3).toString("hex")}`;
 			const dataDir = join(work, side);
+			const measured = measures();
 			const scout = await openScout({
 				config: evalConfig(config, { repos, profileDir, apiUrl: host.apiUrl, dataDir, ...(model === undefined ? {} : { model: { provider: provider!, modelId } }) }),
 				storage: new MemoryStorage(),
@@ -92,13 +93,15 @@ if (import.meta.main) {
 				context: BACKGROUND_CONTEXT,
 				watchProfile: false,
 				mcp: [],
+				selfReviewed: measured.selfReviewed,
+				modelStarted: measured.modelStarted,
 			});
 			try {
 				for (const task of tasks) {
 					for (let n = 1; n <= tries; n++) {
-						const result = await runTask(scout, task, nameOf(task), side, BACKGROUND_CONTEXT);
+						const result = await runTask(scout, task, nameOf(task), side, BACKGROUND_CONTEXT, measured);
 						const t = result.timing;
-						const parts = t === undefined ? "" : ` (first token ${Math.round(t.firstToken / 1000)}s, model ${Math.round(t.model / 1000)}s, first tool ${Math.round(t.firstTool / 1000)}s, tools ${Math.round(t.tools / 1000)}s, retries ${Math.round(t.retries / 1000)}s, ${result.steps} steps)`;
+						const parts = t === undefined ? "" : ` (first token ${Math.round(t.firstToken / 1000)}s, model ${Math.round(t.model / 1000)}s, first tool ${Math.round(t.firstTool / 1000)}s, tools ${Math.round(t.tools / 1000)}s, self-review ${Math.round(t.selfReview / 1000)}s, retries ${Math.round(t.retries / 1000)}s, ${result.steps} steps)`;
 						console.error(`${side} ${task.name} #${n}: ${result.pass ? "pass" : `fail (${result.why})`}, $${result.cost.toFixed(2)}, ${Math.round(result.ms / 1000)}s${parts}`);
 						results.push(result);
 					}
