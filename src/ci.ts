@@ -55,7 +55,11 @@ export class CiWatcher {
 	}
 
 	async #check(pull: PullRow, now: number): Promise<void> {
-		const head = ((await this.#api(`/repos/${pull.slug}/pulls/${pull.number}`)) as { head: { sha: string }; state?: string }).head.sha;
+		const current = (await this.#api(`/repos/${pull.slug}/pulls/${pull.number}`)) as { head: { sha: string }; state?: string };
+		// Merged or closed since the last refresh: nothing left to fix. Its branch may live on in a newer pull request
+		// (a thread keeps its branch), whose red build is that one's to report, not this one's.
+		if (current.state !== undefined && current.state !== "open") return;
+		const head = current.head.sha;
 		const seen = this.#pulls.ci(pull.url);
 		if (seen?.sha === head && seen.outcome !== "pending") return;
 		const attempts = seen?.attempts ?? 0;

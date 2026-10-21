@@ -48,6 +48,32 @@ describe("CI on Scout's pull requests", () => {
 		assert.equal(MAX_FIXES, 2);
 	});
 
+	it("leaves a merged pull request alone when a newer one on the same branch goes red", async () => {
+		const pulls = new Pulls(":memory:");
+		pulls.opened({ url: "http://forge/o/r/pulls/7", number: 7, slug: "o/r", kind: "work", conversationId: 9, title: "CI" });
+		pulls.opened({ url: "http://forge/o/r/pulls/8", number: 8, slug: "o/r", kind: "work", conversationId: 9, title: "Round mean" });
+		const events: string[] = [];
+		const watcher = new CiWatcher({
+			pulls,
+			host: { kind: "forgejo", apiUrl: "http://forge/api/v1", token: "t" },
+			fetch: (async (url: string | URL | Request) => {
+				const path = new URL(String(url)).pathname;
+				// The code host knows #7 was merged; Scout's own record hasn't caught up yet.
+				if (path === "/api/v1/repos/o/r/pulls/7") return Response.json({ head: { sha: "new" }, state: "closed" });
+				if (path === "/api/v1/repos/o/r/pulls/8") return Response.json({ head: { sha: "new" }, state: "open" });
+				if (path === "/api/v1/repos/o/r/commits/new/status") return Response.json({ state: "failure", total_count: 1, statuses: [{ context: "ci", status: "failure" }] });
+				return new Response("no", { status: 404 });
+			}) as typeof fetch,
+			handlers: {
+				passed: async (pull) => void events.push(`passed #${pull.number}`),
+				failed: async (pull, _sha, _checks, attempt) => void events.push(`failed #${pull.number} try ${attempt}`),
+				stuck: async (pull) => void events.push(`stuck #${pull.number}`),
+			},
+		});
+		await watcher.poll(0);
+		assert.deepEqual(events, ["failed #8 try 1"]);
+	});
+
 	it("stops waiting on a commit nobody reports CI for", async () => {
 		const pulls = new Pulls(":memory:");
 		pulls.opened({ url: "http://forge/o/r/pulls/5", number: 5, slug: "o/r", kind: "work", conversationId: 9, title: "Docs" });
