@@ -91,8 +91,9 @@ settings:
       - reaction_added
       - app_home_opened
       - link_shared
+      - function_executed # the Ask Scout workflow step ran
   interactivity:
     is_enabled: true
-  org_deploy_enabled: false
+  org_deploy_enabled: true # Slack requires it for apps with workflow steps; no effect outside Enterprise Grid
   socket_mode_enabled: true
   token_rotation_enabled: false
