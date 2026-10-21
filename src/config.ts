@@ -94,6 +94,8 @@ export type Config = {
 	pullUpkeep: { staleDays: number; closeDays: number };
 	/** Each channel's weekly summary, Mondays (weekly.ts). */
 	weeklySummary: boolean;
+	/** How long a closed (not merged) pull request of Scout's keeps its branch, so it can be reopened. */
+	closedBranchDays: number;
 	/** Remind reviewers of pull requests waiting on them this many days, once a working day per channel; 0 never. */
 	reviewNudgeDays: number;
 	/** Largest change, in lines added plus removed, Scout puts in one pull request. */
@@ -213,6 +215,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		},
 		weeklySummary: env.SCOUT_WEEKLY_SUMMARY !== "off",
 		reviewNudgeDays: Number(env.SCOUT_REVIEW_NUDGE_DAYS ?? 3),
+		closedBranchDays: Number(env.SCOUT_CLOSED_BRANCH_DAYS ?? 30),
 		...(env.SCOUT_MCP_FILE ? { mcpFile: resolve(env.SCOUT_MCP_FILE) } : {}),
 		governance: {
 			...(env.SCOUT_PRICES_FILE ? { pricesFile: resolve(env.SCOUT_PRICES_FILE) } : {}),

@@ -159,8 +159,10 @@ Every few minutes Scout looks at its own open pull requests on the code host (`s
   pull requests in its repositories, anyone's, that have waited on a requested review for `SCOUT_REVIEW_NUDGE_DAYS`
   (default 3; 0 turns it off). Reviewers are mentioned in Slack where the people file links their login, by login
   otherwise. Drafts and pull requests nobody's been asked to review aren't listed.
-- **Deleting its branches.** When one of Scout's pull requests is merged or closed, its `scout/…` branch is deleted,
-  unless another open pull request still comes from it. The code host keeps the pull request's commits.
+- **Deleting its branches.** When one of Scout's pull requests is merged, its `scout/…` branch is deleted, unless
+  another open pull request still comes from it. A closed one keeps its branch for `SCOUT_CLOSED_BRANCH_DAYS`
+  (default 30), so it can be reopened, and loses it then if it's still closed. The code host keeps the pull
+  request's commits either way.
 
 ## Each channel's week
 

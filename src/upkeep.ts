@@ -175,3 +175,41 @@ export class ReviewNudges {
 		this.#db.close();
 	}
 }
+
+/**
+ * Branches of Scout's closed (not merged) pull requests, kept a while so the pull request can still be reopened, and
+ * deleted once that's past and it's still closed.
+ */
+export class BranchCleanup {
+	readonly #db: DatabaseSync;
+
+	constructor(path: string) {
+		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+		this.#db = new DatabaseSync(path, { timeout: 5000 });
+		this.#db.exec(`
+			PRAGMA journal_mode = WAL;
+			CREATE TABLE IF NOT EXISTS branch_cleanup (url TEXT PRIMARY KEY, slug TEXT NOT NULL, number INTEGER NOT NULL, conversation_id INTEGER NOT NULL, due_at INTEGER NOT NULL);
+		`);
+	}
+
+	later(pull: Pick<PullRow, "url" | "slug" | "number" | "conversationId">, dueAt: number): void {
+		this.#db
+			.prepare("INSERT OR REPLACE INTO branch_cleanup (url, slug, number, conversation_id, due_at) VALUES (?, ?, ?, ?, ?)")
+			.run(pull.url, pull.slug, pull.number, pull.conversationId, dueAt);
+	}
+
+	due(now = Date.now()): Pick<PullRow, "url" | "slug" | "number" | "conversationId">[] {
+		return this.#db
+			.prepare("SELECT * FROM branch_cleanup WHERE due_at <= ?")
+			.all(now)
+			.map((r) => ({ url: String(r.url), slug: String(r.slug), number: Number(r.number), conversationId: Number(r.conversation_id) }));
+	}
+
+	done(url: string): void {
+		this.#db.prepare("DELETE FROM branch_cleanup WHERE url = ?").run(url);
+	}
+
+	close(): void {
+		this.#db.close();
+	}
+}

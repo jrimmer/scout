@@ -10,7 +10,7 @@ import { hostname } from "node:os";
 import { Bridge } from "./bridge.ts";
 import { Collector } from "./dash/collect.ts";
 import { type Ask, forgeFor, Inbox } from "./forge.ts";
-import { MAX_TRIES as UPKEEP_TRIES, PullUpkeep, ReviewNudges } from "./upkeep.ts";
+import { BranchCleanup, MAX_TRIES as UPKEEP_TRIES, PullUpkeep, ReviewNudges } from "./upkeep.ts";
 import { channelWeeks, WeeklySummaries } from "./weekly.ts";
 import { startDashboard } from "./dash/server.ts";
 import { ThreadDoc } from "./docs.ts";
@@ -468,14 +468,14 @@ const upkeep = new PullUpkeep({
 			const quiet = Math.round(quietMs / DAY);
 			const close = Math.round(closeAfterMs / DAY);
 			const who = !asker || asker === "scout" ? "" : `<@${asker}> `;
-			await inThread(pull.conversationId, `${who}<${pull.url}|${pull.title}> has had no activity for ${quiet} days. Is it still wanted? If nothing changes, I'll close it in ${close} days; it can always be reopened.`);
-			await forge.comment(pull.slug, pull.number, `This has had no activity for ${quiet} days. Is it still wanted? If nothing changes, I'll close it in ${close} days; it can always be reopened.`);
+			await inThread(pull.conversationId, `${who}<${pull.url}|${pull.title}> has had no activity for ${quiet} days. Is it still wanted? If nothing changes, I'll close it in ${close} days; it can be reopened for ${config.closedBranchDays} days after that.`);
+			await forge.comment(pull.slug, pull.number, `This has had no activity for ${quiet} days. Is it still wanted? If nothing changes, I'll close it in ${close} days; it can be reopened for ${config.closedBranchDays} days after that.`);
 		},
 		close: async (pull, quietMs) => {
 			const quiet = Math.round(quietMs / DAY);
-			await forge.comment(pull.slug, pull.number, `Closing this: no activity for ${quiet} days, including since I asked whether it's still wanted. Reopen it, or ask me in its thread, if it is.`);
+			await forge.comment(pull.slug, pull.number, `Closing this: no activity for ${quiet} days, including since I asked whether it's still wanted. If it is, reopen it within ${config.closedBranchDays} days (I keep its branch until then), or ask me in its thread.`);
 			await forge.closePull(pull.slug, pull.number);
-			await inThread(pull.conversationId, `I closed <${pull.url}|${pull.title}> after ${quiet} quiet days. Reopen it, or ask me here, if it's still wanted.`);
+			await inThread(pull.conversationId, `I closed <${pull.url}|${pull.title}> after ${quiet} quiet days. If it's still wanted, reopen it within ${config.closedBranchDays} days, or ask me here.`);
 			audit.record("pull_decided", { actor: "scout", conversationId: pull.conversationId, detail: { url: pull.url, state: "closed", why: "stale" } });
 		},
 	},
@@ -505,6 +505,15 @@ async function postChannelWeeks(): Promise<void> {
 		const id = await slack.channelId(name);
 		if (id === undefined || !weekly.claim(key, name)) continue;
 		await slack.surface.post(id, undefined, { text, blocks: [{ type: "markdown", text }] });
+	}
+}
+
+// Closed pull requests' branches, once they've been closed long enough (and weren't reopened).
+const branches = new BranchCleanup(join(config.dataDir, "scout.sqlite"));
+async function cleanUpBranches(): Promise<void> {
+	for (const pull of branches.due()) {
+		await deleteBranchOf(pull);
+		branches.done(pull.url);
 	}
 }
 
@@ -570,6 +579,7 @@ const housekeeping = () => {
 	if (new Date(now).getHours() >= config.reflect.hour) void reflect(localDay(new Date(now)));
 	void health.watch("reviews", "reviewing pull requests failed", () => pullReviewer.poll());
 	void health.watch("upkeep", "looking after Scout's pull requests failed", () => upkeep.poll(pulls.open("work")));
+	void health.watch("branches", "deleting closed pull requests' branches failed", cleanUpBranches);
 	const today = new Date(now);
 	if (today.getDay() >= 1 && today.getDay() <= 5 && today.getHours() >= 9 && today.getHours() < 17) {
 		void health.watch("review nudges", "reminding reviewers failed", nudgeReviews);
@@ -581,7 +591,9 @@ const housekeeping = () => {
 		// A reflection's proposal was decided: merged retires the notes it covered; rejected keeps them.
 		for (const pull of decided) {
 			audit.record("pull_decided", { actor: "code host", conversationId: pull.conversationId, detail: { url: pull.url, state: pull.state } });
-			await deleteBranchOf(pull).catch((error: unknown) => console.error(`deleting ${pull.url}'s branch failed:`, error));
+			// Merged: its branch has done its job. Closed: kept a while, so it can still be reopened.
+			if (pull.state === "merged") await deleteBranchOf(pull).catch((error: unknown) => console.error(`deleting ${pull.url}'s branch failed:`, error));
+			else branches.later(pull, Date.now() + config.closedBranchDays * DAY);
 			const day = pull.kind === "profile" ? threads.reflectionDay(pull.conversationId) : undefined;
 			if (day !== undefined) memory.proposalDecided(day, pull.state === "merged");
 		}
@@ -679,6 +691,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		upkeep.close();
 		weekly.close();
 		reviewNudges.close();
+		branches.close();
 		if (alertTick !== undefined) clearInterval(alertTick);
 		alertLog.close();
 		await slack.stop().catch(() => {});

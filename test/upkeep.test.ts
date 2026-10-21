@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Forge, PullStatus } from "../src/forge.ts";
 import type { PullRow } from "../src/pulls.ts";
-import { PullUpkeep } from "../src/upkeep.ts";
+import { BranchCleanup, PullUpkeep } from "../src/upkeep.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 const T0 = Date.parse("2026-10-01T12:00:00Z");
@@ -88,5 +88,16 @@ describe("looking after Scout's pull requests", () => {
 		closed.set({ open: false, mergeable: false });
 		await closed.poll(T0 + 100 * DAY);
 		assert.deepEqual(closed.events, []);
+	});
+
+	it("keeps a closed pull request's branch until it can no longer be reopened", () => {
+		const branches = new BranchCleanup(":memory:");
+		const pull = { url: "u", slug: "o/r", number: 7, conversationId: 3 };
+		branches.later(pull, T0 + 30 * DAY);
+		assert.deepEqual(branches.due(T0 + 29 * DAY), []);
+		assert.deepEqual(branches.due(T0 + 30 * DAY), [pull]);
+		branches.done("u");
+		assert.deepEqual(branches.due(T0 + 99 * DAY), []);
+		branches.close();
 	});
 });
