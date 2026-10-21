@@ -1,4 +1,6 @@
-# Type checks and tests on every push and pull request, on Scout's own runner (a fresh spoond microVM per job).
+# Type checks and tests on every push to main and every pull request, on Scout's own runner (a fresh spoond microVM per job).
+# Nothing waits on it: a pull request is tested merged with the latest main, and main is tested again after each push,
+# so whoever merges or deploys can see whether main builds before and after.
 name: ci
 
 on:
@@ -11,6 +13,13 @@ jobs:
     runs-on: scout
     steps:
       - uses: actions/checkout@v4
+      - name: Merged with main
+        # A pull request is tested as main would be after merging it; on main itself this changes nothing.
+        run: |
+          if [ -f .git/shallow ]; then git fetch -q --unshallow origin; fi
+          git fetch -q origin main
+          git -c user.name=ci -c user.email=ci@localhost merge -q --no-edit FETCH_HEAD
+          git log --oneline -1
       - name: Node
         run: |
           file=$(curl -fsSL "https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt" | awk '/linux-x64.tar.xz$/ {print $2}')
@@ -24,6 +33,13 @@ jobs:
     runs-on: scout
     steps:
       - uses: actions/checkout@v4
+      - name: Merged with main
+        # A pull request is tested as main would be after merging it; on main itself this changes nothing.
+        run: |
+          if [ -f .git/shallow ]; then git fetch -q --unshallow origin; fi
+          git fetch -q origin main
+          git -c user.name=ci -c user.email=ci@localhost merge -q --no-edit FETCH_HEAD
+          git log --oneline -1
       - name: Node and Docker
         run: |
           file=$(curl -fsSL "https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt" | awk '/linux-x64.tar.xz$/ {print $2}')

@@ -29,7 +29,7 @@ A change to any of these that needs people to act is a major version. Everything
 - **Tests at the edges:**
   - `src/slack.ts` against recorded Socket Mode payloads and a stand-in Slack Web API, covering every handler;
   - an end-to-end test from a Slack mention to a pull request on a stand-in Forgejo.
-- **Continuous integration:** on every push and pull request, on Scout's own runner (`.forgejo/workflows/ci.yml`): type checks, the full test suite, and the Docker sandbox tests.
+- **Continuous integration:** on every pull request, merged with the latest `main`, and on `main` after every push, on Scout's own runner (`.forgejo/workflows/ci.yml`): type checks, the full test suite, and the Docker sandbox tests. It reports; it doesn't block merges.
 - **Releases:** this changelog, and the release checklist in `docs/releasing.md`.
 - **Settings:** `.env.example` now lists every setting Scout reads, and a test keeps it so. `SCOUT_GATEWAY_OPENAI_API` was missing.
 

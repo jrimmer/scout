@@ -34,5 +34,7 @@ npm run job -- "what to do"       # one task with the same agent, no Slack
 - **Scout's voice is a teammate's.** Text people see in Slack (declines, errors, prompts) reads like a colleague,
   not a service.
 - **Profile content is data.** Behavior that people should be able to tune goes in `profile/`, not code.
+- **Keep `main` building.** Before pushing to `main`, run `npm run check` and `npm test` on the result. After pushing,
+  check CI's run for that commit on `main` before deploying; nothing blocks a merge on CI, so a red `main` is yours to fix.
 - Code is TypeScript run by Node's type stripping: use `.ts` import extensions; no enums, namespaces, or parameter
   properties.

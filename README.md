@@ -86,7 +86,8 @@ npm run check                              # type-check
 npm run job -- "what to do"                # one task, no Slack
 ```
 
-CI runs the type check, the tests and the Docker tests on every pull request (`.forgejo/workflows/ci.yml`).
+CI runs the type check, the tests and the Docker tests on every pull request, merged with the latest `main`, and on
+`main` after every push (`.forgejo/workflows/ci.yml`).
 [docs/releasing.md](docs/releasing.md) says how a release is made, and what 1.0 waits on.
 
 ## License
