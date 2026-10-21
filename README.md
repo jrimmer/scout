@@ -17,6 +17,7 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
   - Requests get 👀, then ✅ or ⚠️; changes waiting for approval get Approve and Decline buttons.
   - Each channel gets a canvas of what's open; a Slack List tracks all of Scout's work; links to the code host
     preview with their state; Workflow Builder gets an Ask Scout step.
+- **All your code.** Any thread can search and read every repository Scout works in, not just its own checkout.
 - **Its own sandbox.** Each thread gets its own clone, in its channel's repository, and its own Docker container.
   Credentials never enter it.
 - **Reviewed before you review it.** Scout reviews its own diff before opening a pull request, and keeps pull

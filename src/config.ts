@@ -94,6 +94,8 @@ export type Config = {
 	pullUpkeep: { staleDays: number; closeDays: number };
 	/** Each channel's weekly summary, Mondays (weekly.ts). */
 	weeklySummary: boolean;
+	/** Searching and reading every configured repository's code from any thread (codesearch.ts). */
+	codeSearch: boolean;
 	/** Follow up on a thread waiting on people this many days (recaps.ts); 0 never. */
 	threadRecapDays: number;
 	/** How long a closed (not merged) pull request of Scout's keeps its branch, so it can be reopened. */
@@ -216,6 +218,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			closeDays: Number(env.SCOUT_PR_CLOSE_DAYS ?? Number(env.SCOUT_PR_STALE_DAYS ?? 14) / 2),
 		},
 		weeklySummary: env.SCOUT_WEEKLY_SUMMARY !== "off",
+		codeSearch: env.SCOUT_CODE_SEARCH !== "off",
 		reviewNudgeDays: Number(env.SCOUT_REVIEW_NUDGE_DAYS ?? 3),
 		closedBranchDays: Number(env.SCOUT_CLOSED_BRANCH_DAYS ?? 30),
 		threadRecapDays: Number(env.SCOUT_THREAD_RECAP_DAYS ?? 3),

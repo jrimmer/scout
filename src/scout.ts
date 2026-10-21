@@ -15,6 +15,7 @@ import { loadPeople, Permissions } from "./permissions.ts";
 import { Pricing } from "./pricing.ts";
 import { Counters, Tracer } from "./telemetry.ts";
 import { AutheliaFile, approversOf, loadRoles, requestersOf } from "./directory.ts";
+import { codeSearchExtension } from "./codesearch.ts";
 import { Images } from "./images.ts";
 import { CODEOWNERS_PATHS, type Owners, ownersOf, parseCodeOwners, recentOwners } from "./owners.ts";
 import { Schedules, schedulesExtension } from "./schedules.ts";
@@ -274,6 +275,8 @@ export async function openScout(options: ScoutOptions) {
 			}),
 		],
 	});
+	// Every repository's code, from any thread: the host's mirrors, read-only (codesearch.ts).
+	const codeSearchTools = codeSearchExtension(() => config.repos.map((r) => ({ name: r.name, base: r.base, mirror: workspaces.mirrorFor(r.name) })));
 	const schedules = new Schedules(db);
 	// Each repository's image, built from its own setup script (images.ts); new threads start from it.
 	const images = new Images(db);
@@ -323,6 +326,7 @@ export async function openScout(options: ScoutOptions) {
 		memoryTools,
 		scheduleTools,
 		statusTools,
+		codeSearchTools,
 		reflection.reflect,
 		reflection.files,
 		profileCodeHost,
@@ -498,7 +502,18 @@ export async function openScout(options: ScoutOptions) {
 		/** What a thread (or a job) runs with. */
 		workAgent: {
 			model: config.model,
-			extensions: [profileTools, codingTools, workCodeHost, searchTools, memoryTools, scheduleTools, statusTools, mcpTools, observe],
+			extensions: [
+				profileTools,
+				codingTools,
+				workCodeHost,
+				searchTools,
+				memoryTools,
+				scheduleTools,
+				statusTools,
+				...(config.codeSearch ? [codeSearchTools] : []),
+				mcpTools,
+				observe,
+			],
 		} satisfies AgentChange,
 		reviewerAgent,
 		pullReviewerAgent,

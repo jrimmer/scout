@@ -147,6 +147,17 @@ ask Scout about its review, or to fix what it flagged: that thread's sandbox has
 opens as a pull request into it, so the author merges it or not (Scout never pushes to someone else's branch). A pull
 request from a fork gets the base branch instead. Nothing to configure; give Scout's account access to the repository.
 
+## Code across repositories
+
+Any thread can search and read the code of every repository Scout is set up for, not only the one it has checked
+out (`src/codesearch.ts`): `search_code` (text or a regular expression, optionally one repository or a path glob,
+`repo:path:line: text`) and `read_code` (a file, with line numbers, or a range of it). Both answer from the host's
+bare mirrors with `git grep` and `git show` on each repository's base branch, fetched first when a mirror is more
+than five minutes old: exact, current, read-only, and nothing new to run. `SCOUT_CODE_SEARCH=off` turns them off.
+
+This isn't a code index. One becomes worth it with very large repositories (where `git grep` slows down), questions
+by meaning rather than text, or cross-repository go-to-definition (#59); it would sit behind the same two tools.
+
 ## Work from the code host
 
 Once a minute Scout reads its code host account's unread notifications (Forgejo and GitHub both keep them) and looks
