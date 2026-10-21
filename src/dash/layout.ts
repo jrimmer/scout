@@ -26,6 +26,7 @@ export function layout(s: Snapshot, width = WIDTH): Grid {
 	y = sideBySide(grid, y, width, half, ["learning", learningLines(s)], ["spend", spendLines(s)]);
 	if (s.learning.notes.length > 0) y = panel(grid, 0, y, width, "unreviewed notes", noteLines(s));
 	if (s.reviews.latest.length > 0) y = panel(grid, 0, y, width, "pull request reviews", reviewLines(s));
+	if (s.schedules.length > 0) y = panel(grid, 0, y, width, "schedules", scheduleLines(s));
 
 	grid.put(1, y, "scout · read-only", "dim");
 	grid.putRight(width - 1, y, `updated ${clock(s.now)}`, "dim");
@@ -155,6 +156,17 @@ function noteLines(s: Snapshot): Line[] {
 	}));
 	if (s.learning.notes.length > 10) lines.unshift({ left: [{ text: `${s.learning.notes.length - 10} older not shown`, style: "dim" }] });
 	return lines;
+}
+
+function scheduleLines(s: Snapshot): Line[] {
+	return s.schedules.map((sc) => ({
+		left: [
+			{ text: `#${sc.id} `, style: "id" },
+			{ text: `#${sc.channel} `, style: "state" },
+			{ text: `${sc.when}: ${sc.task}` },
+		],
+		right: [{ text: sc.paused ? " paused" : sc.next === undefined ? " never" : ` next in ${age(sc.next - s.now)}`, style: sc.paused ? "warn" : "dim" }],
+	}));
 }
 
 function reviewLines(s: Snapshot): Line[] {

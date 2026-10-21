@@ -1,4 +1,5 @@
 import type { MemoryNote } from "../memory.ts";
+import { nextTime, type Schedule } from "../schedules.ts";
 import type { PullRow, PullState, ReviewRow } from "../pulls.ts";
 import type { ThreadRow } from "../threads.ts";
 
@@ -26,6 +27,8 @@ export type Snapshot = {
 		notes: MemoryNote[];
 	};
 	reviews: { latest: { slug: string; number: number; sha: string; posted: boolean }[] };
+	/** Every channel's schedules, with when each runs next. */
+	schedules: { id: number; channel: string; when: string; task: string; paused: boolean; next?: number; lastRun?: number }[];
 	spend: {
 		total: number;
 		byModel: { model: string; cost: number }[];
@@ -62,6 +65,7 @@ export type Sources = {
 	/** This week's spend by channel, with budgets. */
 	week?(): { channel: string; cost: number; budget?: number }[];
 	alerts(): { message: string; since: number }[];
+	schedules?(): Schedule[];
 };
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -140,6 +144,10 @@ export class Collector {
 				proposals: s.pulls.rate(now - 30 * DAY, now, "profile"),
 				notes: s.memory.active(),
 			},
+			schedules: (s.schedules?.() ?? []).map((sc) => {
+				const next = sc.paused ? undefined : nextTime(sc.cron, now);
+				return { id: sc.id, channel: sc.channel, when: sc.when, task: sc.task, paused: sc.paused, ...(next === undefined ? {} : { next }), ...(sc.lastRun === undefined ? {} : { lastRun: sc.lastRun }) };
+			}),
 			reviews: {
 				latest: s.pulls.latestReviews(5).map((r) => ({ slug: r.slug, number: r.number, sha: r.sha, posted: r.postedAt !== undefined })),
 			},

@@ -25,7 +25,11 @@ export type AuditKind =
 	| "note_forgotten"
 	| "reflection"
 	| "review_posted"
-	| "retention";
+	| "retention"
+	| "schedule_added"
+	| "schedule_changed"
+	| "schedule_removed"
+	| "schedule_ran";
 
 export type AuditRecord = {
 	id: number;

@@ -14,6 +14,7 @@ import { loadPeople, Permissions } from "./permissions.ts";
 import { Pricing } from "./pricing.ts";
 import { Counters, Tracer } from "./telemetry.ts";
 import { AutheliaFile, approversOf, loadRoles, requestersOf } from "./directory.ts";
+import { Schedules, schedulesExtension } from "./schedules.ts";
 import { Approvals, closeMcp, connectMcp, loadMcpConfig, type McpConnection, mcpExtension } from "./mcp.ts";
 import { ThreadDoc } from "./docs.ts";
 import { consolidationExtension, Memory, memoryExtension } from "./memory.ts";
@@ -234,6 +235,9 @@ export async function openScout(options: ScoutOptions) {
 	});
 	const searchTools = searchExtension(search, threads, options.threadLink ?? (async () => undefined));
 	const memoryTools = memoryExtension(memory, audit);
+	const schedules = new Schedules(db);
+	// Who asked for a schedule change: the latest person to ask for work in the thread.
+	const scheduleTools = schedulesExtension(schedules, (id) => threads.byConversation(id)?.lastAsker ?? "scout", audit);
 
 	// Reflection conversations: profile files only, pull requests against the profile repo.
 	const reflection = reflectionExtensions(() => profile.reflect);
@@ -274,6 +278,7 @@ export async function openScout(options: ScoutOptions) {
 		workCodeHost,
 		searchTools,
 		memoryTools,
+		scheduleTools,
 		reflection.reflect,
 		reflection.files,
 		profileCodeHost,
@@ -406,6 +411,7 @@ export async function openScout(options: ScoutOptions) {
 		channelOf,
 		mayAsk,
 		approvals,
+		schedules,
 		alertChannel,
 		responder,
 		alertPolicy,
@@ -425,7 +431,7 @@ export async function openScout(options: ScoutOptions) {
 		/** What a thread (or a job) runs with. */
 		workAgent: {
 			model: config.model,
-			extensions: [profileTools, codingTools, workCodeHost, searchTools, memoryTools, mcpTools, observe],
+			extensions: [profileTools, codingTools, workCodeHost, searchTools, memoryTools, scheduleTools, mcpTools, observe],
 		} satisfies AgentChange,
 		reviewerAgent,
 		pullReviewerAgent,
@@ -438,6 +444,7 @@ export async function openScout(options: ScoutOptions) {
 			search.close();
 			memory.close();
 			approvals.close();
+			schedules.close();
 			await tracer?.close();
 			audit.close();
 			spend.close();

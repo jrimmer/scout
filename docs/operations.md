@@ -101,6 +101,22 @@ repository Scout isn't set up for, gets a short reply saying why. Nothing from b
 becomes work, and each comment is a request at most once. The code host is behind an interface (`Forge`); Forgejo
 and GitHub share one implementation, with their differences in a small dialect.
 
+## Schedules
+
+People give Scout recurring work by asking for it in a thread ("every Monday at 9, check for dependency updates").
+Scout turns the time into cron (minute, hour, day of month, month, day of week, in the host's local time, like the
+reflection hour), says it back in words, and keeps the schedule in `scout.sqlite` (`src/schedules.ts`).
+
+Schedules are public to their channel. Anyone who may ask for work there can list, change, pause or remove them by
+asking in any thread in that channel; schedules in other channels are out of reach. Who set each one up and who last
+changed it are recorded, and every change is in the audit trail (`schedule_added`, `schedule_changed`,
+`schedule_removed`, `schedule_ran`).
+
+When a schedule is due, Scout starts a new thread in its channel whose first message names the schedule, who set it
+up, and that anyone there can change or stop it. A run counts against the channel's budget and concurrency like any
+request. If Scout was down at the time, it still runs within 10 minutes of it; later than that, it waits for its
+next time. The dashboard lists every schedule and when it runs next.
+
 ## CI on Scout's pull requests
 
 Once a minute Scout reads the combined commit status of each of its open pull requests' heads (Forgejo Actions and

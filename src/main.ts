@@ -305,6 +305,28 @@ const ciWatcher = new CiWatcher({
 });
 const ciTick = setInterval(() => void health.watch("ci", "watching CI failed", () => ciWatcher.poll()), MINUTE);
 
+// Scheduled work (schedules.ts): each schedule that's due starts a new thread in its channel, saying which one it is.
+async function runSchedules(): Promise<void> {
+	for (const s of scout.schedules.due()) {
+		// Marked first, so a failure here doesn't start it again every minute.
+		scout.schedules.ran(s.id);
+		const channel = await slack.channelId(s.channel);
+		if (channel === undefined) throw new Error(`schedule #${s.id}'s channel #${s.channel} is gone`);
+		const root = `⏰ Schedule #${s.id}, ${s.when}: ${s.task}\nSet up by <@${s.createdBy}>. Anyone here can ask me to change, pause or stop it.`;
+		const threadTs = await slack.surface.post(channel, undefined, { text: root, blocks: [{ type: "markdown", text: root }] });
+		audit.record("schedule_ran", { actor: "scout", channel: s.channel, detail: { id: s.id, cron: s.cron } });
+		await bridge.investigate({
+			channel,
+			channelName: s.channel,
+			threadTs,
+			context: `This thread was started by schedule #${s.id} (${s.when}, \`${s.cron}\`), set up by <@${s.createdBy}>. People can ask you here to change, pause or remove it.`,
+			prompt: s.task,
+			requestId: `schedule:${s.id}:${Math.floor(Date.now() / MINUTE)}`,
+		});
+	}
+}
+const scheduleTick = setInterval(() => void health.watch("schedules", "running scheduled work failed", runSchedules), MINUTE);
+
 // Work asked on the code host: an issue assigned to Scout, @scout in an issue or a comment, and what people say on
 // Scout's own pull requests (forge.ts). It goes to a thread like any request, and the answer back to the code host.
 const forge = forgeFor(config.codeHost);
@@ -468,6 +490,7 @@ const dashboard =
 							return { ...c, ...(budget === undefined ? {} : { budget }) };
 						}),
 					alerts: () => health.list(),
+					schedules: () => scout.schedules.all(),
 				}),
 				metrics: {
 					...(config.governance.metricsToken === undefined ? {} : { token: config.governance.metricsToken }),
@@ -499,6 +522,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		clearTimeout(firstTick);
 		clearInterval(ciTick);
 		clearInterval(inboxTick);
+		clearInterval(scheduleTick);
 		inbox.close();
 		if (alertTick !== undefined) clearInterval(alertTick);
 		alertLog.close();
