@@ -55,35 +55,31 @@ functions:
     title: Ask Scout
     description: Start a Scout thread in a public channel with a request
     input_parameters:
-      properties:
-        channel_id:
-          type: slack#/types/channel_id
-          title: Channel
-          description: A public channel Scout is in
-        user_id:
-          type: slack#/types/user_id
-          title: Asked by
-          description: Who the request is from (usually "Person who used this workflow"); checked like any request
-        request:
-          type: string
-          title: Request
-          description: What Scout should do
-        about:
-          type: string
-          title: Context
-          description: Anything Scout should know (a form's answers, an alert)
-      required:
-        - channel_id
-        - user_id
-        - request
+      channel_id:
+        type: slack#/types/channel_id
+        title: Channel
+        description: A public channel Scout is in
+        is_required: true
+      user_id:
+        type: slack#/types/user_id
+        title: Asked by
+        description: Who the request is from (usually "Person who used this workflow"); checked like any request
+        is_required: true
+      request:
+        type: string
+        title: Request
+        description: What Scout should do
+        is_required: true
+      about:
+        type: string
+        title: Context
+        description: Anything Scout should know (a form's answers, an alert)
     output_parameters:
-      properties:
-        thread_link:
-          type: string
-          title: Thread link
-          description: The Slack thread where Scout is working
-      required:
-        - thread_link
+      thread_link:
+        type: string
+        title: Thread link
+        description: The Slack thread where Scout is working
+        is_required: true
 settings:
   function_runtime: remote
   event_subscriptions:
