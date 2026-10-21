@@ -51,6 +51,8 @@ export type BridgeOptions = {
 	answered?: (conversationId: number, ts: string | undefined) => void;
 	/** The conversation whose answer in message `ts` asked for approval, if one did. */
 	approvalAskedIn?: (ts: string) => number | undefined;
+	/** What a run in this conversation since `since` cost, for its reply's footer (limits.ts). */
+	costNote?: (conversationId: number, since: number) => string;
 	/** The repository a thread starts in, from its channel and its first message. */
 	repoFor?: (channelName: string, text?: string) => string;
 	/** A channel's own model, if its profile names one; otherwise `agent`'s. */
@@ -434,6 +436,7 @@ export class Bridge {
 			threadTs: thread.threadTs,
 			...(thread.runTs === undefined ? {} : { resumeTs: thread.runTs }),
 			onRunMessage: (ts) => threads.runMessage(thread.key, ts),
+			...(this.#options.costNote === undefined ? {} : { cost: (since: number) => this.#options.costNote?.(thread.conversationId, since) }),
 			onRunEnd: (answer, ts) => {
 				this.#options.answered?.(thread.conversationId, ts);
 				threads.spoke(thread.key, "scout");

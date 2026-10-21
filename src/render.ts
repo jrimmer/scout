@@ -36,6 +36,7 @@ export class ThreadView {
 	readonly #onRunEnd: (answer: string | undefined, ts: string | undefined) => void;
 	readonly #now: () => number;
 	readonly #onRunMessage: (ts: string | undefined) => void;
+	readonly #cost: ((startedAt: number) => string | undefined) | undefined;
 	#resumeTs: string | undefined;
 	#run: Run | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
@@ -52,8 +53,11 @@ export class ThreadView {
 		resumeTs?: string;
 		/** A run's message was posted (its ts), or the run ended (undefined): remember it across restarts. */
 		onRunMessage?: (ts: string | undefined) => void;
+		/** What the run that started at `startedAt` cost, for its footer ("$0.03 · $12.40 of $100 this week"). */
+		cost?: (startedAt: number) => string | undefined;
 		now?: () => number;
 	}) {
+		this.#cost = options.cost;
 		this.#resumeTs = options.resumeTs;
 		this.#onRunMessage = options.onRunMessage ?? (() => {});
 		this.#surface = options.surface;
@@ -176,7 +180,8 @@ export class ThreadView {
 		if (this.#timer !== undefined) clearTimeout(this.#timer);
 		this.#timer = undefined;
 		this.#enqueue(async () => {
-			const message = finalMessage(run, this.#now());
+			const cost = this.#cost?.(run.startedAt);
+			const message = finalMessage(cost === undefined ? run : { ...run, cost }, this.#now());
 			if (run.ts === undefined) await this.#surface.post(this.#channel, this.#threadTs, message);
 			else await this.#surface.update(this.#channel, run.ts, message);
 			this.#onRunMessage(undefined);
@@ -203,7 +208,7 @@ export function progressMessage(run: Pick<Run, "startedAt" | "steps" | "note">, 
 }
 
 export function finalMessage(
-	run: Pick<Run, "startedAt" | "steps" | "text" | "error" | "stoppedBy" | "notes">,
+	run: Pick<Run, "startedAt" | "steps" | "text" | "error" | "stoppedBy" | "notes"> & { cost?: string },
 	now: number,
 ): ChatMessage {
 	const answer =
@@ -217,7 +222,7 @@ export function finalMessage(
 					? run.text
 					: `${run.text}\n\n_Then I ran into a problem and stopped: ${clip(run.error, 500)}_`;
 	const steps = run.steps.length;
-	const footer = `${steps} step${steps === 1 ? "" : "s"} · ${duration(now - run.startedAt)}`;
+	const footer = [`${steps} step${steps === 1 ? "" : "s"}`, duration(now - run.startedAt), ...(run.cost === undefined ? [] : [run.cost])].join(" · ");
 	return {
 		text: clip(answer, 3_000),
 		blocks: [

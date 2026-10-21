@@ -151,6 +151,7 @@ const bridge = new Bridge({
 	repoFor: scout.repoFor,
 	approve: (conversationId, user) => scout.approvals.grant(conversationId, user),
 	answered: (conversationId, ts) => scout.approvals.answered(conversationId, ts),
+	costNote: (conversationId, since) => scout.limits.costNote(conversationId, since),
 	approvalAskedIn: (ts) => scout.approvals.askedIn(ts),
 	audit,
 	admit: scout.admitter(async () => Promise.all(bridge.working().map(async (w) => ({ channel: await channelOf(w.conversationId) })))),

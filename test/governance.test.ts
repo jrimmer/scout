@@ -108,6 +108,23 @@ describe("limits", () => {
 		assert.equal(limits.admit("other", [{ channel: "a" }, { channel: "b" }, { channel: "c" }], now).ok, false);
 		ledger.close();
 	});
+
+	it("says what a run cost, against the week's budget that applies", () => {
+		const pricing = new Pricing();
+		const ledger = new SpendLedger(":memory:", pricing);
+		const now = Date.now();
+		ledger.responded({ conversationId: 1, channel: "team", message: message(12) }, now - 60_000);
+		ledger.responded({ conversationId: 2, channel: "team", message: message(0.034) }, now);
+		ledger.responded({ conversationId: 3, channel: "other", message: message(0.001) }, now);
+		const runStart = now - 1000;
+		const channelBudget = new Limits({ weekly: { perChannel: 100, total: 500 } }, ledger, pricing);
+		assert.equal(channelBudget.costNote(2, runStart, now), "$0.03 · $12.03 of $100 this week");
+		const overall = new Limits({ weekly: { total: 500 } }, ledger, pricing);
+		assert.equal(overall.costNote(3, runStart, now), "<$0.01 · $12.04 of $500 this week");
+		assert.equal(new Limits({}, ledger, pricing).costNote(2, runStart, now), "$0.03");
+		assert.equal(new Limits({}, ledger, pricing).costNote(9, runStart, now), "$0.00", "a run with no model calls cost nothing");
+		ledger.close();
+	});
 });
 
 describe("requester permissions", () => {

@@ -69,6 +69,14 @@ export class SpendLedger implements Observer {
 		return row.total;
 	}
 
+	/** Dollars one conversation has spent since `since`, and the channel it's in. */
+	spentOn(conversationId: number, since: number): { cost: number; channel?: string } {
+		const row = this.#db
+			.prepare("SELECT COALESCE(SUM(cost), 0) AS total, MAX(channel) AS channel FROM spend WHERE conversation_id = ? AND at >= ?")
+			.get(conversationId, since) as { total: number; channel: string | null };
+		return { cost: row.total, ...(row.channel === null ? {} : { channel: row.channel }) };
+	}
+
 	/** Spend by model since `since`. */
 	byModel(since: number): Record<string, number> {
 		return Object.fromEntries(
@@ -102,6 +110,21 @@ export class Limits implements Observer {
 		this.config = config;
 		this.#ledger = ledger;
 		this.#pricing = pricing;
+	}
+
+	/**
+	 * What a run cost, for its reply's footer, with the week's spending against the budget that applies: the channel's,
+	 * or else Scout's overall. "$0.03 · $12.40 of $100 this week", or "$0.03" with no budget.
+	 */
+	costNote(conversationId: number, since: number, now = Date.now()): string {
+		const { cost, channel } = this.#ledger.spentOn(conversationId, since);
+		const run = dollars(cost);
+		const week = weekStart(new Date(now));
+		const budget = channel === undefined ? undefined : this.budgetFor(channel);
+		const total = this.config.weekly?.total;
+		if (budget !== undefined) return `${run} · ${dollars(this.#ledger.spent(week, channel))} of $${budget} this week`;
+		if (total !== undefined) return `${run} · ${dollars(this.#ledger.spent(week))} of $${total} this week`;
+		return run;
 	}
 
 	/** The week's budget for a channel, if it has one. */
@@ -166,4 +189,8 @@ export function weekStart(date: Date): number {
 	monday.setHours(0, 0, 0, 0);
 	monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
 	return monday.getTime();
+}
+
+function dollars(amount: number): string {
+	return amount > 0 && amount < 0.01 ? "<$0.01" : `$${amount.toFixed(2)}`;
 }

@@ -27,6 +27,12 @@ describe("render", () => {
 		assert.doesNotMatch(JSON.stringify(finalMessage({ startedAt: 0, steps: [], text: "Done." }, 1000).blocks), /Noted/);
 	});
 
+	it("puts what the run cost in the footer, after its steps and time", () => {
+		const message = finalMessage({ startedAt: 0, steps: ["`bash npm test`"], text: "Done.", cost: "$0.03 · $12.40 of $100 this week" }, 130_000);
+		assert.match(JSON.stringify(message.blocks), /1 step · 2m 10s · \$0\.03 · \$12\.40 of \$100 this week/);
+		assert.match(JSON.stringify(finalMessage({ startedAt: 0, steps: [], text: "Done." }, 1000).blocks), /"0 steps · 1s"/);
+	});
+
 	it("keeps a stopped run's last steps when it had no words yet", () => {
 		const message = finalMessage({ startedAt: 0, steps: ["`bash npm test`", "`open_pull_request Fix it`"], stoppedBy: "ann" }, 1000);
 		assert.match(message.text, /Stopped by ann\. My last steps:\n• `bash npm test`\n• `open_pull_request Fix it`/);
