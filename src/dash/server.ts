@@ -64,12 +64,14 @@ export async function startDashboard(options: DashOptions): Promise<{ port: numb
 	const server = createServer((req, res) => {
 		const path = new URL(req.url ?? "/", "http://dash").pathname;
 		if (path === "/healthz") return reply(res, 200, "text/plain", "ok");
-		if (path === "/metrics" && options.metrics !== undefined) {
+		// For monitors: the metrics, and the dashboard's snapshot as JSON (what `npm run doctor` checks a running Scout by).
+		if ((path === "/metrics" || path === "/status.json") && options.metrics !== undefined) {
 			const { token, render } = options.metrics;
 			const allowed = token === undefined ? authorized(req, options.auth) : safeEqual(req.headers.authorization ?? "", `Bearer ${token}`);
 			if (!allowed) return reply(res, 401, "text/plain", "unauthorized");
-			void render().then(
-				(text) => reply(res, 200, "text/plain; version=0.0.4", text),
+			const answer = path === "/metrics" ? render().then((text) => ["text/plain; version=0.0.4", text]) : options.collector.collect().then((s) => ["application/json", JSON.stringify(s)]);
+			void answer.then(
+				([type, body]) => reply(res, 200, type!, body!),
 				(error: unknown) => reply(res, 500, "text/plain", String(error)),
 			);
 			return;

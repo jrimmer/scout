@@ -16,32 +16,39 @@ on and prints one line each, ✅, ⚠️ or ❌, with how to fix what isn't (`sr
 - every repository and the profile repository: reachable over git with Scout's SSH key, with their branch;
 - the directory: readable, with people in it;
 - the MCP servers: each connects, and how many tools they offer;
-- the dashboard: not open to the network without a login.
+- the dashboard: not open to the network without a login;
+- the running Scout, asked through its dashboard (`/status.json`, with `SCOUT_METRICS_TOKEN` when the dashboard has a login):
+  - that it answers;
+  - problems that need a person;
+  - runs working for over two hours;
+  - requests waiting long for their turn;
+  - a model slow to start answering (that's the gateway or its provider);
+  - sandboxes waiting for room;
+  - event-loop lag.
 
-It exits 1 when anything is broken, so it can gate a deploy.
+It exits 1 when anything is broken, so it can gate a deploy. Slowness is only ever a warning, with where it comes from. Two things fail:
+- Scout not answering;
+- a problem that has lasted an hour.
 
-## Is it working? The canary
+## Monitoring
 
-The doctor checks that things are reachable. The canary checks that Scout actually does the work. Once a night, `npm run canary` does what a person would:
-1. It asks Scout, in a channel kept for this, to add a line to `CANARY.md` and open a pull request.
-2. It waits for Scout's answer (5 minutes by default, `SCOUT_CANARY_REPLY_MINUTES`) and for the pull request (45 minutes, `SCOUT_CANARY_PULL_MINUTES`).
-3. It checks that the pull request changes that file.
-4. It closes the pull request and deletes its branch.
+Scout doesn't monitor itself from the inside, since a Scout that has stopped can't say so. Use whatever you already monitor with, pointed at these:
 
-**What it covers.** It runs outside Scout, as a person in Slack, so it notices anything that stops Scout from working: Slack, the model, sandboxes, the code host, or Scout not running at all. It uses the real model, so it costs one small request a night.
+| What | How | Alert when |
+|---|---|---|
+| Is it up? | `GET /healthz` on the dashboard's address answers `ok`, with no login | it doesn't, for 2 minutes |
+| Is it keeping up? | `npm run doctor` on a schedule (cron, a systemd timer, a CI job), every 15–60 minutes | it exits 1. The output says what's wrong and how to fix it |
+| Trends | Prometheus scraping `/metrics` (`SCOUT_METRICS_TOKEN` as a bearer token) | see below |
 
-**What it needs:**
-- **A Slack user for the canary**, with a user token (`SCOUT_CANARY_SLACK_TOKEN`). It needs the scopes `chat:write` and `channels:history`.
-  - Scout ignores messages from bots, so this has to be a person's account.
-  - That account must be allowed to ask Scout for work (see "Who may ask for work").
-- **A public channel** that works in a throwaway repository: `SCOUT_CANARY_CHANNEL` (its id) and `SCOUT_CANARY_REPO` (`owner/name`).
-- **Scout's Slack user id**, to mention it: `SCOUT_CANARY_SCOUT_USER`.
-- **A code host token** that can close pull requests and delete branches in that repository: `SCOUT_CANARY_CODEHOST_TOKEN`. Also set `SCOUT_CODEHOST` and `SCOUT_CODEHOST_API` as for Scout.
-- **Optionally, a monitor to tell:** `SCOUT_CANARY_REPORT_URL`, with `SCOUT_CANARY_REPORT_TOKEN` as a bearer token.
-  - The canary POSTs `success`, `error` and `duration` to it.
-  - That is exactly what a Gatus external endpoint takes, so a failed night alerts like any other check.
+**Useful alerts on `/metrics`:**
+- `scout_problems > 0` for 1 hour: something needs a person, and the dashboard says what.
+- `scout_runs_queued > 0` for 30 minutes: requests are waiting for their turn. Raise the run limits, or look at what's slow.
+- `scout_model_first_token_p90_seconds > 30`: the model is slow to start answering. That's the gateway or the provider, not Scout.
+- `scout_sandboxes_waiting > 0` for 15 minutes: the sandbox host is full.
+- `scout_event_loop_lag_p99_ms > 1000` for 10 minutes: Scout's process is overloaded.
+- `rate(scout_runs_total[1d]) == 0` on a working day: nothing finished, which is worth a look if people normally use Scout.
 
-**Running it.** `.forgejo/workflows/canary.yml` runs it each night on Scout's CI runner. It reads the tokens from the repository's secrets and the rest from its variables, and it does nothing until `SCOUT_CANARY_SLACK_TOKEN` is set. Anything else that runs a command on a schedule works too: it exits 1 when the check fails.
+**Before a release, and after a deploy**, ask Scout for something small in a channel that works in a throwaway repository and see a pull request come of it. Nothing else exercises the model, sandboxes and code host together the way a person's request does.
 
 ## How much Scout does on its own
 

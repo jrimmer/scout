@@ -112,8 +112,10 @@ npm run doctor   # every integration: ✅, ⚠️ or ❌, with how to fix it; ex
 npm start
 ```
 
+Before the first `npm start`, the doctor's last check ("Running") fails, because there's no Scout yet to ask. Run it again once Scout is up.
+
 Mention `@Scout` in one of its channels. Its startup log says which Slack features are on and why the rest aren't.
-In Slack, `/scout doctor` runs the same checks.
+In Slack, `/scout doctor` runs the same checks. [operations.md](operations.md#monitoring) says how to monitor Scout once it runs.
 
 To run it as a service, a systemd unit with `WorkingDirectory=` this checkout, `ExecStart=node --env-file=.env
 src/main.ts`, and its own user is enough; [operations.md](operations.md) covers backups, secrets, telemetry and the

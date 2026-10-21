@@ -6,6 +6,7 @@ import type { CodeHost } from "./codehost.ts";
 import type { Config } from "./config.ts";
 import { parseAutheliaUsers } from "./directory.ts";
 import type { GatewayConfig } from "./gateway.ts";
+import type { Snapshot } from "./dash/collect.ts";
 
 const run = promisify(execFile);
 
@@ -123,7 +124,14 @@ export function checkDashboard(dash: Config["dash"]): Check {
 /** Everything, in order; `mcp` connects the configured servers and returns how many tools they offer. */
 export async function doctor(
 	config: Config,
-	deps: { fetch?: typeof fetch; git?: (args: string[]) => Promise<string>; mcp?: () => Promise<number>; directory?: () => Promise<string> } = {},
+	deps: {
+		fetch?: typeof fetch;
+		git?: (args: string[]) => Promise<string>;
+		mcp?: () => Promise<number>;
+		directory?: () => Promise<string>;
+		/** What the running Scout says about itself; an error when it can't be asked. */
+		running?: () => Promise<Running>;
+	} = {},
 ): Promise<Check[]> {
 	const doFetch = deps.fetch ?? fetch;
 	const checks: Check[] = [
@@ -146,7 +154,82 @@ export async function doctor(
 		}
 	}
 	checks.push(checkDashboard(config.dash));
+	if (deps.running !== undefined) checks.push(...checkRunning(await deps.running().catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))))));
 	return checks;
+}
+
+/** What a running Scout reports about itself: the dashboard's snapshot (dash/collect.ts), or the part of it these checks read. */
+export type Running = Pick<Snapshot, "now" | "startedAt" | "alerts" | "working" | "capacity">;
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+
+/**
+ * Is the running Scout keeping up? Fails only on what needs a person now: Scout not answering, or a problem that has
+ * lasted an hour. Slowness is a warning, with where it comes from. So a scheduled `npm run doctor` is a monitor.
+ */
+export function checkRunning(running: Running | Error): Check[] {
+	if (running instanceof Error) {
+		return [{ name: "Running", status: "fail", detail: `Scout isn't answering: ${firstLine(running)}`, fix: "Before the first start, that's expected. Otherwise: is the service running? Check its status and its log (systemctl status scout; journalctl -u scout)." }];
+	}
+	const { now, capacity } = running;
+	const checks: Check[] = [
+		{
+			name: "Running",
+			status: "ok",
+			detail: `up ${duration(now - running.startedAt)}, ${running.working.length} working${capacity === undefined || capacity.queued === 0 ? "" : `, ${capacity.queued} waiting their turn`}`,
+		},
+	];
+	for (const p of running.alerts) {
+		const lasted = now - p.since;
+		checks.push({ name: "Problem", status: lasted >= HOUR ? "fail" : "warn", detail: `${p.message} (for ${duration(lasted)})`, fix: "The dashboard and Scout's log have the details." });
+	}
+	for (const w of running.working) {
+		if (now - w.startedAt < 2 * HOUR) continue;
+		checks.push({
+			name: "Long run",
+			status: "warn",
+			detail: `a thread in #${w.channel} has been working for ${duration(now - w.startedAt)} (${w.steps} steps${w.lastStep === undefined ? "" : `, last: ${w.lastStep}`})`,
+			fix: "Look at the thread: Scout says there what it's waiting on, and 🛑 stops it.",
+		});
+	}
+	if (capacity !== undefined) {
+		const runs = capacity.waits.find((w) => w.kind === "run");
+		if (runs !== undefined && runs.count > 0 && runs.p90 >= 15 * MINUTE) {
+			checks.push({ name: "Waiting", status: "warn", detail: `requests waited up to ${duration(runs.p90)} for their turn in the last day (90th percentile)`, fix: "Raise the run limits (SCOUT_MAX_RUNS) if the sandbox host and model allow it; see docs/operations.md, Capacity." });
+		}
+		const first = capacity.firstToken;
+		if (first !== undefined && first.count >= 20 && first.p90 >= 30_000) {
+			checks.push({ name: "Model", status: "warn", detail: `slow to start answering: half of ${first.count} calls in the last day waited over ${duration(first.p50)}, the slowest tenth over ${duration(first.p90)}`, fix: "That's the model gateway or its provider, not Scout: check the gateway's queue and the provider's status, or try a model that starts sooner." });
+		}
+		if (capacity.sandboxWaiting > 0) {
+			checks.push({ name: "Sandboxes", status: "warn", detail: `${capacity.sandboxWaiting} waiting for room on the sandbox host`, fix: "The sandbox host is full: free room on it, or lower Scout's run limits." });
+		}
+		if (capacity.loopLag.p99 >= 1000) {
+			checks.push({ name: "Event loop", status: "warn", detail: `lagging ${Math.round(capacity.loopLag.p99)} ms (99th percentile over the last minute)`, fix: "Scout's process is overloaded: fewer runs at once, or look for a busy loop in the log." });
+		}
+	}
+	return checks;
+}
+
+function duration(ms: number): string {
+	const m = Math.round(ms / MINUTE);
+	if (ms < MINUTE) return `${Math.round(ms / 1000)}s`;
+	return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${m % 60 === 0 ? "" : String(m % 60).padStart(2, "0")}`;
+}
+
+/** The running Scout's snapshot from its dashboard (`/status.json`), with the metrics token. */
+export async function fetchRunning(dash: Config["dash"], token: string | undefined, doFetch: typeof fetch = fetch): Promise<Running> {
+	if (dash === undefined) throw new Error("its dashboard is off (SCOUT_DASH_ADDR), so there's nothing to ask");
+	if (token === undefined && dash.auth !== undefined) throw new Error("set SCOUT_METRICS_TOKEN, so the doctor and monitors can read /status.json behind the dashboard's login");
+	const { host, port } = /^(?<host>.*):(?<port>\d+)$/.exec(dash.addr)?.groups ?? { host: "127.0.0.1", port: "8893" };
+	const reach = host === "0.0.0.0" || host === "" || host === "::" || host === "[::]" ? "127.0.0.1" : host;
+	const response = await doFetch(`http://${reach}:${port}/status.json`, {
+		headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
+		signal: AbortSignal.timeout(10_000),
+	});
+	if (!response.ok) throw new Error(`its dashboard answered ${response.status}`);
+	return (await response.json()) as Running;
 }
 
 async function gitOut(args: string[]): Promise<string> {

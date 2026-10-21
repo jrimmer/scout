@@ -425,6 +425,7 @@ async function slashCommand(c: { user: string; channel: string; channelName: str
 				await doctor(config, {
 					...(mcpFile === undefined ? {} : { mcp: () => countMcpTools(mcpFile) }),
 					...(directory === undefined ? {} : { directory: sourceReader(directory.source, config.codeHost, fetch) }),
+					running: () => collector.collect(),
 				}),
 			);
 		}
@@ -1156,6 +1157,29 @@ process.on("SIGHUP", async () => {
 	}
 });
 
+// What Scout is doing, as the dashboard shows it; `/scout doctor` checks the running Scout by it too.
+const collector = new Collector({
+	host: hostname(),
+	model: `${config.model.provider}/${config.model.modelId}`,
+	startedAt,
+	reflectHour: config.reflect.hour,
+	profileRepo: config.profileRepo !== undefined,
+	threads,
+	pulls,
+	memory,
+	working: () => bridge.working(),
+	channelOf,
+	spend: async () => scout.spend.byModel(0),
+	week: () =>
+		scout.spend.byChannel(weekStart(new Date())).map((c) => {
+			const budget = scout.limits.budgetFor(c.channel);
+			return { ...c, ...(budget === undefined ? {} : { budget }) };
+		}),
+	alerts: () => health.list(),
+	schedules: () => scout.schedules.all(),
+	capacity: () => capacityNow(),
+});
+
 // The dashboard: read-only, on its own address (loopback unless it has a password).
 const dashboard =
 	config.dash === undefined
@@ -1163,27 +1187,7 @@ const dashboard =
 		: await startDashboard({
 				addr: config.dash.addr,
 				...(config.dash.auth === undefined ? {} : { auth: config.dash.auth }),
-				collector: new Collector({
-					host: hostname(),
-					model: `${config.model.provider}/${config.model.modelId}`,
-					startedAt,
-					reflectHour: config.reflect.hour,
-					profileRepo: config.profileRepo !== undefined,
-					threads,
-					pulls,
-					memory,
-					working: () => bridge.working(),
-					channelOf,
-					spend: async () => scout.spend.byModel(0),
-					week: () =>
-						scout.spend.byChannel(weekStart(new Date())).map((c) => {
-							const budget = scout.limits.budgetFor(c.channel);
-							return { ...c, ...(budget === undefined ? {} : { budget }) };
-						}),
-					alerts: () => health.list(),
-					schedules: () => scout.schedules.all(),
-					capacity: () => capacityNow(),
-				}),
+				collector,
 				metrics: {
 					...(config.governance.metricsToken === undefined ? {} : { token: config.governance.metricsToken }),
 					render: async () => {

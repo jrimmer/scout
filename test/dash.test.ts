@@ -156,4 +156,21 @@ describe("dashboard server", () => {
 		assert.ok(rows.length < 5, "and not the whole grid");
 		await dash.close();
 	});
+
+	it("gives monitors the snapshot as JSON with the metrics token, and nobody else", async () => {
+		const collector = { collect: async () => busy } as unknown as Collector;
+		const dash = await startDashboard({
+			addr: "127.0.0.1:0",
+			auth: { user: "ops", passwordHash: hashPassword("pw") },
+			collector,
+			metrics: { token: "tok", render: async () => "scout_runs_total 1\n" },
+		});
+		assert.equal((await get(dash.port, "/status.json")).status, 401);
+		assert.equal((await get(dash.port, "/status.json", { authorization: "Bearer nope" })).status, 401);
+		const status = await get(dash.port, "/status.json", { authorization: "Bearer tok" });
+		assert.equal(status.status, 200);
+		assert.equal((JSON.parse(status.body) as { threadsToday: number }).threadsToday, busy.threadsToday);
+		assert.equal((await get(dash.port, "/metrics", { authorization: "Bearer tok" })).body, "scout_runs_total 1\n");
+		await dash.close();
+	});
 });

@@ -9,7 +9,6 @@
     "job": "node --env-file-if-exists=.env src/job.ts",
     "eval": "node --env-file-if-exists=.env src/eval-cli.ts",
     "doctor": "node --env-file-if-exists=.env src/doctor-cli.ts",
-    "canary": "node --env-file-if-exists=.env src/canary-cli.ts",
     "dash-password": "node src/dash/server.ts",
     "audit": "node --env-file-if-exists=.env src/audit.ts",
     "pi": "scripts/pi.sh"

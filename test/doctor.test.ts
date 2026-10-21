@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { checkCodeHost, checkDashboard, checkDirectory, checkGateway, checkGitRemote, checkSlack, checkSpoond, formatChecks } from "../src/doctor.ts";
+import { checkCodeHost, checkDashboard, checkDirectory, checkGateway, checkGitRemote, checkRunning, checkSlack, checkSpoond, fetchRunning, formatChecks, type Running } from "../src/doctor.ts";
 
 /** A fetch that answers by URL: a status, a JSON body, and headers. */
 function answering(routes: Record<string, { status?: number; body?: unknown; headers?: Record<string, string> } | Error>): typeof fetch {
@@ -66,5 +66,45 @@ describe("doctor", () => {
 			]),
 			"✅ Slack: fine\n❌ spoond: down\n    Start it.",
 		);
+	});
+
+	const HOUR = 3_600_000;
+	const capacity = { active: 1, maxRuns: 8, queued: 0, modelInFlight: 0, modelWaiting: 0, modelMax: 6, sandboxes: 1, sandboxWaiting: 0, progressWaiting: 0, loopLag: { mean: 1, p99: 5 }, waits: [] };
+	const running = (over: Partial<Running> = {}): Running => ({ now: 10 * HOUR, startedAt: 7 * HOUR, alerts: [], working: [], capacity, ...over });
+
+	it("checks the running Scout: up and keeping up is one line", () => {
+		assert.deepEqual(checkRunning(running({ working: [{ channel: "web", startedAt: 9 * HOUR, steps: 3 }] })), [{ name: "Running", status: "ok", detail: "up 3h, 1 working" }]);
+	});
+
+	it("fails only on what needs a person now: Scout not answering, or a problem that has lasted an hour", () => {
+		const down = checkRunning(new Error("connect ECONNREFUSED 127.0.0.1:8893"));
+		assert.deepEqual([down[0]!.status, down[0]!.detail], ["fail", "Scout isn't answering: connect ECONNREFUSED 127.0.0.1:8893"]);
+		const problems = checkRunning(running({ alerts: [{ message: "reflection failed", since: 8 * HOUR }, { message: "Gatus unreachable", since: 9.5 * HOUR }] })).filter((c) => c.name === "Problem");
+		assert.deepEqual(problems.map((c) => [c.status, c.detail]), [["fail", "reflection failed (for 2h)"], ["warn", "Gatus unreachable (for 30m)"]]);
+	});
+
+	it("warns about slowness, and says where it comes from", () => {
+		const slow = checkRunning(running({
+			working: [{ channel: "web", startedAt: 7.5 * HOUR, steps: 40, lastStep: "bash" }],
+			capacity: { ...capacity, queued: 2, sandboxWaiting: 1, loopLag: { mean: 300, p99: 1500 }, waits: [{ kind: "run", count: 5, p50: 60_000, p90: 20 * 60_000 }], firstToken: { count: 40, p50: 22_000, p90: 72_000 } },
+		}));
+		assert.deepEqual(slow.map((c) => [c.name, c.status]), [["Running", "ok"], ["Long run", "warn"], ["Waiting", "warn"], ["Model", "warn"], ["Sandboxes", "warn"], ["Event loop", "warn"]]);
+		assert.equal(slow[0]!.detail, "up 3h, 1 working, 2 waiting their turn");
+		assert.equal(slow[1]!.detail, "a thread in #web has been working for 2h30 (40 steps, last: bash)");
+		assert.equal(slow[3]!.detail, "slow to start answering: half of 40 calls in the last day waited over 22s, the slowest tenth over 1m");
+		assert.match(slow[3]!.fix ?? "", /not Scout/);
+		assert.ok(!checkRunning(running({ capacity: { ...capacity, firstToken: { count: 5, p50: 60_000, p90: 90_000 } } })).some((c) => c.name === "Model"), "a handful of slow calls isn't a trend");
+	});
+
+	it("asks the running Scout through its dashboard, with the metrics token", async () => {
+		let asked: { url: string; auth: string | null } | undefined;
+		const doFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+			asked = { url: String(url), auth: new Headers(init?.headers).get("authorization") };
+			return Response.json(running());
+		}) as typeof fetch;
+		assert.equal((await fetchRunning({ addr: "0.0.0.0:8893", auth: { user: "ops", passwordHash: "x" } }, "tok", doFetch)).startedAt, 7 * HOUR);
+		assert.deepEqual(asked, { url: "http://127.0.0.1:8893/status.json", auth: "Bearer tok" });
+		await assert.rejects(fetchRunning(undefined, "tok", doFetch), /dashboard is off/);
+		await assert.rejects(fetchRunning({ addr: "0.0.0.0:8893", auth: { user: "ops", passwordHash: "x" } }, undefined, doFetch), /SCOUT_METRICS_TOKEN/);
 	});
 });

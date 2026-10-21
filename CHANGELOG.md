@@ -15,9 +15,20 @@ A change to any of these that needs people to act is a major version. Everything
 - **Sandboxes:**
   - While a command runs, Scout checks every minute that the sandbox still answers. After five minutes without an answer it stops waiting and says the sandbox has probably crashed. Until now, a thread could wait silently for up to a day.
   - Scout reads spoond's own report of a command that never started (spoond 3.12.1), as well as checking for itself.
-- **The canary:** `npm run canary` asks the running Scout for a small change in Slack, as a person would, checks that a pull request comes of it, and cleans up. It can report to a Gatus external endpoint.
-  - `.forgejo/workflows/canary.yml` runs it nightly once its secrets are set.
-  - The settings are in `.env.example`, and in `docs/operations.md` under "The canary".
+- **The doctor checks the running Scout:**
+  - that it answers;
+  - problems lasting an hour;
+  - long runs;
+  - long waits for a turn;
+  - a model slow to start answering;
+  - sandboxes waiting for room;
+  - event-loop lag.
+
+  It reads the dashboard's snapshot (`/status.json`, with `SCOUT_METRICS_TOKEN`). Slowness is a warning, with where it comes from. Only Scout not answering, or a problem lasting an hour, fails. So a scheduled `npm run doctor` works as a monitor.
+- **Monitoring:** `docs/operations.md` recommends how to monitor Scout with the tools you already have: `/healthz`, a scheduled doctor, and alerts on `/metrics`.
+- **Tests at the edges:**
+  - `src/slack.ts` against recorded Socket Mode payloads and a stand-in Slack Web API, covering every handler;
+  - an end-to-end test from a Slack mention to a pull request on a stand-in Forgejo.
 - **Continuous integration:** on every push and pull request, on Scout's own runner (`.forgejo/workflows/ci.yml`): type checks, the full test suite, and the Docker sandbox tests.
 - **Releases:** this changelog, and the release checklist in `docs/releasing.md`.
 - **Settings:** `.env.example` now lists every setting Scout reads, and a test keeps it so. `SCOUT_GATEWAY_OPENAI_API` was missing.
