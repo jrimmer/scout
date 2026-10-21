@@ -20,6 +20,29 @@ on and prints one line each, ✅, ⚠️ or ❌, with how to fix what isn't (`sr
 
 It exits 1 when anything is broken, so it can gate a deploy.
 
+## Is it working? The canary
+
+The doctor checks that things are reachable. The canary checks that Scout actually does the work. Once a night, `npm run canary` does what a person would:
+1. It asks Scout, in a channel kept for this, to add a line to `CANARY.md` and open a pull request.
+2. It waits for Scout's answer (5 minutes by default, `SCOUT_CANARY_REPLY_MINUTES`) and for the pull request (45 minutes, `SCOUT_CANARY_PULL_MINUTES`).
+3. It checks that the pull request changes that file.
+4. It closes the pull request and deletes its branch.
+
+**What it covers.** It runs outside Scout, as a person in Slack, so it notices anything that stops Scout from working: Slack, the model, sandboxes, the code host, or Scout not running at all. It uses the real model, so it costs one small request a night.
+
+**What it needs:**
+- **A Slack user for the canary**, with a user token (`SCOUT_CANARY_SLACK_TOKEN`). It needs the scopes `chat:write` and `channels:history`.
+  - Scout ignores messages from bots, so this has to be a person's account.
+  - That account must be allowed to ask Scout for work (see "Who may ask for work").
+- **A public channel** that works in a throwaway repository: `SCOUT_CANARY_CHANNEL` (its id) and `SCOUT_CANARY_REPO` (`owner/name`).
+- **Scout's Slack user id**, to mention it: `SCOUT_CANARY_SCOUT_USER`.
+- **A code host token** that can close pull requests and delete branches in that repository: `SCOUT_CANARY_CODEHOST_TOKEN`. Also set `SCOUT_CODEHOST` and `SCOUT_CODEHOST_API` as for Scout.
+- **Optionally, a monitor to tell:** `SCOUT_CANARY_REPORT_URL`, with `SCOUT_CANARY_REPORT_TOKEN` as a bearer token.
+  - The canary POSTs `success`, `error` and `duration` to it.
+  - That is exactly what a Gatus external endpoint takes, so a failed night alerts like any other check.
+
+**Running it.** `.forgejo/workflows/canary.yml` runs it each night on Scout's CI runner. It reads the tokens from the repository's secrets and the rest from its variables, and it does nothing until `SCOUT_CANARY_SLACK_TOKEN` is set. Anything else that runs a command on a schedule works too: it exits 1 when the check fails.
+
 ## How much Scout does on its own
 
 `SCOUT_INITIATIVE` (`asked`, `own`, or `team`, the default) sets how much Scout does without being asked
