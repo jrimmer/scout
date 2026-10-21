@@ -551,7 +551,8 @@ export async function openScout(options: ScoutOptions) {
 }
 
 /** Where the directory reads its file: a path, or a URL (with the code host's token when it's the code host's). */
-function sourceReader(source: string, codeHost: Config["codeHost"], doFetch: typeof fetch): () => Promise<string> {
+/** Reads the directory's users file: a path, or a URL (with the code host's token when it's on the code host). */
+export function sourceReader(source: string, codeHost: Config["codeHost"], doFetch: typeof fetch): () => Promise<string> {
 	if (!/^https?:\/\//.test(source)) return async () => readFileSync(source, "utf8");
 	const sameHost = new URL(source).origin === new URL(codeHost.apiUrl).origin;
 	return async () => {

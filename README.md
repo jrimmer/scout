@@ -45,6 +45,7 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
   - Schedules: "every Monday at 9, check for dependency updates". Each run is a new thread in the channel, and
     anyone there can list, change, pause or remove the channel's schedules by asking.
   - `npm run job -- "…"` for one-off work.
+- **`npm run doctor`** (or `/scout doctor`) checks every integration and says how to fix what's wrong.
 
 ## Run it
 

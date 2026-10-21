@@ -7,6 +7,7 @@
     "test": "node --test 'test/**/*.test.ts'",
     "check": "tsc --noEmit",
     "job": "node --env-file-if-exists=.env src/job.ts",
+    "doctor": "node --env-file-if-exists=.env src/doctor-cli.ts",
     "dash-password": "node src/dash/server.ts",
     "audit": "node --env-file-if-exists=.env src/audit.ts",
     "pi": "scripts/pi.sh"

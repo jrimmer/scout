@@ -28,7 +28,8 @@ import { resolveSecrets, rotate } from "./secrets.ts";
 import { pullProfile } from "./profile.ts";
 import { weekOf } from "./pulls.ts";
 import { localDay } from "./reflect.ts";
-import { openScout } from "./scout.ts";
+import { openScout, sourceReader } from "./scout.ts";
+import { countMcpTools, doctor, formatChecks } from "./doctor.ts";
 import { APPROVE_BUTTON, DECLINE_BUTTON, EGRESS_ALLOW, EGRESS_DECLINE, Slack } from "./slack.ts";
 import { threadKey } from "./threads.ts";
 
@@ -361,6 +362,16 @@ async function slashCommand(c: { user: string; channel: string; channelName: str
 	switch (word.toLowerCase()) {
 		case "status":
 			return describeNow(c.channelName);
+		case "doctor": {
+			const mcpFile = config.mcpFile;
+			const directory = config.governance.directory;
+			return formatChecks(
+				await doctor(config, {
+					...(mcpFile === undefined ? {} : { mcp: () => countMcpTools(mcpFile) }),
+					...(directory === undefined ? {} : { directory: sourceReader(directory.source, config.codeHost, fetch) }),
+				}),
+			);
+		}
 		case "schedules": {
 			const here = scout.schedules.forChannel(c.channelName);
 			return here.length === 0 ? "No schedules in this channel. Ask me in a thread for recurring work." : here.map((s) => `#${s.id}: ${s.when}, ${s.task}${s.paused ? " (paused)" : ""}`).join("\n");
@@ -377,7 +388,7 @@ async function slashCommand(c: { user: string; channel: string; channelName: str
 			return `On it${link === undefined ? "." : `: <${link}|the thread>.`}`;
 		}
 		default:
-			return ["`/scout status`: what I'm doing right now", "`/scout schedules`: this channel's schedules", "`/scout waiting`: what's waiting on you", "`/scout ask …`: start a thread with a request"].join("\n");
+			return ["`/scout status`: what I'm doing right now", "`/scout doctor`: whether everything I depend on is set up right", "`/scout schedules`: this channel's schedules", "`/scout waiting`: what's waiting on you", "`/scout ask …`: start a thread with a request"].join("\n");
 	}
 }
 

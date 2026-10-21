@@ -2,6 +2,24 @@
 
 Everything here is optional beyond the basics in the README; `.env.example` lists every setting.
 
+## Is everything set up right? `npm run doctor`
+
+`npm run doctor` (with the same `.env` as the service), or `/scout doctor` in Slack, checks everything Scout depends
+on and prints one line each, ✅, ⚠️ or ❌, with how to fix what isn't (`src/doctor.ts`):
+
+- the settings load;
+- Slack: the token, the scopes Scout can't do without, and which features are off for want of others;
+- the code host: the token, and its scopes (on Forgejo, that it can read notifications; on GitHub, `repo` and
+  `notifications` for classic tokens);
+- spoond, when it's the sandbox driver: reachable, and the token accepted;
+- the model gateway: answering, and serving the configured models;
+- every repository and the profile repository: reachable over git with Scout's SSH key, with their branch;
+- the directory: readable, with people in it;
+- the MCP servers: each connects, and how many tools they offer;
+- the dashboard: not open to the network without a login.
+
+It exits 1 when anything is broken, so it can gate a deploy.
+
 ## Sandboxes
 
 Each thread works in its own sandbox. `SCOUT_SANDBOX_DRIVER` picks where:
