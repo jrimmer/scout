@@ -26,7 +26,8 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
 - **Five ways in:**
   - Slack threads.
   - The code host (Forgejo or GitHub): assign Scout an issue, or mention `@scout` in an issue, a pull request or a
-    comment. It works in a thread in the repository's channel and answers on the issue too. Comments on its own pull
+    comment. It works in a thread in the repository's channel and answers on the issue too (in full only where the
+    repository is private). Comments on its own pull
     requests go back to the thread that opened them.
   - Pull requests that ask Scout for a review: it reviews like a colleague, and says so in the repository's channel.
   - Schedules: "every Monday at 9, check for dependency updates". Each run is a new thread in the channel, and

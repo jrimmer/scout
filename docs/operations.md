@@ -102,7 +102,9 @@ A request about an issue or pull request that already has a thread goes to that 
 that opened it), quoted there so people in Slack can see it. Otherwise Scout starts a thread in the repository's
 channel (or the alert channel, when the repository has none) and comments on the issue with a link to it. For
 someone else's pull request in the same repository, the thread's changes go into that pull request's branch. Either
-way, Scout's answer goes back on the issue or pull request as a comment.
+way, Scout's answer goes back on the issue or pull request as a comment: in full on a private repository, but on
+a public one (or one whose visibility the code host won't say) only a pointer to the Slack thread and any pull
+request it opened, since an answer can draw on anything said in Slack.
 
 A reflection's proposal gets a thread too: its announcement in the home channel. Comments on the pull request, and
 requests in that thread, go to the reflection that wrote it, which revises the same pull request. Revisions don't

@@ -16,6 +16,8 @@ function fakeHost(kind: "forgejo" | "github") {
 		read: [] as string[],
 		posted: [] as string[],
 		auth: new Set<string>(),
+		privateRepos: new Set<string>(["o/r"]),
+		publicRepos: new Set<string>(),
 	};
 	const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 		const url = new URL(String(input));
@@ -23,6 +25,8 @@ function fakeHost(kind: "forgejo" | "github") {
 		const method = init?.method ?? "GET";
 		state.auth.add(String((init?.headers as Record<string, string>)?.authorization).split(" ")[0]!);
 		if (path === "/user") return Response.json({ login: "scout" });
+		const repo = /^\/repos\/([^/]+\/[^/]+)$/.exec(path);
+		if (repo) return state.publicRepos.has(repo[1]!) ? Response.json({ private: false }) : state.privateRepos.has(repo[1]!) ? Response.json({ private: true }) : new Response("no", { status: 500 });
 		if (path === "/notifications" && method === "GET") {
 			return Response.json(
 				state.notices.map((n) => ({
@@ -157,5 +161,19 @@ describe("work from the code host", () => {
 		await inbox.answered(40, "Fixed in #13.", "https://slack/thread");
 		await inbox.answered(40, "Something later.", "https://slack/thread");
 		assert.deepEqual(host.state.posted, ["o/r#12: Fixed in #13.\n\n---\nFrom the thread: https://slack/thread"]);
+	});
+
+	it("on a public repository, or one whose visibility it can't tell, points to the thread instead of copying the answer", async () => {
+		const host = fakeHost("github");
+		host.state.publicRepos.add("pub/lib");
+		const { inbox } = inboxOn(host);
+		inbox.replyTo(50, "pub/lib", 3);
+		await inbox.answered(50, "ann said in Slack the staging password rotates on Fridays. Opened https://host/pub/lib/pull/4 and https://host/pub/lib/pull/4.", "https://slack/t");
+		inbox.replyTo(51, "unknown/repo", 1);
+		await inbox.answered(51, "Something from the thread.", undefined);
+		assert.deepEqual(host.state.posted, [
+			"pub/lib#3: I've answered in the Slack thread: https://slack/t\n\nPull request: https://host/pub/lib/pull/4",
+			"unknown/repo#1: I've answered in Slack.",
+		]);
 	});
 });

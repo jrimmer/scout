@@ -44,6 +44,8 @@ export interface Forge {
 	comment(slug: string, number: number, body: string): Promise<void>;
 	/** A pull request's branch, when it's in the repository itself (not a fork). */
 	headBranch(slug: string, number: number): Promise<string | undefined>;
+	/** Whether anyone can read the repository. When the code host won't say, assume so. */
+	isPublic(slug: string): Promise<boolean>;
 }
 
 /** Where Forgejo and GitHub differ. */
@@ -174,6 +176,11 @@ class RestForge implements Forge {
 	async headBranch(slug: string, number: number): Promise<string | undefined> {
 		const pull = (await this.#api("GET", `/repos/${slug}/pulls/${number}`)) as { head?: { ref?: string; repo?: { full_name?: string } | null } };
 		return pull.head?.repo?.full_name?.toLowerCase() === slug.toLowerCase() ? pull.head.ref : undefined;
+	}
+
+	async isPublic(slug: string): Promise<boolean> {
+		const repo = (await this.#api("GET", `/repos/${slug}`).catch(() => undefined)) as { private?: boolean } | undefined;
+		return repo?.private !== true;
 	}
 
 	async #api(method: string, path: string, body?: unknown): Promise<unknown> {
@@ -323,12 +330,25 @@ export class Inbox {
 		this.#db.prepare("INSERT OR REPLACE INTO forge_replies (conversation_id, slug, number) VALUES (?, ?, ?)").run(conversationId, slug, number);
 	}
 
-	/** A run's answer: if someone asked on the code host, it goes back there too. */
+	/**
+	 * A run's answer: if someone asked on the code host, it goes back there too. In full on a private repository; on a
+	 * public one only a pointer (the thread, and any pull request it opened), since the answer can draw on anything said
+	 * in Slack, which isn't for everyone.
+	 */
 	async answered(conversationId: number, answer: string | undefined, link: string | undefined): Promise<void> {
 		const row = this.#db.prepare("SELECT slug, number FROM forge_replies WHERE conversation_id = ?").get(conversationId) as { slug: string; number: number } | undefined;
 		if (row === undefined || answer === undefined) return;
 		this.#db.prepare("DELETE FROM forge_replies WHERE conversation_id = ?").run(conversationId);
-		await this.#forge.comment(row.slug, row.number, `${answer}${link === undefined ? "" : `\n\n---\nFrom the thread: ${link}`}`);
+		if (!(await this.#forge.isPublic(row.slug))) {
+			await this.#forge.comment(row.slug, row.number, `${answer}${link === undefined ? "" : `\n\n---\nFrom the thread: ${link}`}`);
+			return;
+		}
+		const pulls = [...new Set(answer.match(/https?:\/\/\S+?\/pulls?\/\d+/g) ?? [])];
+		const lines = [
+			link === undefined ? "I've answered in Slack." : `I've answered in the Slack thread: ${link}`,
+			...(pulls.length === 0 ? [] : [`Pull request${pulls.length === 1 ? "" : "s"}: ${pulls.join(", ")}`]),
+		];
+		await this.#forge.comment(row.slug, row.number, lines.join("\n\n"));
 	}
 
 	close(): void {
