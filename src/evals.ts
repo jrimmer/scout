@@ -41,7 +41,13 @@ export type EvalTask = {
 
 export type Side = "candidate" | "baseline";
 
-export type RunResult = { task: string; side: Side; pass: boolean; why: string; cost: number; ms: number; steps: number };
+/**
+ * Where a run's time went: waiting on the model, in tools (the first call apart, since it makes the sandbox and the
+ * clone), retrying the model, and checking afterwards (not part of `ms`).
+ */
+export type Timing = { model: number; tools: number; firstTool: number; retries: number; check: number };
+
+export type RunResult = { task: string; side: Side; pass: boolean; why: string; cost: number; ms: number; steps: number; timing?: Timing };
 
 /** The tasks in `dir` (`*.json`), checked; a file that isn't a task is an error that names it. */
 export function loadTasks(dir: string): EvalTask[] {
@@ -145,6 +151,21 @@ export function report(results: readonly RunResult[], sides: readonly Side[]): s
 		const worse = tasks.filter((t) => rate(t, "candidate") < rate(t, "baseline"));
 		lines.push("", `Better on: ${better.length === 0 ? "nothing" : better.join(", ")}. Worse on: ${worse.length === 0 ? "nothing" : worse.join(", ")}.`);
 	}
+	const timed = results.filter((r) => r.timing !== undefined);
+	if (timed.length > 0) {
+		const part = (f: (t: Timing) => number) => avg(timed, (r) => f(r.timing!));
+		const total = avg(timed, (r) => r.ms);
+		const model = part((t) => t.model);
+		const first = part((t) => t.firstTool);
+		const tools = part((t) => t.tools);
+		const retries = part((t) => t.retries);
+		const other = Math.max(0, total - model - first - tools - retries);
+		const share = (ms: number) => (total === 0 ? "" : ` (${Math.round((ms / total) * 100)}%)`);
+		lines.push(
+			"",
+			`Where a run's ${time(total)} went, on average: the model ${time(model)}${share(model)}, the first tool call (making the sandbox and the clone) ${time(first)}${share(first)}, other tools ${time(tools)}${share(tools)}, retrying the model ${time(retries)}${share(retries)}, the rest ${time(other)}${share(other)}. Checking afterwards took ${time(part((t) => t.check))} more. ${Math.round(avg(timed, (r) => r.steps))} steps on average.`,
+		);
+	}
 	const failures = results.filter((r) => !r.pass);
 	if (failures.length > 0) {
 		lines.push("", "<details><summary>Why runs failed</summary>", "", ...failures.map((r) => `- ${r.task} (${label(r.side).toLowerCase()}): ${r.why}`), "", "</details>");
@@ -243,8 +264,33 @@ export async function runTask(scout: Scout, task: EvalTask, repoName: string, si
 	const events = await watchEvents(scout.harness, conversation.id as ConversationId, context);
 	let answer = "";
 	let steps = 0;
+	const timing: Timing = { model: 0, tools: 0, firstTool: 0, retries: 0, check: 0 };
+	let modelFrom: number | undefined;
+	let retryFrom: number | undefined;
+	const toolFrom = new Map<string, { at: number; first: boolean }>();
 	events.start(async (batch) => {
+		const now = Date.now();
 		for (const event of batch) {
+			// Times are when the events arrive, which is close enough to see where minutes go.
+			if (event.type === "message_start") modelFrom ??= now;
+			if (event.type === "message_end" && modelFrom !== undefined) {
+				timing.model += now - modelFrom;
+				modelFrom = undefined;
+			}
+			if (event.type === "auto_retry_start") retryFrom ??= now;
+			if (event.type === "auto_retry_end" && retryFrom !== undefined) {
+				timing.retries += now - retryFrom;
+				retryFrom = undefined;
+			}
+			if (event.type === "tool_execution_start" && event.parentToolCallId === undefined) toolFrom.set(event.toolCallId, { at: now, first: steps === 0 });
+			if (event.type === "tool_execution_end" && event.parentToolCallId === undefined) {
+				const from = toolFrom.get(event.toolCallId);
+				if (from !== undefined) {
+					if (from.first) timing.firstTool += now - from.at;
+					else timing.tools += now - from.at;
+					toolFrom.delete(event.toolCallId);
+				}
+			}
 			if (event.type === "tool_execution_start" && event.parentToolCallId === undefined) steps++;
 			if (event.type === "message_end") {
 				const message = event.entry.model?.[0];
@@ -257,8 +303,10 @@ export async function runTask(scout: Scout, task: EvalTask, repoName: string, si
 	});
 	const why: string[] = [];
 	let pass = true;
+	let ran: number | undefined;
 	try {
 		const settled = await (await conversation.submit({ type: "input", content: task.request }, context)).wait(context);
+		ran = Date.now();
 		if (settled.status !== "done") {
 			pass = false;
 			why.push(`the run didn't finish (${settled.status})`);
@@ -307,7 +355,10 @@ export async function runTask(scout: Scout, task: EvalTask, repoName: string, si
 		await events.stop();
 		await scout.workspaces.remove(conversation.id).catch(() => {});
 	}
-	return { task: task.name, side, pass, why: why.join("; ") || "passed", cost: scout.spend.spentOn(conversation.id, 0).cost, ms: Date.now() - started, steps };
+	const ended = Date.now();
+	const checked = typeof ran === "number" ? ended - ran : 0;
+	timing.check = checked;
+	return { task: task.name, side, pass, why: why.join("; ") || "passed", cost: scout.spend.spentOn(conversation.id, 0).cost, ms: ended - started - checked, steps, timing };
 }
 
 /** Did the work meet the task's rubric? A model call with no tools: PASS or FAIL, and one line why. */
