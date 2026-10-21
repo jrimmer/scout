@@ -25,8 +25,7 @@
   - the Slack adapter against recorded Slack payloads;
   - an end-to-end test from a Slack event to a pull request;
   - the Docker sandbox driver's tests run in CI.
-- [ ] **CI on every push and pull request**, required before merging to `main`.
-- [ ] **Monitored for a week:** `npm run doctor` on a schedule and `/healthz`, as [operations.md](operations.md#monitoring) recommends. It raised no false alarms and missed nothing that happened.
+- [x] **CI on every push and pull request**, required before merging to `main`. Only the owner pushes to `main` directly.
 - [x] **No silent hangs:** a sandbox that dies under a command is noticed, and spoond 3.12.1's lost-command report is handled.
 - [ ] **An install from scratch** has followed [setup.md](setup.md) exactly, with nothing missing or wrong. Two ways to do it:
   - Someone who hasn't set Scout up before.

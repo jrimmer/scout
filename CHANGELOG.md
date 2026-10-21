@@ -34,11 +34,12 @@ A change to any of these that needs people to act is a major version. Everything
 - **Settings:** `.env.example` now lists every setting Scout reads, and a test keeps it so. `SCOUT_GATEWAY_OPENAI_API` was missing.
 
 ### Fixed
+- **spoond restarts:** a running command no longer fails when spoond restarts or the network hiccups. Scout keeps following it for two minutes, then stops and says it may still be running.
 - **Docker sandboxes:** the sandbox's user couldn't write its own `/work`, so every Docker sandbox failed at its first file write. Docker gave the empty volume root's ownership each time a container mounted it. Found by the Docker tests' first run.
 
-## 0.1.0 (2026-10-19 to 2026-10-21, before releases)
+## Before 1.0 (2026-10-19 to 2026-10-21)
 
-Everything Scout does today, built over its first three days. Grouped by area:
+Everything Scout did before its first release, built over its first three days. Grouped by area:
 
 ### Working in Slack
 - **Requests:** Scout answers mentions in public channels, and nowhere else; DMs and private channels get a polite no.
