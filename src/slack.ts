@@ -12,6 +12,9 @@ const ASK_FORM = "scout_ask_form";
 /** Buttons on the message that asks for approval of a change. */
 export const APPROVE_BUTTON = "scout_approve";
 export const DECLINE_BUTTON = "scout_decline";
+/** Buttons on a request to let a repository's sandboxes reach a host. */
+export const EGRESS_ALLOW = "scout_egress_allow";
+export const EGRESS_DECLINE = "scout_egress_decline";
 /** The Ask Scout step in Workflow Builder (slack-manifest.yaml `functions`). */
 const WORKFLOW_STEP = "ask_scout";
 /** 🔍 on any message: "Scout, look into this". */
@@ -29,6 +32,11 @@ export type SlackHandlers = {
 	onLook?: (look: { user: string; channel: string; channelName: string; ts: string; threadTs?: string; author?: string; text: string }) => Promise<void>;
 	/** Someone pressed Approve or Decline on a change waiting for approval; returns what the message should now say. */
 	onDecision?: (decision: { user: string; channel: string; conversationId: number; approve: boolean }) => Promise<string>;
+	/**
+	 * Someone pressed Allow or Decline on a network request: what to say. `final` replaces the message (it's decided);
+	 * otherwise only they see the answer and the buttons stay for someone who may decide.
+	 */
+	onEgress?: (decision: { user: string; id: number; allow: boolean }) => Promise<{ text: string; final: boolean }>;
 	/** `/scout …`: what to answer, just to them; `ask` starts a thread. */
 	onCommand?: (command: { user: string; channel: string; channelName: string; text: string }) => Promise<string>;
 	/** Links to the code host pasted in a channel: previews (Block Kit blocks) for the ones Scout knows. */
@@ -307,6 +315,22 @@ export class Slack {
 				try {
 					const said = await handlers.onDecision({ user: b.user.id, channel: b.channel.id, conversationId, approve });
 					await respond({ replace_original: true, text: said, blocks: [{ type: "context", elements: [{ type: "mrkdwn", text: said }] }] });
+				} catch (error) {
+					console.error(`${action} failed:`, error);
+				}
+			});
+		}
+
+		for (const [action, allow] of [[EGRESS_ALLOW, true], [EGRESS_DECLINE, false]] as const) {
+			this.app.action(action, async ({ ack, body, respond }) => {
+				await ack();
+				const b = body as unknown as { user: { id: string }; actions: { value?: string }[] };
+				const id = Number(b.actions[0]?.value);
+				if (handlers.onEgress === undefined || !Number.isFinite(id)) return;
+				try {
+					const said = await handlers.onEgress({ user: b.user.id, id, allow });
+					if (said.final) await respond({ replace_original: true, text: said.text, blocks: [{ type: "section", text: { type: "mrkdwn", text: said.text } }] });
+					else await respond({ replace_original: false, response_type: "ephemeral", text: said.text });
 				} catch (error) {
 					console.error(`${action} failed:`, error);
 				}

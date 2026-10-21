@@ -41,6 +41,19 @@ When spoond is nearly full it answers new leases with "wait" or "full", and Scou
 before the thread hears that no sandbox was free. spoond also pauses leases to keep memory free; a paused lease
 resumes on its next use, so a thread's first command after a quiet spell can take longer.
 
+### When a sandbox can't reach a host
+
+A sandbox that can't reach something it needs (DNS failures, refused or timed-out connections during an install)
+doesn't diagnose itself or work around the network: Scout calls `ask_for_network` with the host and what needed it
+(`src/egress.ts`). Its home channel gets the question, with the thread's link and Allow and Decline buttons. Only
+people in the `egress` approvers of `SCOUT_ROLES_FILE` (`"approve": { "egress": [...] }`, or else `"*"`) may decide;
+anyone else pressing a button is told why, just to them. Allow adds the host to the repository's egress list in the
+repos file (`SCOUT_REPOS_FILE`; a backup is kept as `.bak`, and the file is replaced in one step) and in memory, so
+new sandboxes get it at once. Sandboxes already running keep their network: the thread is told a new thread gets it.
+A repository configured in the environment rather than the repos file gets it until Scout restarts, and the decision
+message says to add it to `SCOUT_REPO_EGRESS`. Each host is asked about once per repository while it waits, and both
+the request and the decision are in the audit trail.
+
 ### Repository images
 
 A repository can carry `.scout/setup.sh` on its base branch: what gets a fresh sandbox ready to work (toolchain,

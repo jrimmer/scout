@@ -15,6 +15,7 @@ import { ChannelCanvases, channelCanvas, channelWeeks, WeeklySummaries } from ".
 import { asksSomething, Recaps } from "./recaps.ts";
 import { type HomeData, type HomeThread, homeView } from "./home.ts";
 import { Capabilities } from "./capabilities.ts";
+import { allowInReposFile, EgressRequests } from "./egress.ts";
 import { parseCodeLink, previewBlocks } from "./previews.ts";
 import { type WorkRow, WorkList } from "./worklist.ts";
 import { startDashboard } from "./dash/server.ts";
@@ -28,7 +29,7 @@ import { pullProfile } from "./profile.ts";
 import { weekOf } from "./pulls.ts";
 import { localDay } from "./reflect.ts";
 import { openScout } from "./scout.ts";
-import { APPROVE_BUTTON, DECLINE_BUTTON, Slack } from "./slack.ts";
+import { APPROVE_BUTTON, DECLINE_BUTTON, EGRESS_ALLOW, EGRESS_DECLINE, Slack } from "./slack.ts";
 import { threadKey } from "./threads.ts";
 
 const MINUTE = 60 * 1000;
@@ -226,6 +227,7 @@ await slack.start({
 		await startOn({ ...look, threadTs: look.threadTs ?? look.ts, request: "Look into this.", intro: `<@${look.user}> asked me to look into this.` });
 	},
 	onDecision: (decision) => decide(decision),
+	onEgress: (decision) => decideEgress(decision),
 	onCommand: (command) => slashCommand(command),
 	onLinks: (links) => previews(links),
 	onWorkflowAsk: async (ask) => {
@@ -254,6 +256,67 @@ async function startOn(start: { channel: string; channelName: string; user: stri
 		start.text === "" ? "" : `\n\nAbout ${start.author === undefined ? "this" : `<@${start.author}>'s message`}:\n${start.text.split("\n").map((l) => `> ${l}`).join("\n")}`;
 	await bridge.onMessage({ channel: start.channel, channelType: "channel", channelName: start.channelName, user: start.user, text: `<@${slack.botUserId}> ${start.request}${about}`, ts: posted, threadTs });
 	return threadTs;
+}
+
+// A sandbox that couldn't reach a host: ask the people who decide, in the home channel (egress.ts).
+const egress = new EgressRequests(join(config.dataDir, "scout.sqlite"));
+scout.setEgress(async (conversationId, host, why) => {
+	const name = scout.workspaces.repo((await scout.repoOfConversation(conversationId)).name).name;
+	const repo = config.repos.find((r) => r.name === name);
+	if (repo === undefined) return "I couldn't tell which repository this thread works in, so I can't ask for its network.";
+	if (repo.egress?.includes(host) === true) {
+		return `${host} is already allowed for ${repo.name}. This thread's sandbox may have started before it was; a new thread gets it.`;
+	}
+	if (repo.egress === undefined && config.sandbox.network === "open") {
+		return `Sandboxes for ${repo.name} already have an open network, so it isn't the egress list: ${host} may be down, or blocking us.`;
+	}
+	const { request, isNew } = egress.ask({ repo: repo.name, host, why, conversationId });
+	if (!isNew) return `I've already asked for ${host} to be allowed for ${repo.name}; it's waiting on a decision.`;
+	audit.record("egress_requested", { actor: "scout", conversationId, detail: { id: request.id, repo: repo.name, host, why } });
+	const home = config.reflect.channel === undefined ? undefined : await slack.channelId(config.reflect.channel);
+	if (home === undefined) return `I'd ask for ${host} to be allowed for ${repo.name}, but I have no home channel to ask in. Whoever runs me can add it to the repository's egress list.`;
+	const link = await linkOf(conversationId);
+	const text = `${link === undefined ? "A thread" : `<${link}|A thread>`} in *${repo.name}* couldn't reach \`${host}\`: ${why}\nAllow \`${host}\` for ${repo.name}'s sandboxes?`;
+	await slack.surface.post(home, undefined, {
+		text,
+		blocks: [
+			{ type: "section", text: { type: "mrkdwn", text } },
+			{
+				type: "actions",
+				elements: [
+					{ type: "button", action_id: EGRESS_ALLOW, text: { type: "plain_text", text: "Allow" }, style: "primary", value: String(request.id) },
+					{ type: "button", action_id: EGRESS_DECLINE, text: { type: "plain_text", text: "Decline" }, value: String(request.id) },
+				],
+			},
+		],
+	});
+	return `I've asked whoever runs me to allow ${host} for ${repo.name}'s sandboxes. I'll say here when they decide.`;
+});
+
+/** Allow or Decline on a network request: only the egress approvers decide; the thread hears the outcome. */
+async function decideEgress(d: { user: string; id: number; allow: boolean }): Promise<{ text: string; final: boolean }> {
+	const request = egress.get(d.id);
+	if (request === undefined) return { text: "That request is gone.", final: true };
+	if (request.state !== "pending") return { text: `Already ${request.state}${request.decidedBy === undefined ? "" : ` by <@${request.decidedBy}>`}.`, final: true };
+	const refused = await scout.refuseApprover(d.user, "egress");
+	if (refused !== undefined) return { text: `You can't decide this one: ${refused}`, final: false };
+	const decided = egress.decide(d.id, d.allow, d.user);
+	if (decided === undefined) return { text: "Someone else just decided it.", final: true };
+	const repo = config.repos.find((r) => r.name === decided.repo);
+	let where = "";
+	if (d.allow && repo !== undefined) {
+		// New sandboxes get it now; the repos file keeps it across restarts, when the repository is in it.
+		if (repo.egress?.includes(decided.host) !== true) repo.egress = [...(repo.egress ?? []), decided.host];
+		const saved = config.reposFile !== undefined && allowInReposFile(config.reposFile, repo.name, decided.host);
+		where = saved ? " (saved to the repos file)" : ` (until I restart: ${repo.name} isn't in the repos file, so add it to SCOUT_REPO_EGRESS to keep it)`;
+	}
+	audit.record("egress_decided", { actor: d.user, conversationId: decided.conversationId, detail: { id: d.id, repo: decided.repo, host: decided.host, allowed: d.allow } });
+	const toThread = d.allow
+		? `<@${d.user}> allowed \`${decided.host}\` for ${decided.repo}'s sandboxes. New sandboxes get it; this thread's started without it, so a new thread (or a fresh sandbox) is where it works.`
+		: `<@${d.user}> declined \`${decided.host}\` for ${decided.repo}'s sandboxes, so I'll have to do without it.`;
+	await inThread(decided.conversationId, toThread).catch(() => {});
+	await bridge.note(decided.conversationId, toThread.replace(/<@(\w+)>/g, "someone"), `egress:${d.id}`).catch(() => {});
+	return { text: `${d.allow ? "✅ Allowed" : "✋ Declined"} by <@${d.user}>: \`${decided.host}\` for ${decided.repo}${where}.`, final: true };
 }
 
 /** Approve and Decline buttons in the thread, for the change Scout just asked approval for. */
@@ -1025,6 +1088,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		workList.close();
 		canvases.close();
 		capabilities.close();
+		egress.close();
 		if (alertTick !== undefined) clearInterval(alertTick);
 		alertLog.close();
 		await slack.stop().catch(() => {});

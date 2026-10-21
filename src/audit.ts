@@ -30,7 +30,9 @@ export type AuditKind =
 	| "schedule_changed"
 	| "schedule_removed"
 	| "schedule_ran"
-	| "capabilities";
+	| "capabilities"
+	| "egress_requested"
+	| "egress_decided";
 
 export type AuditRecord = {
 	id: number;

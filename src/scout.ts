@@ -16,6 +16,7 @@ import { Pricing } from "./pricing.ts";
 import { Counters, Tracer } from "./telemetry.ts";
 import { AutheliaFile, approversOf, loadRoles, requestersOf } from "./directory.ts";
 import { codeSearchExtension } from "./codesearch.ts";
+import { egressExtension } from "./egress.ts";
 import { Images } from "./images.ts";
 import { CODEOWNERS_PATHS, type Owners, ownersOf, parseCodeOwners, recentOwners } from "./owners.ts";
 import { Schedules, schedulesExtension } from "./schedules.ts";
@@ -275,6 +276,9 @@ export async function openScout(options: ScoutOptions) {
 			}),
 		],
 	});
+	// A sandbox that can't reach a host asks whoever runs Scout to allow it (egress.ts); the service posts the question.
+	let proposeEgress: (conversationId: number, host: string, why: string) => Promise<string> = async () => "I can't ask anyone about network access from here.";
+	const egressTools = egressExtension((id, host, why) => proposeEgress(id, host, why));
 	// Every repository's code, from any thread: the host's mirrors, read-only (codesearch.ts).
 	const codeSearchTools = codeSearchExtension(() => config.repos.map((r) => ({ name: r.name, base: r.base, mirror: workspaces.mirrorFor(r.name) })));
 	const schedules = new Schedules(db);
@@ -327,6 +331,7 @@ export async function openScout(options: ScoutOptions) {
 		scheduleTools,
 		statusTools,
 		codeSearchTools,
+		egressTools,
 		reflection.reflect,
 		reflection.files,
 		profileCodeHost,
@@ -470,6 +475,14 @@ export async function openScout(options: ScoutOptions) {
 		approvals,
 		schedules,
 		images,
+		/** What `ask_for_network` does: set by the service, which can post the question and hear the answer. */
+		setEgress: (propose: (conversationId: number, host: string, why: string) => Promise<string>) => {
+			proposeEgress = propose;
+		},
+		/** The repository a conversation works in. */
+		repoOfConversation: (id: number) => repoOf(id, context),
+		/** Why this person may not approve changes to `server` (an MCP server, or "egress"), if they may not. */
+		refuseApprover,
 		/** What `scout_status` tells a thread: set by the service, which can see every thread. */
 		setStatus: (describe: (channel: string) => Promise<string>) => {
 			describeNow = describe;
@@ -511,6 +524,7 @@ export async function openScout(options: ScoutOptions) {
 				scheduleTools,
 				statusTools,
 				...(config.codeSearch ? [codeSearchTools] : []),
+				egressTools,
 				mcpTools,
 				observe,
 			],

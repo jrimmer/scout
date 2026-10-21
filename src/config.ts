@@ -94,6 +94,8 @@ export type Config = {
 	pullUpkeep: { staleDays: number; closeDays: number };
 	/** Each channel's weekly summary, Mondays (weekly.ts). */
 	weeklySummary: boolean;
+	/** The repos file (SCOUT_REPOS_FILE), where an egress host people allow is saved (egress.ts). */
+	reposFile?: string;
 	/** Searching and reading every configured repository's code from any thread (codesearch.ts). */
 	codeSearch: boolean;
 	/** Follow up on a thread waiting on people this many days (recaps.ts); 0 never. */
@@ -219,6 +221,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		},
 		weeklySummary: env.SCOUT_WEEKLY_SUMMARY !== "off",
 		codeSearch: env.SCOUT_CODE_SEARCH !== "off",
+		...(env.SCOUT_REPOS_FILE ? { reposFile: resolve(env.SCOUT_REPOS_FILE) } : {}),
 		reviewNudgeDays: Number(env.SCOUT_REVIEW_NUDGE_DAYS ?? 3),
 		closedBranchDays: Number(env.SCOUT_CLOSED_BRANCH_DAYS ?? 30),
 		threadRecapDays: Number(env.SCOUT_THREAD_RECAP_DAYS ?? 3),
