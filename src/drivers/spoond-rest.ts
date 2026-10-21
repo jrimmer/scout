@@ -45,6 +45,8 @@ export type SpoondRestOptions = {
 	/** How often Scout checks the sandbox still answers while a command runs, and how long it may not (tests shorten them). */
 	aliveCheckMs?: number;
 	unreachableMs?: number;
+	/** How long spoond itself may not answer while Scout follows a command (tests shorten it). */
+	outageMs?: number;
 };
 
 /** Seconds a finished job's record and output stay in spoond; Scout deletes them itself once read. */
@@ -73,6 +75,14 @@ const START_CHECK_MS = 20_000;
  */
 const ALIVE_CHECK_MS = 60_000;
 const UNREACHABLE_MS = 5 * 60_000;
+/**
+ * spoond restarting (an upgrade takes its API away for a few seconds) or a moment's network trouble doesn't stop a
+ * command: it carries on in the sandbox. Scout keeps following it through two minutes of spoond not answering.
+ */
+const OUTAGE_MS = 2 * 60_000;
+
+/** spoond answered, but as a server that's down or busy (5xx, 429): following again later may well work. */
+class SpoondDown extends Error {}
 
 type Sh = { stdout: string; stderr: string; exit: number };
 type Job = { state: "running" | "exited" | "lost"; exit_code: number | null; reason?: string };
@@ -87,6 +97,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 	readonly #startCheckMs: number;
 	readonly #aliveCheckMs: number;
 	readonly #unreachableMs: number;
+	readonly #outageMs: number;
 	readonly #running = new Set<string>();
 	/** Whether this spoond answers `Range` on file reads; older ones send the whole file. */
 	#ranges = true;
@@ -100,6 +111,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 		this.#startCheckMs = options.startCheckMs ?? START_CHECK_MS;
 		this.#aliveCheckMs = options.aliveCheckMs ?? ALIVE_CHECK_MS;
 		this.#unreachableMs = options.unreachableMs ?? UNREACHABLE_MS;
+		this.#outageMs = options.outageMs ?? OUTAGE_MS;
 	}
 
 	#resolve(path: string): string {
@@ -453,6 +465,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 		let started = false;
 		let checked = startedAt;
 		let unreachableSince: number | undefined;
+		let downSince: number | undefined;
 		try {
 			for (let polls = 1; ; polls++) {
 				const remaining = deadline === undefined ? Number.POSITIVE_INFINITY : deadline - Date.now();
@@ -466,9 +479,19 @@ export class SpoondRestEnv implements ExecutionEnv {
 					await output.drain();
 				} catch (error) {
 					if (poll.aborted) continue;
-					if (error instanceof ExecutionError) return err(await this.#stop(jobId, error));
-					throw error;
+					// spoond down or unreachable for a moment (not an answer about the job): keep following, for a while.
+					if (error instanceof SpoondDown || !(error instanceof ExecutionError)) {
+						downSince ??= Date.now();
+						if (Date.now() - downSince < this.#outageMs) {
+							await new Promise((resolve) => setTimeout(resolve, Math.min(2000, this.#outageMs / 4)));
+							continue;
+						}
+						const minutes = Math.round(this.#outageMs / 60_000);
+						return err(await this.#stop(jobId, new ExecutionError("unknown", `spoond stopped answering while the command ran (${reason(error)}), for ${minutes > 0 ? `${minutes} minutes` : "too long"}. The command may still be running in the sandbox: check before running it again.`)));
+					}
+					return err(await this.#stop(jobId, error));
 				}
+				downSince = undefined;
 				if (job.state === "lost") {
 					// spoond 3.12.1 marks a command it lost on the way in, and says so; any other loss is the sandbox restarting under it.
 					if (job.reason === "never_started") return err(new ExecutionError("unknown", "spoond took the command but it never started in the sandbox (it was lost on the way in). Run it again."));
@@ -515,6 +538,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 
 	async #job(jobId: string, wait: number, signal: AbortSignal): Promise<Job> {
 		const response = await this.#request("GET", `/jobs/${jobId}?wait=${wait}`, { signal });
+		if (response.status >= 500 || response.status === 429) throw new SpoondDown(`spoond answered ${response.status}`);
 		if (!response.ok) throw new ExecutionError("unknown", `spoond answered ${response.status} following the command`);
 		return ((await response.json()) as { job: Job }).job;
 	}
@@ -565,6 +589,7 @@ class JobOutput {
 			const stream = this.#streams[name];
 			for (;;) {
 				const response = await this.#request("GET", `/jobs/${this.#jobId}/output?stream=${name}&offset=${stream.offset}&limit=${OUTPUT_LIMIT}`);
+				if (response.status >= 500 || response.status === 429) throw new SpoondDown(`spoond answered ${response.status}`);
 				if (!response.ok) throw new ExecutionError("unknown", `spoond answered ${response.status} reading output`);
 				const bytes = new Uint8Array(await response.arrayBuffer());
 				const start = Number(response.headers.get("x-output-offset") ?? stream.offset);

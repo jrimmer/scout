@@ -28,6 +28,8 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 	const losing = { next: false, marked: false };
 	/** While on, the sandbox doesn't answer: file requests get spoond's 502, as when the guest under a lease has died. */
 	const unreachable = { on: false };
+	/** While on, spoond itself is down (as while it restarts behind its proxy): job requests get a 502. */
+	const down = { on: false };
 
 	/** A failed file route's answer, with spoond's code unless this fake plays an older spoond. */
 	const coded = (error: string, code: string) => (options.codes === false ? { error } : { error, code });
@@ -123,6 +125,7 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 			return json(202, { job_id: id, started_at: new Date().toISOString() });
 		}
 		const jobMatch = /^jobs\/([^/]+)(?:\/(output|signal))?$/.exec(rest ?? "");
+		if (jobMatch !== null && down.on) return json(502, { error: "bad gateway" });
 		if (jobMatch !== null) {
 			const [, jobId, what] = jobMatch;
 			const job = jobs.get(jobId!);
@@ -258,6 +261,7 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 		snapshots,
 		losing,
 		unreachable,
+		down,
 		close: () => {
 			for (const job of jobs.values()) if (job.state === "running") process.kill(-job.child.pid!, "SIGKILL");
 			server.closeAllConnections();

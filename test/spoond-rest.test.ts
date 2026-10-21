@@ -107,6 +107,26 @@ describe("spoond REST environment", () => {
 		assert.ok(!lost.ok && /never started in the sandbox.*Run it again/.test(lost.error.message), String(!lost.ok && lost.error.message));
 	});
 
+	it("follows a command through spoond restarting, and gives up only if spoond stays away", async () => {
+		const quick = (await new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest"), transport: "rest" }).open("t", spec)).connect!({ id: "sandbox:t", cwd: root, outageMs: 1500 } as never);
+		let out = "";
+		const through = quick.exec("sleep 1; echo done", { onOutput: (t) => (out += t) }, context);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		spoond.down.on = true;
+		await new Promise((resolve) => setTimeout(resolve, 900));
+		spoond.down.on = false;
+		const result = await through;
+		assert.ok(result.ok && result.value.exitCode === 0, String(!result.ok && result.error.message));
+		assert.equal(out, "done\n", "and its output arrives once spoond is back");
+
+		const away = quick.exec("sleep 5", {}, context);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		spoond.down.on = true;
+		const gone = await away;
+		spoond.down.on = false;
+		assert.ok(!gone.ok && /spoond stopped answering while the command ran.*may still be running/.test(gone.error.message), String(!gone.ok && gone.error.message));
+	});
+
 	it("gives up on a command when the sandbox stops answering under it, and leaves one that answers alone", async () => {
 		const quick = (await new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest"), transport: "rest" }).open("t", spec)).connect!({ id: "sandbox:t", cwd: root, startCheckMs: 100, aliveCheckMs: 100, unreachableMs: 600 } as never);
 		const healthy = await quick.exec("sleep 1.5; echo fine", {}, context);
