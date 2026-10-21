@@ -140,6 +140,9 @@ describe("end to end", () => {
 			const said = () => slackApi.calls.filter((c) => c.method === "chat.postMessage" || c.method === "chat.update").map((c) => String(c.args.text));
 			await until(() => said().some((t) => t.includes("I opened a pull request that adds CONTRIBUTING.md.")));
 			await scout.harness.waitForIdle(context);
+			// The run's ending reaction goes out just after its answer.
+			const reacted = () => slackApi.calls.filter((c) => c.method === "reactions.add" || c.method === "reactions.remove");
+			await until(() => reacted().length > 0);
 
 			// The change: on Scout's branch in the repository, not on main.
 			const branch = git("--git-dir", remote, "for-each-ref", "--format=%(refname:short)", "refs/heads/scout/");
@@ -164,9 +167,7 @@ describe("end to end", () => {
 			assert.ok(inThread.every((c) => c.args.channel === TEAM_CHANNEL));
 			const broadcast = slackApi.called("chat.postMessage").find((c) => c.args.reply_broadcast === true);
 			assert.equal(broadcast?.args.text, "Opened <http://forge.test/acme/app/pulls/1|acme/app#1>: Add a contributing guide");
-			const reactions = slackApi.calls.filter((c) => c.method === "reactions.add" || c.method === "reactions.remove");
-			assert.ok(reactions.length > 0, "the request's reaction followed the work");
-			assert.ok(reactions.every((c) => c.args.channel === TEAM_CHANNEL && c.args.timestamp === "1700000000.000100"));
+			assert.ok(reacted().every((c) => c.args.channel === TEAM_CHANNEL && c.args.timestamp === "1700000000.000100"));
 			assert.equal(faux.getPendingResponseCount(), 0);
 		} finally {
 			await slack.stop();

@@ -26,6 +26,8 @@ const VISIBLE_STEPS = 6;
  */
 const REDELIVER_MS = 2 * 60_000;
 const REDELIVER_FOR_MS = 6 * 60 * 60_000;
+/** Slack's client's error codes for not reaching Slack, or Slack failing (a 5xx), after its own trying again. */
+const DOWN_CODES = new Set(["slack_webapi_request_error", "slack_webapi_http_error"]);
 /** Longer than this, an answer's message shows its opening and the whole answer is attached as a file. */
 const LONG_ANSWER = 6_000;
 /**
@@ -375,8 +377,9 @@ export class ThreadView {
 				}
 				return posted;
 			} catch (error) {
-				// Slack said no (the channel is gone, Scout was removed): trying again won't change that.
-				if ((error as { code?: string }).code === "slack_webapi_platform_error" || this.#now() - first >= REDELIVER_FOR_MS) throw error;
+				// Only Slack being unreachable or failing is worth waiting out; when it says no (the channel is gone, Scout
+				// was removed), or something else broke, trying again won't change that.
+				if (!DOWN_CODES.has((error as { code?: string }).code ?? "") || this.#now() - first >= REDELIVER_FOR_MS) throw error;
 				console.error(`Slack won't take the answer in ${this.#channel}/${this.#threadTs}; trying again in ${REDELIVER_MS / 60_000} minutes:`, error);
 				await this.#wait(REDELIVER_MS);
 			}
