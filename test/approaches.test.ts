@@ -30,7 +30,8 @@ describe("trying several approaches (experimental)", () => {
 	});
 	after(() => workspaces.close());
 
-	it("runs each approach in its own sandbox from the thread's branch, compares them, and brings the chosen one back", async () => {
+	/** A thread whose model asks to try a cache or a query fix, and plays each approach; `room` caps how many run at once. */
+	async function tryBoth(room?: () => Promise<number>) {
 		const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }] });
 		const models = createModels();
 		models.setProvider(faux.provider);
@@ -47,6 +48,7 @@ describe("trying several approaches (experimental)", () => {
 				return ts ?? "100.2";
 			},
 			childWithout: () => [approaches, pullRequests],
+			room,
 		});
 		const registry = createRegistry();
 		for (const extension of [coding, approaches, pullRequests]) registry.install(extension);
@@ -78,7 +80,11 @@ describe("trying several approaches (experimental)", () => {
 		faux.setResponses(Array.from({ length: 12 }, () => plays));
 
 		await (await thread.submit({ type: "input", content: "try a cache or fixing the query" }, context)).wait(context);
+		return { harness, thread, store, shown };
+	}
 
+	it("runs each approach in its own sandbox from the thread's branch, compares them, and brings the chosen one back", async () => {
+		const { harness, thread, store, shown } = await tryBoth();
 		const results = store.forThread(thread.id);
 		assert.deepEqual(results.map((a) => [a.name, a.state, a.tests, a.diff]), [
 			["Cache", "done", "passed", "+1 −0 in 1 file"],
@@ -99,6 +105,18 @@ describe("trying several approaches (experimental)", () => {
 		assert.doesNotMatch(out, /cache\.txt/, "and only that one");
 		await assert.rejects(chooseApproach({ store, workspaces }, thread.id, 1, "UBOB"), /already been chosen/);
 		assert.match(JSON.stringify(comparison(store.forThread(thread.id), Date.now(), () => 0, true).blocks), /<@UANN> chose \*2\. Query\*/);
+		await harness.close(context);
+		store.close();
+	});
+
+	it("runs only as many approaches as the run limits leave room for, and starts the rest as those finish", async () => {
+		const { harness, thread, store, shown } = await tryBoth(async () => 1);
+		const messages = shown.map((m) => JSON.stringify(m.blocks));
+		const waiting = messages.find((m) => /waiting for room/.test(m));
+		assert.ok(waiting !== undefined, "the second approach is shown waiting");
+		assert.match(waiting, /I'm busy elsewhere too, so 1 run now; the other starts as soon as one finishes\./);
+		assert.deepEqual(store.forThread(thread.id).map((a) => a.state), ["done", "done"], "and it ran once the first finished");
+		assert.doesNotMatch(messages.at(-1)!, /busy elsewhere/);
 		await harness.close(context);
 		store.close();
 	});

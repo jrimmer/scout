@@ -18,7 +18,7 @@ export const USE_APPROACH = "scout_use_approach";
 /** How often the comparison message is brought up to date while the approaches work. */
 const REFRESH_MS = 3_000;
 
-export type ApproachState = "working" | "done" | "failed";
+export type ApproachState = "queued" | "working" | "done" | "failed";
 export type Approach = {
 	parentId: number;
 	index: number;
@@ -72,10 +72,28 @@ export class Approaches {
 		);
 	}
 
+	/** A queued approach found room and started. */
+	began(parentId: number, index: number, now = Date.now()): void {
+		this.#db.prepare("UPDATE approaches SET state = 'working', started_at = ? WHERE parent_id = ? AND idx = ?").run(now, parentId, index);
+	}
+
+	/** Approaches still working, by thread: they take run slots like any run (one is the thread's own). */
+	working(): { parentId: number; count: number }[] {
+		return this.#db
+			.prepare("SELECT parent_id, COUNT(*) AS n FROM approaches WHERE state = 'working' GROUP BY parent_id")
+			.all()
+			.map((r) => ({ parentId: Number(r.parent_id), count: Number(r.n) }));
+	}
+
 	finished(parentId: number, index: number, result: { state: ApproachState; tests?: string; diff?: string; cost?: number; report?: string }, now = Date.now()): void {
 		this.#db
 			.prepare("UPDATE approaches SET state = ?, tests = ?, diff = ?, cost = ?, report = ?, finished_at = ? WHERE parent_id = ? AND idx = ?")
 			.run(result.state, result.tests ?? null, result.diff ?? null, result.cost ?? null, result.report ?? null, now, parentId, index);
+	}
+
+	/** An approach waiting for room under the run limits. */
+	queue(parentId: number, index: number): void {
+		this.#db.prepare("UPDATE approaches SET state = 'queued' WHERE parent_id = ? AND idx = ?").run(parentId, index);
 	}
 
 	chosen(parentId: number, index: number, by: string): void {
@@ -128,6 +146,13 @@ export type ApproachesOptions = {
 	show: (parentId: number, message: ChatMessage, ts?: string) => Promise<string | undefined>;
 	/** Extensions an approach must not have: this one (no approaches within approaches) and opening pull requests. */
 	childWithout: () => Extension[];
+	/**
+	 * How many approaches may run at once for this thread, under the run limits (the thread's own run counts as one of
+	 * them). The rest wait for room and start as others finish. Absent: no limit.
+	 */
+	room?: (parentId: number) => Promise<number>;
+	/** A queued approach waited this long for room. */
+	onWaited?: (ms: number) => void;
 	now?: () => number;
 };
 
@@ -176,6 +201,9 @@ export function approachesExtension(options: ApproachesOptions): Extension {
 					args.approaches.map((a, i) => ({ ...a, childId: children[i]! })),
 					started,
 				);
+				// Room under the run limits: the thread's own run already holds a slot, which the first approach uses.
+				const room = Math.max(1, Math.min(args.approaches.length, await (options.room?.(parentId) ?? Promise.resolve(args.approaches.length))));
+				for (let index = room + 1; index <= args.approaches.length; index++) store.queue(parentId, index);
 				let ts: string | undefined;
 				let showing = Promise.resolve();
 				const refresh = () => {
@@ -189,40 +217,50 @@ export function approachesExtension(options: ApproachesOptions): Extension {
 				await refresh();
 				const timer = setInterval(() => void refresh(), REFRESH_MS);
 				timer.unref?.();
+				// `room` at a time, in order: each finished approach makes way for the next one waiting.
+				let next = 0;
+				const runOne = async (i: number) => {
+					const approach = args.approaches[i]!;
+					const index = i + 1;
+					const childId = children[i]!;
+					if (i >= room) {
+						store.began(parentId, index, now());
+						options.onWaited?.(now() - started);
+						void refresh();
+					}
+					try {
+						if (bundle !== undefined) await workspaces.startFrom(childId, bundle);
+						const child = await api.conversation(childId as ConversationId, context);
+						if (child === undefined) throw new Error("the approach's conversation disappeared");
+						const prompt = [
+							`You're one of several teammates trying different approaches to the same request, side by side, so people can compare them. Yours: *${approach.name}*: ${approach.plan}`,
+							`The request: ${args.request}`,
+							"Implement only this approach, in your own workspace (it starts from the thread's branch). Run the relevant tests. Commit your work. Don't open a pull request: people will choose an approach first.",
+							"Then report in a few short lines: what you changed, how it went, and this approach's trade-offs. End with exactly one line: `Tests: passed`, `Tests: failed`, or `Tests: not run`.",
+						].join("\n\n");
+						const settled = await (await child.submit({ type: "input", content: prompt, requestId: `approach:${api.taskId}:${index}` }, context)).wait(context);
+						if (settled.status !== "done" || settled.type !== "input") throw new Error(`it ended ${settled.status}`);
+						const entry = await api.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
+						const content = entry?.model?.[0]?.content ?? [];
+						const report = (typeof content === "string" ? content : content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("\n")).trim();
+						const tests = TESTS.exec(report)?.[1]?.toLowerCase();
+						store.finished(parentId, index, {
+							state: "done",
+							...(tests === undefined ? {} : { tests }),
+							diff: await workspaces.diffStat(childId, from).catch(() => "unknown"),
+							cost: options.costOf(childId, started),
+							report: report.replace(TESTS, "").trim(),
+						}, now());
+					} catch (error) {
+						store.finished(parentId, index, { state: "failed", cost: options.costOf(childId, started), report: error instanceof Error ? error.message : String(error) }, now());
+					}
+					void refresh();
+				};
+				const worker = async () => {
+					while (next < args.approaches.length) await runOne(next++);
+				};
 				try {
-					await Promise.all(
-						args.approaches.map(async (approach, i) => {
-							const index = i + 1;
-							const childId = children[i]!;
-							try {
-								if (bundle !== undefined) await workspaces.startFrom(childId, bundle);
-								const child = await api.conversation(childId as ConversationId, context);
-								if (child === undefined) throw new Error("the approach's conversation disappeared");
-								const prompt = [
-									`You're one of several teammates trying different approaches to the same request, side by side, so people can compare them. Yours: *${approach.name}*: ${approach.plan}`,
-									`The request: ${args.request}`,
-									"Implement only this approach, in your own workspace (it starts from the thread's branch). Run the relevant tests. Commit your work. Don't open a pull request: people will choose an approach first.",
-									"Then report in a few short lines: what you changed, how it went, and this approach's trade-offs. End with exactly one line: `Tests: passed`, `Tests: failed`, or `Tests: not run`.",
-								].join("\n\n");
-								const settled = await (await child.submit({ type: "input", content: prompt, requestId: `approach:${api.taskId}:${index}` }, context)).wait(context);
-								if (settled.status !== "done" || settled.type !== "input") throw new Error(`it ended ${settled.status}`);
-								const entry = await api.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
-								const content = entry?.model?.[0]?.content ?? [];
-								const report = (typeof content === "string" ? content : content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("\n")).trim();
-								const tests = TESTS.exec(report)?.[1]?.toLowerCase();
-								store.finished(parentId, index, {
-									state: "done",
-									...(tests === undefined ? {} : { tests }),
-									diff: await workspaces.diffStat(childId, from).catch(() => "unknown"),
-									cost: options.costOf(childId, started),
-									report: report.replace(TESTS, "").trim(),
-								}, now());
-							} catch (error) {
-								store.finished(parentId, index, { state: "failed", cost: options.costOf(childId, started), report: error instanceof Error ? error.message : String(error) }, now());
-							}
-							void refresh();
-						}),
-					);
+					await Promise.all(Array.from({ length: room }, () => worker()));
 				} finally {
 					clearInterval(timer);
 				}
@@ -252,20 +290,23 @@ export function approachesExtension(options: ApproachesOptions): Extension {
 /** The comparison message: a line per approach, then (when they're all done) their trade-offs and a button each. */
 export function comparison(approaches: readonly Approach[], now: number, costOf: (conversationId: number, since: number) => number, final = false): ChatMessage {
 	const chosen = approaches.find((a) => a.chosenBy !== undefined);
-	const icon = (a: Approach) => (a.state === "working" ? "⚙️" : a.state === "failed" ? "⚠️" : a.tests === "passed" ? "✅" : a.tests === "failed" ? "❌" : "☑️");
+	const icon = (a: Approach) => (a.state === "queued" ? "⏳" : a.state === "working" ? "⚙️" : a.state === "failed" ? "⚠️" : a.tests === "passed" ? "✅" : a.tests === "failed" ? "❌" : "☑️");
 	const seconds = (a: Approach) => Math.round(((a.finishedAt ?? now) - a.startedAt) / 1000);
 	const line = (a: Approach) => {
 		const cost = a.cost ?? costOf(a.childId, a.startedAt);
 		const facts = [
-			a.state === "working" ? `working, ${seconds(a)}s` : a.state === "failed" ? "didn't finish" : a.tests === undefined ? "done" : `tests ${a.tests}`,
+			a.state === "queued" ? "waiting for room" : a.state === "working" ? `working, ${seconds(a)}s` : a.state === "failed" ? "didn't finish" : a.tests === undefined ? "done" : `tests ${a.tests}`,
 			...(a.diff === undefined ? [] : [a.diff]),
 			`$${cost.toFixed(2)}`,
 		];
 		return `${icon(a)} *${a.index}. ${a.name}*: ${facts.join(" · ")}`;
 	};
-	const header = `🧪 _Experimental:_ trying ${approaches.length} approaches side by side.`;
+	const queued = approaches.filter((a) => a.state === "queued").length;
+	const header =
+		`🧪 _Experimental:_ trying ${approaches.length} approaches side by side.` +
+		(queued === 0 ? "" : ` I'm busy elsewhere too, so ${approaches.length - queued} run now; the other${queued === 1 ? "" : "s"} start${queued === 1 ? "s" : ""} as soon as one finishes.`);
 	const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: [header, ...approaches.map(line)].join("\n") } }];
-	const done = final || approaches.every((a) => a.state !== "working");
+	const done = final || approaches.every((a) => a.state !== "working" && a.state !== "queued");
 	if (done) {
 		for (const a of approaches) {
 			if (a.report === undefined || a.report === "") continue;
