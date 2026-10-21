@@ -101,6 +101,8 @@ export type Config = {
 	reposFile?: string;
 	/** Searching and reading every configured repository's code from any thread (codesearch.ts). */
 	codeSearch: boolean;
+	/** Experimental: trying several approaches at once when someone asks (approaches.ts). */
+	parallel: boolean;
 	/** Follow up on a thread waiting on people this many days (recaps.ts); 0 never. */
 	threadRecapDays: number;
 	/** How long a closed (not merged) pull request of Scout's keeps its branch, so it can be reopened. */
@@ -255,6 +257,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		weeklySummary: env.SCOUT_WEEKLY_SUMMARY !== "off",
 		initiative: parseInitiative(env.SCOUT_INITIATIVE),
 		codeSearch: env.SCOUT_CODE_SEARCH !== "off",
+		parallel: env.SCOUT_PARALLEL !== "off",
 		...(env.SCOUT_REPOS_FILE ? { reposFile: resolve(env.SCOUT_REPOS_FILE) } : {}),
 		reviewNudgeDays: Number(env.SCOUT_REVIEW_NUDGE_DAYS ?? 3),
 		closedBranchDays: Number(env.SCOUT_CLOSED_BRANCH_DAYS ?? 30),

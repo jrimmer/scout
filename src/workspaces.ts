@@ -307,6 +307,61 @@ export class Workspaces {
 		await env.remove(inside, { force: true }, BACKGROUND_CONTEXT);
 	}
 
+	/** The commit the conversation's branch is at. */
+	async head(conversationId: number): Promise<string> {
+		const opened = await this.#ensure(conversationId);
+		const env = this.#envAt(conversationId, opened, `${opened.handle.workdir}/repo`);
+		return (await must(env, ["git", "rev-parse", "HEAD"])).trim();
+	}
+
+	/**
+	 * Start this conversation's branch from another's commits (a bundle from `exportBranch`, whose `HEAD` is their tip),
+	 * for work that branches off a thread, such as one of several approaches. Its own branch must have nothing yet.
+	 */
+	async startFrom(conversationId: number, bundle: string): Promise<void> {
+		const opened = await this.#ensure(conversationId);
+		const env = this.#envAt(conversationId, opened, `${opened.handle.workdir}/repo`);
+		const inside = `${opened.handle.workdir}/.scout/from.bundle`;
+		await copyIn(env, inside, await readFile(bundle));
+		await must(env, ["git", "fetch", "--quiet", inside, "HEAD"]);
+		await must(env, ["git", "reset", "--quiet", "--hard", "FETCH_HEAD"]);
+		await env.remove(inside, { force: true }, BACKGROUND_CONTEXT);
+	}
+
+	/** What the conversation's branch changed since `since` (a commit): "+12 −3 in 2 files", or "no changes". */
+	async diffStat(conversationId: number, since: string): Promise<string> {
+		const opened = await this.#ensure(conversationId);
+		const env = this.#envAt(conversationId, opened, `${opened.handle.workdir}/repo`);
+		const { output } = await exec(env, ["git", "diff", "--shortstat", since, "HEAD"]);
+		const files = /(\d+) files? changed/.exec(output)?.[1];
+		if (files === undefined) return "no changes";
+		const added = /(\d+) insertions?/.exec(output)?.[1] ?? "0";
+		const removed = /(\d+) deletions?/.exec(output)?.[1] ?? "0";
+		return `+${added} −${removed} in ${files} file${files === "1" ? "" : "s"}`;
+	}
+
+	/**
+	 * Bring another conversation's commits (a bundle from `exportBranch`) onto this conversation's branch: a
+	 * fast-forward when they build on it, a merge otherwise. Throws, leaving the branch as it was, when they conflict.
+	 */
+	async adopt(conversationId: number, bundle: string): Promise<void> {
+		const opened = await this.#ensure(conversationId);
+		const env = this.#envAt(conversationId, opened, `${opened.handle.workdir}/repo`);
+		const inside = `${opened.handle.workdir}/.scout/adopt.bundle`;
+		await copyIn(env, inside, await readFile(bundle));
+		try {
+			await must(env, ["git", "fetch", "--quiet", inside, "HEAD"]);
+			if ((await exec(env, ["git", "merge", "--quiet", "--ff-only", "FETCH_HEAD"])).code === 0) return;
+			const merged = await exec(env, ["git", "merge", "--quiet", "--no-edit", "FETCH_HEAD"]);
+			if (merged.code !== 0) {
+				await exec(env, ["git", "merge", "--abort"]);
+				throw new Error(`those commits conflict with the thread's own: ${merged.output.trim().slice(-500)}`);
+			}
+		} finally {
+			await env.remove(inside, { force: true }, BACKGROUND_CONTEXT);
+		}
+	}
+
 	/** A file on the repository's base branch, from the mirror, if it's there. */
 	async readBase(repoName: string, path: string): Promise<string | undefined> {
 		const repo = this.repo(repoName);

@@ -197,6 +197,26 @@ than five minutes old: exact, current, read-only, and nothing new to run. `SCOUT
 This isn't a code index. One becomes worth it with very large repositories (where `git grep` slows down), questions
 by meaning rather than text, or cross-repository go-to-definition (#59); it would sit behind the same two tools.
 
+## Trying several approaches (experimental)
+
+When someone asks Scout to try or compare a few ways of doing something ("try a cache, or fixing the query"), it
+can work on 2 to 4 approaches at once (`src/approaches.ts`, the `try_approaches` tool). It does this only when
+asked: the profile tells it so, and it says the cost first, about one request's worth per approach.
+
+- **Each approach** gets its own conversation (owned by the thread's run, so stopping the thread stops them all) and
+  its own sandbox, starting from the thread's last commit (uncommitted work has to be committed first). It's told to
+  implement only its approach, run the tests, commit, and report what it changed and its trade-offs, without
+  opening a pull request.
+- **One message in the thread compares them** as they go, a line per approach (working, done, or didn't finish;
+  tests; diff size; cost), then each one's trade-offs and a "Use" button per approach that finished.
+- **Choosing** (checked like any request from whoever presses it) brings that approach's commits onto the thread's
+  branch, removes all the approaches' sandboxes, and tells the thread, which carries on from there (for example,
+  opening the pull request when asked). Nobody choosing leaves them until retention cleans up.
+- **Cost** counts against the channel's budget, and each approach answers to the per-run limits on its own.
+
+`SCOUT_PARALLEL=off` turns it off. What's rough: the approaches don't count toward Scout's concurrency limit, the
+live lines show elapsed time and cost but not steps, and Scout won't suggest it on its own yet.
+
 ## Work from the code host
 
 Once a minute Scout reads its code host account's unread notifications (Forgejo and GitHub both keep them) and looks

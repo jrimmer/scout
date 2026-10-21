@@ -32,6 +32,8 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
 - **As proactive as you want.** `SCOUT_INITIATIVE` is one dial: `asked` (only what people ask), `own` (also looks
   after its own work), or `team` (also acts on the team's work: alerts, reminders, summaries). Scout says which, and
   what it means, when it starts.
+- **Several approaches at once** (experimental). Ask Scout to try a few ways and it works on them side by side,
+  then lets you pick one from a comparison in the thread.
 - **A tidy colleague.** It asks the code's owners to review its pull requests, keeps them mergeable when the base
   moves (or says why it can't), asks about ones that have gone quiet before closing them, deletes its branches once
   they're merged, and reminds reviewers of anyone's pull requests that have waited on them for days.

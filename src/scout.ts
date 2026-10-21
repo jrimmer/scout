@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { Type } from "@earendil-works/pi-ai";
-import { type AgentChange, type ConversationId, createRegistry, defineExtension, defineTool, Harness, type Storage } from "@earendil-works/pi-durable";
+import { type AgentChange, type ConversationId, createRegistry, defineExtension, defineTool, type Extension, Harness, type Storage } from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createCodeHostExtension, type OpenedPull } from "./codehost.ts";
 import type { Config, RepoConfig } from "./config.ts";
@@ -16,6 +16,7 @@ import { Pricing } from "./pricing.ts";
 import { Counters, Tracer } from "./telemetry.ts";
 import { AutheliaFile, approversOf, loadRoles, requestersOf } from "./directory.ts";
 import { codeSearchExtension } from "./codesearch.ts";
+import { Approaches, approachesExtension, type ApproachesOptions, chooseApproach } from "./approaches.ts";
 import { egressExtension } from "./egress.ts";
 import { Images } from "./images.ts";
 import { CODEOWNERS_PATHS, type Owners, ownersOf, parseCodeOwners, recentOwners } from "./owners.ts";
@@ -281,6 +282,17 @@ export async function openScout(options: ScoutOptions) {
 	const egressTools = egressExtension((id, host, why) => proposeEgress(id, host, why));
 	// Every repository's code, from any thread: the host's mirrors, read-only (codesearch.ts).
 	const codeSearchTools = codeSearchExtension(() => config.repos.map((r) => ({ name: r.name, base: r.base, mirror: workspaces.mirrorFor(r.name) })));
+	// Experimental: several approaches at once, compared in the thread (approaches.ts). Where the comparison goes is the
+	// service's to say (main.ts sets it); each approach works without this tool, and without opening pull requests.
+	const approaches = new Approaches(db);
+	let showApproaches: ApproachesOptions["show"] = async () => undefined;
+	const approachesTools: Extension = approachesExtension({
+		store: approaches,
+		workspaces,
+		costOf: (id, since) => spend.spentOn(id, since).cost,
+		show: (parentId, message, ts) => showApproaches(parentId, message, ts),
+		childWithout: () => [approachesTools, workCodeHost],
+	});
 	const schedules = new Schedules(db);
 	// Each repository's image, built from its own setup script (images.ts); new threads start from it.
 	const images = new Images(db);
@@ -332,6 +344,7 @@ export async function openScout(options: ScoutOptions) {
 		statusTools,
 		codeSearchTools,
 		egressTools,
+		approachesTools,
 		reflection.reflect,
 		reflection.files,
 		profileCodeHost,
@@ -483,6 +496,13 @@ export async function openScout(options: ScoutOptions) {
 		repoOfConversation: (id: number) => repoOf(id, context),
 		/** Why this person may not approve changes to `server` (an MCP server, or "egress"), if they may not. */
 		refuseApprover,
+		approaches,
+		/** Where a thread's comparison of approaches is shown: set by the service. */
+		setApproachesView: (show: ApproachesOptions["show"]) => {
+			showApproaches = show;
+		},
+		/** Someone chose one of a thread's approaches: its commits come onto the thread's branch. */
+		chooseApproach: (parentId: number, index: number, by: string) => chooseApproach({ store: approaches, workspaces }, parentId, index, by),
 		/** What `scout_status` tells a thread: set by the service, which can see every thread. */
 		setStatus: (describe: (channel: string) => Promise<string>) => {
 			describeNow = describe;
@@ -524,6 +544,7 @@ export async function openScout(options: ScoutOptions) {
 				scheduleTools,
 				statusTools,
 				...(config.codeSearch ? [codeSearchTools] : []),
+				...(config.parallel ? [approachesTools] : []),
 				egressTools,
 				mcpTools,
 				observe,

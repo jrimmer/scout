@@ -15,12 +15,15 @@ import { ChannelCanvases, channelCanvas, channelWeeks, WeeklySummaries } from ".
 import { asksSomething, Recaps } from "./recaps.ts";
 import { type HomeData, type HomeThread, homeView } from "./home.ts";
 import { Capabilities } from "./capabilities.ts";
+import { comparison } from "./approaches.ts";
 import { allows, describeInitiative } from "./initiative.ts";
 import { allowInReposFile, EgressRequests } from "./egress.ts";
 import { parseCodeLink, previewBlocks } from "./previews.ts";
 import { type WorkRow, WorkList } from "./worklist.ts";
 import { startDashboard } from "./dash/server.ts";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import { ThreadDoc } from "./docs.ts";
+import type { ChatMessage } from "./render.ts";
 import { Health } from "./health.ts";
 import { loadConfig, useScoutsKey } from "./config.ts";
 import { weekStart } from "./limits.ts";
@@ -229,6 +232,7 @@ await slack.start({
 		await startOn({ ...look, threadTs: look.threadTs ?? look.ts, request: "Look into this.", intro: `<@${look.user}> asked me to look into this.` });
 	},
 	onDecision: (decision) => decide(decision),
+	onUseApproach: (use) => useApproach(use),
 	onEgress: (decision) => decideEgress(decision),
 	onCommand: (command) => slashCommand(command),
 	onLinks: (links) => previews(links),
@@ -328,6 +332,38 @@ async function decideEgress(d: { user: string; id: number; allow: boolean }): Pr
 	await inThread(decided.conversationId, toThread).catch(() => {});
 	await bridge.note(decided.conversationId, toThread.replace(/<@(\w+)>/g, "someone"), `egress:${d.id}`).catch(() => {});
 	return { text: `${d.allow ? "✅ Allowed" : "✋ Declined"} by <@${d.user}>: \`${decided.host}\` for ${decided.repo}${where}.`, final: true };
+}
+
+// Experimental: a thread's comparison of approaches lives in one message in it (approaches.ts).
+scout.setApproachesView(async (parentId, message, ts) => {
+	const thread = threads.byConversation(parentId);
+	if (thread === undefined) return undefined;
+	if (ts !== undefined) {
+		await slack.surface.update(thread.channel, ts, message);
+		return ts;
+	}
+	return slack.surface.post(thread.channel, thread.threadTs, message);
+});
+
+/** Someone chose one of a thread's approaches: checked like any request from them, then onto the thread's branch. */
+async function useApproach(use: { user: string; channel: string; parentId: number; index: number }): Promise<ChatMessage | string> {
+	const thread = threads.byConversation(use.parentId);
+	if (thread === undefined) return "That thread is gone.";
+	const doc = await harness.snapshot(ThreadDoc, use.parentId as ConversationId, context);
+	const channelName = doc?.channelName ?? "";
+	const allowed = await scout.admitter(async () => [])({ user: use.user, channelName, ...(doc?.repo === undefined ? {} : { repo: doc.repo }), starting: false });
+	if (!allowed.ok) return allowed.reason;
+	let chosen;
+	try {
+		chosen = await scout.chooseApproach(use.parentId, use.index, use.user);
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+	audit.record("approved", { actor: use.user, conversationId: use.parentId, channel: channelName, detail: { approach: chosen.index, name: chosen.name } });
+	const said = `<@${use.user}> chose approach ${chosen.index}, *${chosen.name}*. Its commits are on this thread's branch now; ask me to open the pull request when you're ready.`;
+	await inThread(use.parentId, said);
+	await bridge.note(use.parentId, `${await slack.nameOf(use.user)} chose approach ${chosen.index} (${chosen.name}); its commits are now on your branch, and the other approaches are gone.`, `approach-chosen:${use.parentId}:${chosen.index}`);
+	return comparison(scout.approaches.forThread(use.parentId), Date.now(), () => 0, true);
 }
 
 /** Approve and Decline buttons in the thread, for the change Scout just asked approval for. */

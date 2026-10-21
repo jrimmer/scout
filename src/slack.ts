@@ -32,6 +32,8 @@ export type SlackHandlers = {
 	onLook?: (look: { user: string; channel: string; channelName: string; ts: string; threadTs?: string; author?: string; text: string }) => Promise<void>;
 	/** Someone pressed Approve or Decline on a change waiting for approval; returns what the message should now say. */
 	onDecision?: (decision: { user: string; channel: string; conversationId: number; approve: boolean }) => Promise<string>;
+	/** Someone pressed "Use" on one of a thread's approaches (approaches.ts): the comparison to show now, or a note why not. */
+	onUseApproach?: (use: { user: string; channel: string; parentId: number; index: number }) => Promise<ChatMessage | string>;
 	/**
 	 * Someone pressed Allow or Decline on a network request: what to say. `final` replaces the message (it's decided);
 	 * otherwise only they see the answer and the buttons stay for someone who may decide.
@@ -302,6 +304,21 @@ export class Slack {
 				await handlers.onAsk?.({ user: body.user.id, channel: meta.channel, channelName: info?.channel?.name ?? meta.channel, ts: meta.ts, ...(meta.threadTs === undefined ? {} : { threadTs: meta.threadTs }), ...(meta.author === undefined ? {} : { author: meta.author }), text: meta.text, request });
 			} catch (error) {
 				console.error(`asking about ${meta.channel}/${meta.ts} failed:`, error);
+			}
+		});
+
+		// "Use" on one of a thread's approaches: the comparison then says who chose which, without buttons.
+		this.app.action(/^scout_use_approach_\d+$/, async ({ ack, body, respond }) => {
+			await ack();
+			const b = body as unknown as { user: { id: string }; channel?: { id: string }; actions: { value?: string }[] };
+			const [parent, index] = (b.actions[0]?.value ?? "").split(":").map(Number);
+			if (handlers.onUseApproach === undefined || b.channel === undefined || !Number.isFinite(parent) || !Number.isFinite(index)) return;
+			try {
+				const result = await handlers.onUseApproach({ user: b.user.id, channel: b.channel.id, parentId: parent!, index: index! });
+				if (typeof result === "string") await respond({ response_type: "ephemeral", replace_original: false, text: result });
+				else await respond({ replace_original: true, text: result.text, blocks: result.blocks as never });
+			} catch (error) {
+				console.error("choosing an approach failed:", error);
 			}
 		});
 
