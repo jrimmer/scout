@@ -96,6 +96,12 @@ export class Pulls {
 			.run(url, row.sha, row.outcome, row.attempts, row.since);
 	}
 
+	/** One of Scout's pull requests, by repository and number. */
+	byNumber(slug: string, number: number): PullRow | undefined {
+		const row = this.#db.prepare("SELECT * FROM pulls WHERE lower(slug) = lower(?) AND number = ?").get(slug, number);
+		return row === undefined ? undefined : toPull(row);
+	}
+
 	get(url: string): PullRow | undefined {
 		const row = this.#db.prepare("SELECT * FROM pulls WHERE url = ?").get(url);
 		return row === undefined ? undefined : toPull(row);

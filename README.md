@@ -23,8 +23,11 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
 - **Beyond code.** MCP servers (the data warehouse, traces, CI) run on the host, optionally per channel.
 - **A dashboard** (after spoond's): what Scout is working on, its merge rate, what it's learning, the notes nobody
   has reviewed yet, and what it costs, live, at `http://127.0.0.1:8893/`.
-- **Three ways in:**
+- **Four ways in:**
   - Slack threads.
+  - The code host (Forgejo or GitHub): assign Scout an issue, or mention `@scout` in an issue, a pull request or a
+    comment. It works in a thread in the repository's channel and answers on the issue too. Comments on its own pull
+    requests go back to the thread that opened them.
   - Pull requests that ask Scout for a review: it reviews like a colleague, and says so in the repository's channel.
   - `npm run job -- "…"` for one-off work.
 

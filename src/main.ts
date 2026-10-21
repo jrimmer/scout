@@ -9,6 +9,7 @@ import { type Check, CiWatcher, MAX_FIXES } from "./ci.ts";
 import { hostname } from "node:os";
 import { Bridge } from "./bridge.ts";
 import { Collector } from "./dash/collect.ts";
+import { type Ask, forgeFor, Inbox } from "./forge.ts";
 import { startDashboard } from "./dash/server.ts";
 import { ThreadDoc } from "./docs.ts";
 import { Health } from "./health.ts";
@@ -21,6 +22,7 @@ import { weekOf } from "./pulls.ts";
 import { localDay } from "./reflect.ts";
 import { openScout } from "./scout.ts";
 import { Slack } from "./slack.ts";
+import { threadKey } from "./threads.ts";
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -150,7 +152,13 @@ const bridge = new Bridge({
 	search: scout.search,
 	repoFor: scout.repoFor,
 	approve: (conversationId, user) => scout.approvals.grant(conversationId, user),
-	answered: (conversationId, ts) => scout.approvals.answered(conversationId, ts),
+	answered: (conversationId, ts, answer) => {
+		scout.approvals.answered(conversationId, ts);
+		const thread = threads.byConversation(conversationId);
+		void (thread === undefined ? Promise.resolve(undefined) : slack.permalink(thread.channel, thread.threadTs))
+			.then((link) => inbox.answered(conversationId, answer, link))
+			.catch((error: unknown) => console.error("answering on the code host failed:", error));
+	},
 	costNote: (conversationId, since) => scout.limits.costNote(conversationId, since),
 	approvalAskedIn: (ts) => scout.approvals.askedIn(ts),
 	audit,
@@ -284,6 +292,84 @@ const ciWatcher = new CiWatcher({
 });
 const ciTick = setInterval(() => void health.watch("ci", "watching CI failed", () => ciWatcher.poll()), MINUTE);
 
+// Work asked on the code host: an issue assigned to Scout, @scout in an issue or a comment, and what people say on
+// Scout's own pull requests (forge.ts). It goes to a thread like any request, and the answer back to the code host.
+const forge = forgeFor(config.codeHost);
+const inbox = new Inbox({
+	path: join(config.dataDir, "scout.sqlite"),
+	forge,
+	handlers: {
+		ownPull: (issue) => issue.pull && pulls.byNumber(issue.slug, issue.number) !== undefined,
+		ask: (ask) => takeAsk(ask),
+	},
+});
+const REVIEW_WORDS: Record<string, string> = { APPROVED: "approved", APPROVE: "approved", REQUEST_CHANGES: "asked for changes", CHANGES_REQUESTED: "asked for changes", COMMENT: "reviewed", COMMENTED: "reviewed" };
+async function takeAsk(ask: Ask): Promise<void> {
+	const { issue } = ask;
+	const kind = issue.pull ? "pull request" : "issue";
+	const ref = `${issue.slug}#${issue.number}`;
+	const repo = config.repos.find((r) => r.slug.toLowerCase() === issue.slug.toLowerCase());
+	// Only answer when someone asked Scout directly; a remark on its pull request in a repository it no longer has isn't that.
+	const say = (body: string) => (ask.why === "own pull request" ? Promise.resolve() : forge.comment(issue.slug, issue.number, body));
+	if (repo === undefined) {
+		await say(`I'm not set up to work in ${issue.slug}, so I can't take this on. Whoever runs me can add it.`);
+		return;
+	}
+	const allowed = await scout.mayAsk(ask.by, repo);
+	if (!allowed.ok) {
+		await say(`@${ask.by} ${allowed.reason}`);
+		return;
+	}
+	const said = ask.said.map((s) => `${s.author}${s.review === undefined ? "" : ` (${REVIEW_WORDS[s.review] ?? "reviewed"})`}: ${s.body.trim() || "(no comment)"}`).join("\n\n");
+	const verb = ask.why === "assigned" ? `assigned you ${kind}` : ask.why === "mentioned" ? `asked you in ${kind}` : `commented on your ${kind}`;
+	const prompt = [
+		`${ask.by} ${verb} ${ref} "${issue.title}" on ${forge.name} (${issue.url}):`,
+		said,
+		ask.why === "own pull request"
+			? "If they're asking for a change, make it and call open_pull_request again: it updates the same pull request. Otherwise answer them."
+			: `Work on it as you would a request in Slack. Your answer goes in this thread and back on the ${kind} as a comment.${issue.pull ? "" : ` If you open a pull request that resolves the issue, put "Closes #${issue.number}" in its description.`}`,
+	].join("\n\n");
+	audit.record("request", { actor: ask.by, detail: { as: forge.name.toLowerCase(), url: issue.url, why: ask.why, text: said.slice(0, 200) } });
+	const requestId = `forge:${ref}:${ask.said.map((s) => s.url ?? s.body.length).join(",")}`;
+
+	// A thread it already has: the pull request Scout opened, or this issue's own.
+	const existing = pulls.byNumber(issue.slug, issue.number)?.conversationId ?? inbox.threadOf(issue.slug, issue.number);
+	if (existing !== undefined && threads.byConversation(existing) !== undefined) {
+		const quoted = ask.said.map((s) => `*${s.author}*${s.review === undefined ? "" : ` ${REVIEW_WORDS[s.review] ?? "reviewed"}`} on <${s.url ?? issue.url}|${ref}>:\n${quote(s.body)}`).join("\n\n");
+		await inThread(existing, quoted);
+		inbox.replyTo(existing, issue.slug, issue.number);
+		await bridge.work(existing, prompt, requestId, "pick this up");
+		return;
+	}
+	const name = scout.channelOf(repo.name)?.name ?? alertHome;
+	const channel = name === undefined ? undefined : await slack.channelId(name);
+	if (name === undefined || channel === undefined) {
+		await say(`I don't have a Slack channel to work on ${repo.name} in yet, so I can't take this on. Whoever runs me can set one up.`);
+		return;
+	}
+	const root = `📥 *${ask.by}* ${ask.why === "assigned" ? "assigned me" : "asked me on"} <${issue.url}|${ref}>: ${issue.title}\n${quote(ask.said.at(-1)?.body ?? "")}`;
+	const threadTs = await slack.surface.post(channel, undefined, { text: root, blocks: [{ type: "markdown", text: root }] });
+	const base = issue.pull ? await forge.headBranch(issue.slug, issue.number) : undefined;
+	const context = [
+		`This thread is for ${kind} ${ref} on ${forge.name}: ${issue.url}`,
+		`# ${issue.title}\n\n${issue.body}`,
+		...(base === undefined ? [] : [`Changes you make here go into the pull request's own branch, ${base}.`]),
+	].join("\n\n");
+	await bridge.investigate({ channel, channelName: name, threadTs, context, prompt, requestId, ...(base === undefined ? {} : { base }) });
+	const conversationId = threads.get(threadKey(channel, threadTs))?.conversationId;
+	if (conversationId !== undefined) {
+		inbox.threadStarted(issue.slug, issue.number, conversationId);
+		inbox.replyTo(conversationId, issue.slug, issue.number);
+	}
+	const link = await slack.permalink(channel, threadTs);
+	await forge.comment(issue.slug, issue.number, `On it, in the open: ${link === undefined ? `#${name} in Slack` : `[#${name}](${link})`}. I'll answer here too.`);
+}
+function quote(text: string): string {
+	const clipped = text.trim().length > 600 ? `${text.trim().slice(0, 599)}…` : text.trim();
+	return clipped === "" ? "" : clipped.split("\n").map((line) => `> ${line}`).join("\n");
+}
+const inboxTick = setInterval(() => void health.watch("code host", "reading the code host's notifications failed", () => inbox.poll()), MINUTE);
+
 /** Housekeeping every few minutes; also soon after a start, so a restart doesn't hold up reviews and retries. */
 const housekeeping = () => {
 	const now = Date.now();
@@ -392,6 +478,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		clearInterval(tick);
 		clearTimeout(firstTick);
 		clearInterval(ciTick);
+		clearInterval(inboxTick);
+		inbox.close();
 		if (alertTick !== undefined) clearInterval(alertTick);
 		alertLog.close();
 		await slack.stop().catch(() => {});

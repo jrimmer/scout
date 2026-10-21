@@ -79,6 +79,21 @@ export class Permissions {
 		if (login === undefined) {
 			return { ok: false, reason: `I don't know your ${hostName(this.#host)} account yet, so I can't check you can change ${slug}. Ask whoever runs me to link it.` };
 		}
+		return this.#canChange(login, slug);
+	}
+
+	/** May the code host account `login` ask for work in `slug`? For requests made on the code host itself. */
+	async admitLogin(login: string, slug: string, now = Date.now()): Promise<Admission> {
+		if (!this.enforcing) return { ok: true };
+		const key = `login:${login} ${slug}`;
+		const cached = this.#cache.get(key);
+		if (cached !== undefined && now - cached.at < CACHE_MS) return cached.admission;
+		const admission = await this.#canChange(login, slug);
+		this.#cache.set(key, { at: now, admission });
+		return admission;
+	}
+
+	async #canChange(login: string, slug: string): Promise<Admission> {
 		const response = await this.#fetch(`${this.#host.apiUrl}/repos/${slug}/collaborators/${encodeURIComponent(login)}/permission`, {
 			headers: {
 				accept: this.#host.kind === "github" ? "application/vnd.github+json" : "application/json",

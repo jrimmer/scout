@@ -160,6 +160,15 @@ export async function openScout(options: ScoutOptions) {
 		if (person.groups.some((g) => groups.includes(g))) return { ok: true };
 		return { ok: false, reason: `I can only take work in ${repo.name} from people in ${groups.join(" or ")}. Ask an admin to add you.` };
 	};
+	/** The same, for someone asking on the code host: their login is their directory username. */
+	const mayAsk = async (login: string, repo: RepoConfig): Promise<Admission> => {
+		const groups = requestersOf(roles, repo.name);
+		if (groups === undefined || !permissions.enforcing) return permissions.admitLogin(login, repo.slug);
+		const person = directory === undefined ? undefined : await directory.byUsername(login).catch(() => undefined);
+		if (person === undefined) return { ok: false, reason: `I can't find ${login} in the directory, so I can't check you may ask me for work here. Ask whoever runs me to add you.` };
+		if (person.groups.some((g) => groups.includes(g))) return { ok: true };
+		return { ok: false, reason: `I can only take work in ${repo.name} from people in ${groups.join(" or ")}. Ask an admin to add you.` };
+	};
 	const permissions = new Permissions({
 		loginOf: async (user) => (await personOf(user))?.username,
 		config: {
@@ -389,6 +398,7 @@ export async function openScout(options: ScoutOptions) {
 		harness,
 		repoFor,
 		channelOf,
+		mayAsk,
 		approvals,
 		alertChannel,
 		responder,

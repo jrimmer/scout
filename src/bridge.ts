@@ -47,8 +47,11 @@ export type BridgeOptions = {
 	/** The repository a channel's threads work in. */
 	/** A person replied "approve" in a thread: let changes that need approval go ahead there (mcp.ts). */
 	approve?: (conversationId: number, user: string) => void;
-	/** A run ended with its answer in message `ts` (mcp.ts): if a change waited for approval, a 👍 there approves. */
-	answered?: (conversationId: number, ts: string | undefined) => void;
+	/**
+	 * A run ended with `answer` (none when it was stopped) in message `ts`. If a change waited for approval, a 👍 there
+	 * approves (mcp.ts); if someone asked on the code host, the answer goes back there too (forge.ts).
+	 */
+	answered?: (conversationId: number, ts: string | undefined, answer: string | undefined) => void;
 	/** The conversation whose answer in message `ts` asked for approval, if one did. */
 	approvalAskedIn?: (ts: string) => number | undefined;
 	/** What a run in this conversation since `since` cost, for its reply's footer (limits.ts). */
@@ -368,7 +371,7 @@ export class Bridge {
 	 * Work Scout starts itself, such as an alert's investigation: a thread it opened, with `context`, then `prompt` as a
 	 * request. It answers to budgets and concurrency like any request; if they say no, the thread says why.
 	 */
-	async investigate(thread: { channel: string; channelName: string; threadTs: string; context: string; prompt: string; requestId: string }): Promise<void> {
+	async investigate(thread: { channel: string; channelName: string; threadTs: string; context: string; prompt: string; requestId: string; base?: string }): Promise<void> {
 		// The request, not the instructions around it, says which of the channel's repositories it's about.
 		await this.openThread({ ...thread, about: thread.prompt });
 		const row = this.#options.threads.get(threadKey(thread.channel, thread.threadTs));
@@ -438,7 +441,7 @@ export class Bridge {
 			onRunMessage: (ts) => threads.runMessage(thread.key, ts),
 			...(this.#options.costNote === undefined ? {} : { cost: (since: number) => this.#options.costNote?.(thread.conversationId, since) }),
 			onRunEnd: (answer, ts) => {
-				this.#options.answered?.(thread.conversationId, ts);
+				this.#options.answered?.(thread.conversationId, ts, answer);
 				threads.spoke(thread.key, "scout");
 				threads.ranOnce(thread.conversationId);
 				void this.drain().catch((error: unknown) => console.error("starting queued requests failed:", error));

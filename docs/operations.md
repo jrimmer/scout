@@ -72,6 +72,28 @@ ask Scout about its review, or to fix what it flagged: that thread's sandbox has
 opens as a pull request into it, so the author merges it or not (Scout never pushes to someone else's branch). A pull
 request from a fork gets the base branch instead. Nothing to configure; give Scout's account access to the repository.
 
+## Work from the code host
+
+Once a minute Scout reads its code host account's unread notifications (Forgejo and GitHub both keep them) and looks
+at what's new on each issue or pull request they point at (`src/forge.ts`). These are requests:
+
+- an issue assigned to Scout;
+- `@scout` (Scout's login) in a new issue or pull request, or in a comment on one;
+- anything said on a pull request Scout opened: comments, and reviews with words in them or a request for changes.
+  A bare approval isn't.
+
+A request about an issue or pull request that already has a thread goes to that thread (a pull request's is the one
+that opened it), quoted there so people in Slack can see it. Otherwise Scout starts a thread in the repository's
+channel (or the alert channel, when the repository has none) and comments on the issue with a link to it. For
+someone else's pull request in the same repository, the thread's changes go into that pull request's branch. Either
+way, Scout's answer goes back on the issue or pull request as a comment.
+
+Who may ask is decided as for Slack: the login is looked up in the directory and its groups checked against
+`SCOUT_ROLES_FILE`, or, without roles for the repository, the code host's own permission. Someone who may not, or a
+repository Scout isn't set up for, gets a short reply saying why. Nothing from before the inbox was first switched on
+becomes work, and each comment is a request at most once. The code host is behind an interface (`Forge`); Forgejo
+and GitHub share one implementation, with their differences in a small dialect.
+
 ## CI on Scout's pull requests
 
 Once a minute Scout reads the combined commit status of each of its open pull requests' heads (Forgejo Actions and
