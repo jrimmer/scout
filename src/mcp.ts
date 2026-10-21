@@ -82,6 +82,11 @@ export class Approvals {
 			.run(ts ?? null, conversationId);
 	}
 
+	/** Whether the conversation's latest answer asked for approval of a change. */
+	waiting(conversationId: number): boolean {
+		return this.#db.prepare("SELECT 1 FROM approvals WHERE conversation_id = ? AND asked_in IS NOT NULL").get(conversationId) !== undefined;
+	}
+
 	/** The conversation whose answer in message `ts` asked for approval, if one did. */
 	askedIn(ts: string): number | undefined {
 		const row = this.#db.prepare("SELECT conversation_id FROM approvals WHERE asked_in = ?").get(ts) as { conversation_id: number } | undefined;

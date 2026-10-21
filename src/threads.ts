@@ -69,6 +69,14 @@ export class Threads {
 		if (!columns.includes("answer_ts")) this.#db.exec("ALTER TABLE threads ADD COLUMN answer_ts TEXT");
 	}
 
+	/** A person's recent threads: ones they started or asked in last, latest first. */
+	forPerson(user: string, limit: number): ThreadRow[] {
+		return this.#db
+			.prepare("SELECT * FROM threads WHERE (started_by = ? OR last_asker = ?) AND purged_at IS NULL ORDER BY last_activity DESC LIMIT ?")
+			.all(user, user, limit)
+			.map(toThread);
+	}
+
 	/** The thread's latest answer is in message `ts`. */
 	answered(key: string, ts: string): void {
 		this.#db.prepare("UPDATE threads SET answer_ts = ? WHERE key = ?").run(ts, key);

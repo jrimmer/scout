@@ -54,6 +54,11 @@ export class Recaps {
 		return due;
 	}
 
+	/** Whether the thread is waiting on people: Scout's answer asked them something, and nobody has replied yet. */
+	asking(conversationId: number, threadOf: (conversationId: number) => ThreadRow | undefined): boolean {
+		return this.#get(conversationId) !== undefined && threadOf(conversationId)?.lastSpeaker === "scout";
+	}
+
 	recapped(conversationId: number, now = Date.now()): void {
 		this.#db.prepare("UPDATE thread_recaps SET recapped_at = ? WHERE conversation_id = ?").run(now, conversationId);
 	}

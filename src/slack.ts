@@ -6,6 +6,9 @@ import type { ChatMessage, ChatSurface } from "./render.ts";
 const SPOKEN_SUBTYPES = new Set([undefined, "thread_broadcast", "file_share"]);
 
 const CREATE_CHANNEL_ACTION = "scout_create_channel";
+/** The "Ask Scout about this" message shortcut (slack-manifest.yaml), and the form it opens. */
+const ASK_SHORTCUT = "scout_ask";
+const ASK_FORM = "scout_ask_form";
 
 export type SlackHandlers = {
 	onMessage: (message: IncomingMessage) => Promise<void>;
@@ -13,6 +16,10 @@ export type SlackHandlers = {
 	/** Someone edited a message (its new text) or deleted one. */
 	onEdit?: (edit: { channel: string; ts: string; threadTs?: string; user: string; text: string }) => Promise<void>;
 	onDelete?: (deleted: { channel: string; ts: string }) => void;
+	/** Someone used "Ask Scout about this" on a message: what they asked, and the message it's about. */
+	onAsk?: (ask: { user: string; channel: string; channelName: string; ts: string; threadTs?: string; author?: string; text: string; request: string }) => Promise<void>;
+	/** Someone opened Scout's App Home tab: the view to show them. */
+	home?: (user: string) => Promise<{ type: "home"; blocks: unknown[] }>;
 };
 
 /**
@@ -177,6 +184,61 @@ export class Slack {
 				});
 			} catch (error) {
 				console.error(`message ${e.channel}/${e.ts} failed:`, error);
+			}
+		});
+
+		// "Ask Scout about this", from any message's menu: a short form, then a thread on that message.
+		this.app.shortcut(ASK_SHORTCUT, async ({ shortcut, ack, client }) => {
+			await ack();
+			const s = shortcut as unknown as { trigger_id: string; channel: { id: string }; message: { ts: string; thread_ts?: string; user?: string; text?: string } };
+			const text = (s.message.text ?? "").slice(0, 2_000);
+			await client.views.open({
+				trigger_id: s.trigger_id,
+				view: {
+					type: "modal",
+					callback_id: ASK_FORM,
+					private_metadata: JSON.stringify({ channel: s.channel.id, ts: s.message.ts, threadTs: s.message.thread_ts, author: s.message.user, text }),
+					title: { type: "plain_text", text: "Ask Scout" },
+					submit: { type: "plain_text", text: "Ask" },
+					close: { type: "plain_text", text: "Cancel" },
+					blocks: [
+						{ type: "section", text: { type: "mrkdwn", text: text === "" ? "_(a message with no text)_" : text.split("\n").map((l) => `> ${l}`).join("\n").slice(0, 2_900) } },
+						{
+							type: "input",
+							block_id: "request",
+							label: { type: "plain_text", text: "What would you like me to do?" },
+							element: { type: "plain_text_input", action_id: "text", multiline: true, placeholder: { type: "plain_text", text: "Look into this, explain it, fix it…" } },
+						},
+					],
+				},
+			});
+		});
+
+		this.app.view(ASK_FORM, async ({ ack, view, body }) => {
+			const meta = JSON.parse(view.private_metadata) as { channel: string; ts: string; threadTs?: string; author?: string; text: string };
+			const request = view.state.values.request?.text?.value?.trim() ?? "";
+			// Scout works only in public channels it's in; say so in the form rather than failing afterwards.
+			const info = await this.app.client.conversations.info({ channel: meta.channel }).catch(() => undefined);
+			const open = info?.channel?.is_channel === true && info.channel.is_private !== true && info.channel.is_member === true;
+			if (!open) {
+				await ack({ response_action: "errors", errors: { request: "I only work in public channels I'm in. Invite me here, or ask me in a channel I'm in." } });
+				return;
+			}
+			await ack();
+			try {
+				await handlers.onAsk?.({ user: body.user.id, channel: meta.channel, channelName: info?.channel?.name ?? meta.channel, ts: meta.ts, ...(meta.threadTs === undefined ? {} : { threadTs: meta.threadTs }), ...(meta.author === undefined ? {} : { author: meta.author }), text: meta.text, request });
+			} catch (error) {
+				console.error(`asking about ${meta.channel}/${meta.ts} failed:`, error);
+			}
+		});
+
+		// Needs the Home tab enabled and the app_home_opened event (slack-manifest.yaml).
+		this.app.event("app_home_opened", async ({ event }) => {
+			if (event.tab !== "home" || handlers.home === undefined) return;
+			try {
+				await this.app.client.views.publish({ user_id: event.user, view: (await handlers.home(event.user)) as never });
+			} catch (error) {
+				console.error(`App Home for ${event.user} failed:`, error);
 			}
 		});
 

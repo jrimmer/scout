@@ -13,6 +13,7 @@ import { type Ask, forgeFor, Inbox } from "./forge.ts";
 import { BranchCleanup, MAX_TRIES as UPKEEP_TRIES, PullUpkeep, ReviewNudges } from "./upkeep.ts";
 import { channelWeeks, WeeklySummaries } from "./weekly.ts";
 import { Recaps } from "./recaps.ts";
+import { type HomeThread, homeView } from "./home.ts";
 import { startDashboard } from "./dash/server.ts";
 import { ThreadDoc } from "./docs.ts";
 import { Health } from "./health.ts";
@@ -202,6 +203,15 @@ await slack.start({
 	onReaction: (reaction) => bridge.onReaction(reaction),
 	onEdit: (edit) => bridge.onEdit(edit),
 	onDelete: (deleted) => bridge.onDelete(deleted),
+	home: (user) => homeFor(user),
+	// "Ask Scout about this": a thread on that message, started as if they'd asked there (admitted and audited).
+	onAsk: async (ask) => {
+		const threadTs = ask.threadTs ?? ask.ts;
+		const about = ask.text === "" ? "" : `\n\nAbout ${ask.author === undefined ? "this message" : `<@${ask.author}>'s message`}:\n${ask.text.split("\n").map((l) => `> ${l}`).join("\n")}`;
+		const said = `<@${ask.user}> asked me about this: ${ask.request}`;
+		const ts = await slack.surface.post(ask.channel, threadTs, { text: said, blocks: [{ type: "markdown", text: said }] });
+		await bridge.onMessage({ channel: ask.channel, channelType: "channel", channelName: ask.channelName, user: ask.user, text: `<@${slack.botUserId}> ${ask.request}${about}`, ts, threadTs });
+	},
 });
 // What people said while Scout was down: Socket Mode doesn't replay it, so read it back and take it in, in order.
 // Each request is keyed by its message, so one Scout had already handled isn't handled twice.
@@ -550,6 +560,69 @@ async function followUpStalledThreads(): Promise<void> {
 		].join(" ");
 		await bridge.work(id, prompt, `recap:${id}:${localDay(new Date())}`, "follow up here");
 	}
+}
+
+// What Scout is doing, for "what are you working on?" (scout_status) and each person's App Home tab (home.ts).
+async function linkOf(conversationId: number): Promise<string | undefined> {
+	const thread = threads.byConversation(conversationId);
+	return thread === undefined ? undefined : slack.permalink(thread.channel, thread.threadTs).catch(() => undefined);
+}
+async function workingNow() {
+	const now = Date.now();
+	return Promise.all(
+		bridge.working().map(async (w) => ({
+			conversationId: w.conversationId,
+			channel: await channelOf(w.conversationId),
+			minutes: Math.round((now - w.startedAt) / MINUTE),
+			...(w.lastStep === undefined ? {} : { lastStep: w.lastStep }),
+		})),
+	);
+}
+scout.setStatus(async (channel) => {
+	const working = await workingNow();
+	const waiting = recaps.waiting((c) => threads.byConversation(c)).length;
+	const here = scout.schedules.forChannel(channel);
+	const lines = [
+		working.length === 0 ? "Not working on anything else right now." : `Working on ${working.length} thing${working.length === 1 ? "" : "s"}:`,
+		...working.map((w) => `- #${w.channel}, ${w.minutes} min${w.lastStep === undefined ? "" : `, on ${w.lastStep}`}`),
+		`${threads.queued().length} request(s) waiting to start.`,
+		`${waiting} thread(s) waiting on people after a follow-up.`,
+		here.length === 0 ? "No schedules in this channel." : `Schedules here: ${here.map((s) => `#${s.id} ${s.when}: ${s.task}${s.paused ? " (paused)" : ""}`).join("; ")}`,
+	];
+	return lines.join("\n");
+});
+async function homeFor(user: string) {
+	const threadOf = (c: number) => threads.byConversation(c);
+	const queuedKeys = new Set(threads.queued().map((q) => q.key));
+	const mine = threads.forPerson(user, 10);
+	const theirs = await Promise.all(
+		mine.map(async (t) => {
+			const busy = bridge.view(t.conversationId)?.busy === true;
+			const asking = t.lastAsker === user && (scout.approvals.waiting(t.conversationId) || recaps.asking(t.conversationId, threadOf));
+			const state: HomeThread["state"] = busy ? "working" : queuedKeys.has(t.key) ? "queued" : asking ? "waiting on you" : "answered";
+			const link = await linkOf(t.conversationId);
+			return {
+				...(link === undefined ? {} : { link }),
+				channel: await channelOf(t.conversationId),
+				about: scout.search.first(t.conversationId)?.text ?? "",
+				state,
+				approval: scout.approvals.waiting(t.conversationId),
+			};
+		}),
+	);
+	const working = await Promise.all((await workingNow()).map(async (w) => {
+		const link = await linkOf(w.conversationId);
+		return { ...w, ...(link === undefined ? {} : { link }) };
+	}));
+	return homeView({
+		working,
+		queued: threads.queued().length,
+		threads: theirs.map(({ approval: _, ...t }) => t),
+		waitingOnYou: theirs
+			.filter((t) => t.state === "waiting on you")
+			.map((t) => ({ ...(t.link === undefined ? {} : { link: t.link }), channel: t.channel, what: t.approval ? "a change waiting for your approval (reply “approve” or 👍 my answer)" : "a question I asked you" })),
+		schedules: scout.schedules.all().filter((s) => s.createdBy === user),
+	});
 }
 
 // Closed pull requests' branches, once they've been closed long enough (and weren't reopened).

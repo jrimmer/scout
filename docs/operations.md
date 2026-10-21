@@ -59,6 +59,10 @@ from a named snapshot (#24).
 
 ## In Slack: nothing lost, and always saying where things stand
 
+The Home tab, the message shortcut and attached answers need the app updated from `slack-manifest.yaml` (the
+`commands` and `files:write` scopes, the Home tab, the shortcut and the `app_home_opened` event) and reinstalled.
+Until then each falls back quietly: no Home tab, no shortcut, and long answers in several messages.
+
 - **Missed messages.** Socket Mode doesn't replay what was said while Scout was down. Scout records a heartbeat
   every minute; on start it reads back, since the last one (at most 6 hours), the top-level messages in the public
   channels it's in and the replies in its threads active in the last week, and takes them in order. A message it
@@ -78,6 +82,13 @@ from a named snapshot (#24).
 - **Edits and deletions.** Editing a request that's waiting its turn replaces it; editing it while Scout works on it
   steers the run ("ann edited her request: …"). Deleting a waiting request drops it. Edits after Scout has answered
   are left alone: ask again.
+- **"What are you working on?"** Asked in any thread, Scout answers from its live state (`scout_status`): what it's
+  running and for how long, what's waiting to start, threads waiting on people, and the channel's schedules. Its
+  **App Home tab** shows each person the same, plus their own threads and what each is waiting on, approvals and
+  questions waiting on them, and the schedules they set up (`src/home.ts`).
+- **"Ask Scout about this"**, from any message's ⋯ menu: a short form asks what to do, then Scout starts a thread on
+  that message (an alert, a teammate's question) as a request from whoever asked. Only in public channels Scout is
+  in; elsewhere the form says so.
 - **🔁 to try again.** A 🔁 (`:repeat:`) on Scout's latest answer in a thread asks it to try again, as if the person
   had asked in the thread (so it's admitted and audited like any request).
 

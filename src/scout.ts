@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai/models";
-import { type AgentChange, type ConversationId, createRegistry, Harness, type Storage } from "@earendil-works/pi-durable";
+import { Type } from "@earendil-works/pi-ai";
+import { type AgentChange, type ConversationId, createRegistry, defineExtension, defineTool, Harness, type Storage } from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createCodeHostExtension, type OpenedPull } from "./codehost.ts";
 import type { Config, RepoConfig } from "./config.ts";
@@ -255,6 +256,24 @@ export async function openScout(options: ScoutOptions) {
 	});
 	const searchTools = searchExtension(search, threads, options.threadLink ?? (async () => undefined));
 	const memoryTools = memoryExtension(memory, audit);
+	// "What are you working on?": Scout's live state, which only the service running it knows (main.ts sets this).
+	let describeNow: (channel: string) => Promise<string> = async () => "I can't see my other threads from here.";
+	const statusTools = defineExtension({
+		name: "status",
+		tools: [
+			defineTool({
+				name: "scout_status",
+				description:
+					"What you're doing right now across all your threads, what's waiting to start, which threads are waiting on " +
+					"people, and this channel's schedules. Use it when someone asks what you're working on or how busy you are.",
+				parameters: Type.Object({}),
+				execute: async (_args, api, ctx) => {
+					const channel = (await api.snapshot(ThreadDoc, api.conversationId, ctx))?.channelName ?? "";
+					return { output: [{ type: "text", text: await describeNow(channel) }] };
+				},
+			}),
+		],
+	});
 	const schedules = new Schedules(db);
 	// Each repository's image, built from its own setup script (images.ts); new threads start from it.
 	const images = new Images(db);
@@ -303,6 +322,7 @@ export async function openScout(options: ScoutOptions) {
 		searchTools,
 		memoryTools,
 		scheduleTools,
+		statusTools,
 		reflection.reflect,
 		reflection.files,
 		profileCodeHost,
@@ -446,6 +466,10 @@ export async function openScout(options: ScoutOptions) {
 		approvals,
 		schedules,
 		images,
+		/** What `scout_status` tells a thread: set by the service, which can see every thread. */
+		setStatus: (describe: (channel: string) => Promise<string>) => {
+			describeNow = describe;
+		},
 		/** Build the images that are due (only where the sandboxes can be saved as images). */
 		refreshImages: () =>
 			workspaces.driver.snapshot === undefined
@@ -474,7 +498,7 @@ export async function openScout(options: ScoutOptions) {
 		/** What a thread (or a job) runs with. */
 		workAgent: {
 			model: config.model,
-			extensions: [profileTools, codingTools, workCodeHost, searchTools, memoryTools, scheduleTools, mcpTools, observe],
+			extensions: [profileTools, codingTools, workCodeHost, searchTools, memoryTools, scheduleTools, statusTools, mcpTools, observe],
 		} satisfies AgentChange,
 		reviewerAgent,
 		pullReviewerAgent,
