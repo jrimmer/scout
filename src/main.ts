@@ -12,6 +12,7 @@ import { Collector } from "./dash/collect.ts";
 import { type Ask, forgeFor, Inbox } from "./forge.ts";
 import { BranchCleanup, MAX_TRIES as UPKEEP_TRIES, PullUpkeep, ReviewNudges } from "./upkeep.ts";
 import { channelWeeks, WeeklySummaries } from "./weekly.ts";
+import { Recaps } from "./recaps.ts";
 import { startDashboard } from "./dash/server.ts";
 import { ThreadDoc } from "./docs.ts";
 import { Health } from "./health.ts";
@@ -179,6 +180,7 @@ const bridge = new Bridge({
 	approve: (conversationId, user) => scout.approvals.grant(conversationId, user),
 	answered: (conversationId, ts, answer) => {
 		scout.approvals.answered(conversationId, ts);
+		recaps.answered(conversationId, answer);
 		const thread = threads.byConversation(conversationId);
 		void (thread === undefined ? Promise.resolve(undefined) : slack.permalink(thread.channel, thread.threadTs))
 			.then((link) => inbox.answered(conversationId, answer, link))
@@ -493,6 +495,13 @@ async function postChannelWeeks(): Promise<void> {
 			pulls: pulls.touched(from, to),
 			stillOpen: pulls.open("work"),
 			notes: memory.active().filter((n) => n.createdAt >= from && n.createdAt < to),
+			waiting: await Promise.all(
+				recaps.waiting((c) => threads.byConversation(c)).map(async (t) => {
+					const thread = threads.byConversation(t.conversationId);
+					const link = thread === undefined ? undefined : await slack.permalink(thread.channel, thread.threadTs);
+					return { ...t, ...(link === undefined ? {} : { link }) };
+				}),
+			),
 			channelOf,
 			spend: (channel) => {
 				const budget = scout.limits.budgetFor(channel);
@@ -505,6 +514,20 @@ async function postChannelWeeks(): Promise<void> {
 		const id = await slack.channelId(name);
 		if (id === undefined || !weekly.claim(key, name)) continue;
 		await slack.surface.post(id, undefined, { text, blocks: [{ type: "markdown", text }] });
+	}
+}
+
+// Threads that stalled waiting on people get one follow-up in the thread (recaps.ts).
+const recaps = new Recaps(join(config.dataDir, "scout.sqlite"));
+async function followUpStalledThreads(): Promise<void> {
+	const hasOpenPull = (id: number) => pulls.forConversation(id).some((p) => p.state === "open");
+	for (const id of recaps.due((c) => threads.byConversation(c), hasOpenPull, config.threadRecapDays * DAY)) {
+		recaps.recapped(id);
+		const prompt = [
+			`Nobody has replied here for ${config.threadRecapDays} days, and your last answer was waiting on someone.`,
+			"For whoever picks this up, recap in a few lines: where things stand, what's left, and what you're waiting on and from whom (mention them by name). End with the one question that would move it on. Don't redo or continue any work.",
+		].join(" ");
+		await bridge.work(id, prompt, `recap:${id}:${localDay(new Date())}`, "follow up here");
 	}
 }
 
@@ -580,6 +603,7 @@ const housekeeping = () => {
 	void health.watch("reviews", "reviewing pull requests failed", () => pullReviewer.poll());
 	void health.watch("upkeep", "looking after Scout's pull requests failed", () => upkeep.poll(pulls.open("work")));
 	void health.watch("branches", "deleting closed pull requests' branches failed", cleanUpBranches);
+	void health.watch("recaps", "following up on stalled threads failed", followUpStalledThreads);
 	const today = new Date(now);
 	if (today.getDay() >= 1 && today.getDay() <= 5 && today.getHours() >= 9 && today.getHours() < 17) {
 		void health.watch("review nudges", "reminding reviewers failed", nudgeReviews);
@@ -692,6 +716,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		weekly.close();
 		reviewNudges.close();
 		branches.close();
+		recaps.close();
 		if (alertTick !== undefined) clearInterval(alertTick);
 		alertLog.close();
 		await slack.stop().catch(() => {});

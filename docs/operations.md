@@ -164,11 +164,21 @@ Every few minutes Scout looks at its own open pull requests on the code host (`s
   (default 30), so it can be reopened, and loses it then if it's still closed. The code host keeps the pull
   request's commits either way.
 
+## Following up on stalled threads
+
+When Scout's answer ends by asking people something and nobody replies for `SCOUT_THREAD_RECAP_DAYS` (default 3; 0
+turns it off), Scout follows up once in that thread: where things stand, what's left, who it's waiting on (by
+name), and the one question that would move it on. It doesn't redo or continue any work, and it doesn't follow up
+again until someone speaks in the thread. A thread with an open pull request is left to that pull request's own
+reminders (stale pull requests, reviewers). The channel's weekly summary lists threads still waiting after their
+follow-up, by link, without summarizing them again (`src/recaps.ts`).
+
 ## Each channel's week
 
 On Monday after the reflection hour, alongside the weekly report in the home channel, Scout posts a summary in every
 channel it worked in the week before: threads, pull requests merged, closed and still in review, what's still open
-there, what models cost against the channel's budget, and the notes it kept, which people can still correct
+there, threads still waiting on someone after their follow-up, what models cost against the channel's budget, and
+the notes it kept, which people can still correct
 (`src/weekly.ts`). A channel with nothing to report gets nothing, and each channel gets each week once.
 `SCOUT_WEEKLY_SUMMARY=off` turns it off.
 

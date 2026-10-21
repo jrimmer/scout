@@ -18,6 +18,8 @@ export type WeekSources = {
 	stillOpen: PullRow[];
 	/** Notes Scout kept in the week, still in force. */
 	notes: MemoryNote[];
+	/** Threads that had a follow-up and still wait on people (recaps.ts), with a link to each and since when. */
+	waiting?: { conversationId: number; link?: string; since: number }[];
 	/** The channel (by name) a conversation is in. */
 	channelOf: (conversationId: number) => Promise<string>;
 	/** What models cost in a channel in the week, and its weekly budget if it has one. */
@@ -25,12 +27,13 @@ export type WeekSources = {
 };
 
 export async function channelWeeks(s: WeekSources, now: number): Promise<Map<string, string>> {
-	type Week = { threads: number; opened: PullRow[]; merged: PullRow[]; closed: PullRow[]; open: PullRow[]; notes: MemoryNote[] };
+	type Waiting = { link?: string; since: number };
+	type Week = { threads: number; opened: PullRow[]; merged: PullRow[]; closed: PullRow[]; open: PullRow[]; notes: MemoryNote[]; waiting: Waiting[] };
 	const weeks = new Map<string, Week>();
 	const week = (channel: string) => {
 		let w = weeks.get(channel);
 		if (w === undefined) {
-			w = { threads: 0, opened: [], merged: [], closed: [], open: [], notes: [] };
+			w = { threads: 0, opened: [], merged: [], closed: [], open: [], notes: [], waiting: [] };
 			weeks.set(channel, w);
 		}
 		return w;
@@ -44,10 +47,11 @@ export async function channelWeeks(s: WeekSources, now: number): Promise<Map<str
 	}
 	for (const p of s.stillOpen) week(await s.channelOf(p.conversationId)).open.push(p);
 	for (const n of s.notes) week(n.channelName).notes.push(n);
+	for (const t of s.waiting ?? []) week(await s.channelOf(t.conversationId)).waiting.push(t);
 
 	const summaries = new Map<string, string>();
 	for (const [channel, w] of weeks) {
-		if (channel === "" || (w.threads === 0 && w.opened.length + w.merged.length + w.closed.length === 0 && w.notes.length === 0)) continue;
+		if (channel === "" || (w.threads === 0 && w.opened.length + w.merged.length + w.closed.length + w.notes.length + w.waiting.length === 0)) continue;
 		const counts = [
 			`${w.threads} thread${w.threads === 1 ? "" : "s"}`,
 			...(w.merged.length > 0 ? [`${w.merged.length} pull request${w.merged.length === 1 ? "" : "s"} merged`] : []),
@@ -61,6 +65,14 @@ export async function channelWeeks(s: WeekSources, now: number): Promise<Map<str
 				"*Still open:*",
 				...w.open.map((p) => `• <${p.url}|${p.slug}#${p.number}> ${p.title} (opened ${days(now - p.openedAt)})`),
 			);
+		}
+		if (w.waiting.length > 0) {
+			// Each has had its own recap in its thread; here they're only listed.
+			const quiet = (since: number) => {
+				const d = Math.max(1, Math.floor((now - since) / (24 * 60 * 60 * 1000)));
+				return `quiet for ${d} day${d === 1 ? "" : "s"}`;
+			};
+			lines.push("*Waiting on someone:*", ...w.waiting.map((t) => `• ${t.link === undefined ? "a thread" : `<${t.link}|a thread>`} (${quiet(t.since)})`));
 		}
 		if (w.notes.length > 0) {
 			lines.push("*What I noted:*", ...w.notes.map((n) => `• [${n.id}] ${n.note}`), "If any of these are wrong, tell me to forget them.");
