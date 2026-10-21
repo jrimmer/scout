@@ -84,7 +84,11 @@ npm test                                   # unit and end-to-end tests with a sc
 SCOUT_DOCKER_TESTS=1 npm test              # also the real container, clone, and push
 npm run check                              # type-check
 npm run job -- "what to do"                # one task, no Slack
+npm run canary                             # ask the running Scout for a change, as a person would
 ```
+
+CI runs the type check, the tests and the Docker tests on every pull request (`.forgejo/workflows/ci.yml`).
+[docs/releasing.md](docs/releasing.md) says how a release is made, and what 1.0 waits on.
 
 ## License
 

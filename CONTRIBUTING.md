@@ -11,6 +11,7 @@ Read [AGENTS.md](AGENTS.md) first: it holds the rules the codebase keeps (small 
 things together, replies only from `render.ts`, Scout's voice, profile content as data). [docs/design.md](docs/design.md)
 says what Scout copies from River, what it decided, and what it left out on purpose.
 
+- CI must pass: the type check, the tests, and the Docker tests (`.forgejo/workflows/ci.yml`).
 - One change per pull request, with tests for the behaviour it changes. Tests use the faux model, `MemoryStorage`
   and a fake `ChatSurface`; a scripted tool call needs `{ stopReason: "toolUse" }`.
 - Update `docs/operations.md` (and `.env.example`, for a new setting) in the same pull request.
