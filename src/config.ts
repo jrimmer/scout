@@ -95,6 +95,8 @@ export type Config = {
 	pullUpkeep: { staleDays: number; closeDays: number };
 	/** Each channel's weekly summary, Mondays (weekly.ts). */
 	weeklySummary: boolean;
+	/** Whether a request's reaction follows what Scout is doing (🧠, 📖, 🧪…), or only 👀 then ✅ (reactions.ts). */
+	statusReactions: boolean;
 	/** How much Scout does on its own initiative (initiative.ts): asked, own or team. */
 	initiative: Initiative;
 	/** The repos file (SCOUT_REPOS_FILE), where an egress host people allow is saved (egress.ts). */
@@ -256,6 +258,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		},
 		weeklySummary: env.SCOUT_WEEKLY_SUMMARY !== "off",
 		initiative: parseInitiative(env.SCOUT_INITIATIVE),
+		statusReactions: env.SCOUT_STATUS_REACTIONS !== "off",
 		codeSearch: env.SCOUT_CODE_SEARCH !== "off",
 		parallel: env.SCOUT_PARALLEL !== "off",
 		...(env.SCOUT_REPOS_FILE ? { reposFile: resolve(env.SCOUT_REPOS_FILE) } : {}),

@@ -6,6 +6,8 @@ import type { Admission } from "./limits.ts";
 import { ThreadDoc } from "./docs.ts";
 import type { ThreadSearch } from "./search.ts";
 import { type ChatMessage, type ChatSurface, type RunOutcome, ThreadView } from "./render.ts";
+import { DEFAULT_EMOJI, type Ending, type Phase, StatusReactions } from "./reactions.ts";
+import { asksSomething } from "./recaps.ts";
 import { threadKey, type ThreadRow, type Threads } from "./threads.ts";
 
 /** A Slack message as the bridge needs it; the Slack adapter decodes events into this. */
@@ -58,6 +60,10 @@ export type BridgeOptions = {
 	approvalAskedIn?: (ts: string) => number | undefined;
 	/** Whether to mark requests with reactions (👀 picked up, ✅ answered, ⚠️ a problem): the reactions:write scope. */
 	reactionsOn?: () => boolean;
+	/** Whether the reaction follows what Scout is doing (🧠, 📖, 🧪…) or only picked up and done (SCOUT_STATUS_REACTIONS). */
+	reactionPhases?: () => boolean;
+	/** The emoji for a phase (the profile's reactions.md, or the defaults). */
+	reactionEmoji?: (phase: Phase | Ending) => string;
 	/** What a run in this conversation since `since` cost, for its reply's footer (limits.ts). */
 	costNote?: (conversationId: number, since: number) => string;
 	/** The repository a thread starts in, from its channel and its first message. */
@@ -110,8 +116,10 @@ export const DECLINE_PRIVATE =
 export class Bridge {
 	readonly #options: BridgeOptions;
 	readonly #views = new Map<number, ThreadView>();
-	/** The messages each conversation's current run took as requests, to mark when it ends. */
+	/** The messages each conversation's current run took as requests, whose reaction follows the run. */
 	readonly #requests = new Map<number, { channel: string; ts: string }[]>();
+	/** One reaction per request, smoothed and paced for the whole workspace (reactions.ts). */
+	readonly #status: StatusReactions;
 	/** When a model call last had to wait and retry, in any thread: lately, new runs warn they may be slow. */
 	#slowAt = 0;
 	readonly #locks = new Map<string, Promise<unknown>>();
@@ -120,6 +128,16 @@ export class Bridge {
 
 	constructor(options: BridgeOptions) {
 		this.#options = options;
+		this.#status = new StatusReactions({
+			react: (channel, ts, name, on) => this.#react(channel, ts, name, on),
+			emoji: (phase) => options.reactionEmoji?.(phase) ?? DEFAULT_EMOJI[phase],
+		});
+	}
+
+	/** A request's reaction: a phase only when phases are on; picked up and endings always. */
+	#phase(channel: string, ts: string, phase: Phase): void {
+		if (phase !== "picked" && phase !== "queued" && this.#options.reactionPhases?.() === false) return;
+		this.#status.set(channel, ts, phase);
 	}
 
 	/** Reattach to recent threads after a restart, so runs the harness resumes still reach Slack. */
@@ -339,6 +357,7 @@ export class Bridge {
 						// The message this run will use once it starts says it's waiting, and where it is in line.
 						const place = threads.queued().length;
 						view.queued(`⏳ ${admission.reason}${place > 1 ? ` You're ${ordinal(place)} in line.` : ""}`);
+						this.#phase(message.channel, message.ts, "queued");
 						this.#options.audit?.record("refused", { actor: message.user, conversationId: thread.conversationId, channel: message.channelName, detail: { reason: admission.reason, ts: message.ts, queued: true } });
 					}
 					return "waiting";
@@ -373,7 +392,7 @@ export class Bridge {
 			if (how === "steer") this.view(thread.conversationId)?.tookIn(name);
 			// 👀 on the request: anyone scanning the channel sees it was picked up.
 			this.#requests.set(thread.conversationId, [...(this.#requests.get(thread.conversationId) ?? []), { channel: message.channel, ts: message.ts }]);
-			void this.#react(message.channel, message.ts, "eyes", true);
+			this.#phase(message.channel, message.ts, "picked");
 		}
 		threads.spoke(key, message.user);
 		this.#options.audit?.record("request", {
@@ -548,14 +567,15 @@ export class Bridge {
 				if (ts !== undefined) this.#options.runStarted?.(thread.conversationId);
 			},
 			onSlow: () => (this.#slowAt = Date.now()),
+			onPhase: (phase) => {
+				for (const request of this.#requests.get(thread.conversationId) ?? []) this.#phase(request.channel, request.ts, phase);
+			},
 			behind: () => Date.now() - this.#slowAt < BEHIND_MS,
 			...(this.#options.costNote === undefined ? {} : { cost: (since: number) => this.#options.costNote?.(thread.conversationId, since) }),
 			onRunEnd: (answer, ts, outcome) => {
-				// The requests this run took: 👀 gives way to ✅, or ⚠️ if it ran into a problem; stopped, just no 👀.
-				for (const request of this.#requests.get(thread.conversationId) ?? []) {
-					void this.#react(request.channel, request.ts, "eyes", false);
-					if (outcome !== "stopped") void this.#react(request.channel, request.ts, outcome === "answered" ? "white_check_mark" : "warning", true);
-				}
+				// How the requests this run took ended: ✅, ⚠️, ✋ when stopped, 🙋 when the answer waits on someone.
+				const ending: Ending = outcome === "stopped" ? "stopped" : outcome === "problem" ? "problem" : answer !== undefined && asksSomething(answer) ? "waiting" : "done";
+				for (const request of this.#requests.get(thread.conversationId) ?? []) this.#status.finish(request.channel, request.ts, ending);
 				this.#requests.delete(thread.conversationId);
 				this.#options.answered?.(thread.conversationId, ts, answer, outcome);
 				if (ts !== undefined) threads.answered(thread.key, ts);

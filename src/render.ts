@@ -1,4 +1,5 @@
 import type { AgentEvent } from "@earendil-works/pi-durable";
+import { type Phase, toolPhase } from "./reactions.ts";
 
 /** Where Scout's replies go. The Slack client in production, a fake in tests. */
 export interface ChatSurface {
@@ -85,6 +86,7 @@ export class ThreadView {
 	readonly #onRunMessage: (ts: string | undefined) => void;
 	readonly #cost: ((startedAt: number) => string | undefined) | undefined;
 	readonly #mood: (() => boolean) | undefined;
+	readonly #onPhase: (phase: Phase) => void;
 	readonly #onSlow: () => void;
 	#resumeTs: string | undefined;
 	#run: Run | undefined;
@@ -108,11 +110,14 @@ export class ThreadView {
 		behind?: () => boolean;
 		/** A model call had to wait and try again: Scout is slow right now. */
 		onSlow?: () => void;
+		/** What the run is doing now (thinking, reading, testing…), for the request's reaction (reactions.ts). */
+		onPhase?: (phase: Phase) => void;
 		now?: () => number;
 	}) {
 		this.#cost = options.cost;
 		this.#mood = options.behind;
 		this.#onSlow = options.onSlow ?? (() => {});
+		this.#onPhase = options.onPhase ?? (() => {});
 		this.#resumeTs = options.resumeTs;
 		this.#onRunMessage = options.onRunMessage ?? (() => {});
 		this.#surface = options.surface;
@@ -170,9 +175,14 @@ export class ThreadView {
 				return;
 			case "run_start":
 				this.#start();
+				this.#onPhase("thinking");
+				return;
+			case "message_start":
+				if (this.#run !== undefined) this.#onPhase("thinking");
 				return;
 			case "tool_execution_start":
 				if (this.#run === undefined || event.parentToolCallId !== undefined) return;
+				this.#onPhase(toolPhase(event.toolName, event.args));
 				this.#run.steps.push(describeStep(event.toolName, event.args));
 				this.#moved();
 				this.#run.running = (this.#run.running ?? 0) + 1;
@@ -198,8 +208,9 @@ export class ThreadView {
 			case "tool_execution_end":
 				if (this.#run === undefined || event.parentToolCallId !== undefined) return;
 				this.#run.running = Math.max(0, (this.#run.running ?? 0) - 1);
-				// A command finishing is progress too.
+				// A command finishing is progress too; next, the model reads what it found.
 				this.#moved();
+				if (this.#run.running === 0) this.#onPhase("thinking");
 				return;
 			case "task_failed":
 				if (this.#run !== undefined) this.#run.error = event.message;
@@ -209,6 +220,7 @@ export class ThreadView {
 				if (this.#run === undefined) return;
 				this.#run.status = say(SAYINGS.slow, this.#run.startedAt);
 				this.#onSlow();
+				this.#onPhase("slow");
 				this.#schedule();
 				return;
 			case "auto_retry_end":
@@ -216,6 +228,10 @@ export class ThreadView {
 				return;
 			case "run_end":
 				this.#finish();
+				return;
+			default:
+				// Pi's compactions (pi.live): Scout tidying its memory of a long thread.
+				if ((event.type as string) === "compaction_start" && this.#run !== undefined) this.#onPhase("compacting");
 				return;
 		}
 	}

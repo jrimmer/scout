@@ -194,6 +194,8 @@ const bridge = new Bridge({
 	repoFor: scout.repoFor,
 	approve: (conversationId, user) => scout.approvals.grant(conversationId, user),
 	reactionsOn: () => capabilities.on("reactions"),
+	reactionPhases: () => config.statusReactions,
+	reactionEmoji: (phase) => scout.reactionEmoji(phase),
 	runStarted: (conversationId) => void track(conversationId, { state: "Working" }),
 	answered: (conversationId, ts, answer, outcome) => {
 		scout.approvals.answered(conversationId, ts);

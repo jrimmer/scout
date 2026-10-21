@@ -131,9 +131,14 @@ either way.
 - **"Ask Scout about this"**, from any message's ⋯ menu: a short form asks what to do, then Scout starts a thread on
   that message (an alert, a teammate's question) as a request from whoever asked. Only in public channels Scout is
   in; elsewhere the form says so.
-- **Reactions on requests.** 👀 when Scout picks a request up, then ✅ when it's answered or ⚠️ when it ran into a
-  problem (a stopped run just loses its 👀), so the channel shows each request's state without opening threads
-  (`reactions:write`). Scout ignores its own reactions.
+- **Reactions on requests.** The request's reaction shows what Scout is doing, so the channel says it at a glance
+  (`reactions:write`; `src/reactions.ts`): 👀 picked up, ⏳ queued, 🧠 thinking, 📖 reading, ✏️ editing, 💻 a command,
+  🧪 testing, 🏗️ building, 📊 checking monitoring or CI, 🔀 opening the pull request, 🗜️ tidying its memory, 🐢 taking
+  longer, ⚖️ trying approaches; at the end ✅ answered, ⚠️ a problem, ✋ stopped, 🙋 waiting on someone. One reaction
+  at a time, Scout's own. Smoothed so it doesn't flicker: a phase shows once it has lasted 1.5 s and stays at least
+  3 s; the ending shows at once and nothing overwrites it. Changes across the workspace go out at most every 1.5 s,
+  only the latest per message, so a busy channel sees fewer changes rather than Slack rate limits. The profile's
+  `reactions.md` renames any emoji; `SCOUT_STATUS_REACTIONS=off` goes back to just 👀, then ✅ or ⚠️.
 - **🔍 to ask for a look.** A 🔍 on any message in a public channel Scout is in starts a thread on it: "look into
   this", as a request from whoever reacted.
 - **Approve and Decline buttons.** When Scout's answer asks for approval of a change, a message with Approve and

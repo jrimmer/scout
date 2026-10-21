@@ -14,7 +14,8 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
   - Nothing said while Scout restarts is lost, and its progress message says what it's waiting on.
   - "Ask Scout about this" on any message, or 🔍, starts a thread there; `/scout` and its Home tab show what it's
     doing and what's waiting on you.
-  - Requests get 👀, then ✅ or ⚠️; changes waiting for approval get Approve and Decline buttons.
+  - A request's reaction follows the work (🧠 thinking, 📖 reading, 🧪 testing…), ending ✅, ⚠️ or 🙋; changes
+    waiting for approval get Approve and Decline buttons.
   - Each channel gets a canvas of what's open; a Slack List tracks all of Scout's work; links to the code host
     preview with their state; Workflow Builder gets an Ask Scout step.
 - **All your code.** Any thread can search and read every repository Scout works in, not just its own checkout.

@@ -19,6 +19,7 @@ import { codeSearchExtension } from "./codesearch.ts";
 import { Approaches, approachesExtension, type ApproachesOptions, chooseApproach } from "./approaches.ts";
 import { egressExtension } from "./egress.ts";
 import { Images } from "./images.ts";
+import { DEFAULT_EMOJI, type Ending, type Phase } from "./reactions.ts";
 import { CODEOWNERS_PATHS, type Owners, ownersOf, parseCodeOwners, recentOwners } from "./owners.ts";
 import { Schedules, schedulesExtension } from "./schedules.ts";
 import { Approvals, closeMcp, connectMcp, loadMcpConfig, type McpConnection, mcpExtension } from "./mcp.ts";
@@ -451,6 +452,8 @@ export async function openScout(options: ScoutOptions) {
 	const responder = (): string => profile.responder ?? DEFAULT_RESPONDER_INSTRUCTIONS;
 	/** Which alerts to investigate or ignore, and when they count: the frontmatter of `responder.md`. */
 	const alertPolicy = (source: Alert["source"]): AlertPolicy => profile.alertPolicy[source];
+	/** A request's reaction for a phase: the profile's reactions.md, else the default. */
+	const reactionEmoji = (phase: Phase | Ending): string => profile.reactions[phase] ?? DEFAULT_EMOJI[phase];
 
 	/** A channel's own model, from its profile's `model: provider/modelId`. */
 	const modelFor = (channelName: string): { provider: string; modelId: string } | undefined => {
@@ -519,6 +522,7 @@ export async function openScout(options: ScoutOptions) {
 		alertChannel,
 		responder,
 		alertPolicy,
+		reactionEmoji,
 		admitter,
 		audit,
 		spend,

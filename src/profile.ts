@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { ENDINGS, type Ending, PHASES, type Phase } from "./reactions.ts";
 import { existsSync, readdirSync, readFileSync, watch } from "node:fs";
 import { promisify } from "node:util";
 import { basename, join, sep } from "node:path";
@@ -60,6 +61,8 @@ export type Profile = {
 	responder?: string;
 	/** How alerts are treated, per source: `responder.md`'s frontmatter (alerts.ts). */
 	alertPolicy: Record<Alert["source"], AlertPolicy>;
+	/** The request's reaction for each phase: `reactions.md`'s frontmatter, `phase: slack_emoji_name` (reactions.ts). */
+	reactions: Partial<Record<Phase | Ending, string>>;
 	/** Settings Scout couldn't read, to say so when the profile loads. */
 	problems: string[];
 	skills: Skill[];
@@ -94,6 +97,15 @@ export function loadProfile(dir: string): Profile {
 	const responderFile = frontmatter(readOptional(join(dir, "responder.md")) ?? "");
 	const responder = responderFile.body.trim() || undefined;
 	const alerts = parseAlertPolicy(responderFile.meta);
+	const reactionNames = new Set<string>([...PHASES, ...ENDINGS]);
+	const reactions: Partial<Record<Phase | Ending, string>> = {};
+	const reactionProblems: string[] = [];
+	for (const [phase, emoji] of Object.entries(frontmatter(readOptional(join(dir, "reactions.md")) ?? "").meta)) {
+		const name = emoji.replace(/^:|:$/g, "").trim();
+		if (!reactionNames.has(phase)) reactionProblems.push(`reactions.md: there's no phase "${phase}" (they are ${[...reactionNames].join(", ")})`);
+		else if (!/^[a-z0-9_+'-]+$/.test(name)) reactionProblems.push(`reactions.md: "${emoji}" for ${phase} isn't a Slack emoji name, like test_tube`);
+		else reactions[phase as Phase | Ending] = name;
+	}
 	return {
 		system: readOptional(join(dir, "system.md")) ?? "",
 		...(reflect === undefined ? {} : { reflect }),
@@ -101,7 +113,8 @@ export function loadProfile(dir: string): Profile {
 		...(reviewer === undefined ? {} : { reviewer }),
 		...(responder === undefined ? {} : { responder }),
 		alertPolicy: alerts.policy,
-		problems: alerts.problems.map((p) => `responder.md: ${p}`),
+		reactions,
+		problems: [...alerts.problems.map((p) => `responder.md: ${p}`), ...reactionProblems],
 		skills: loadSkills(join(dir, "skills")),
 		channels,
 	};
