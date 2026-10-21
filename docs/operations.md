@@ -124,6 +124,27 @@ repository Scout isn't set up for, gets a short reply saying why. Nothing from b
 becomes work, and each comment is a request at most once. The code host is behind an interface (`Forge`); Forgejo
 and GitHub share one implementation, with their differences in a small dialect.
 
+## Looking after its pull requests
+
+Every few minutes Scout looks at its own open pull requests on the code host (`src/upkeep.ts`):
+
+- **Kept mergeable.** When the base has moved and one no longer merges cleanly, Scout brings the base's latest
+  commits into the thread's clone and asks the thread to rebase (or merge), resolve the conflicts, run the tests and
+  push, or to say which conflict needs a person. At most twice per conflict; then it asks whoever wanted the change
+  to look. Merging cleanly again starts the count over.
+- **Not left to rot.** After `SCOUT_PR_STALE_DAYS` (default 14) with no activity, on the code host or in its thread,
+  Scout asks whoever wanted it, in the thread and on the pull request, whether it's still wanted. After
+  `SCOUT_PR_CLOSE_DAYS` more (default half that) still quiet, it closes it with a note; it can be reopened any time.
+  Any activity starts the clock over. `SCOUT_PR_STALE_DAYS=0` turns this off.
+
+## Each channel's week
+
+On Monday after the reflection hour, alongside the weekly report in the home channel, Scout posts a summary in every
+channel it worked in the week before: threads, pull requests merged, closed and still in review, what's still open
+there, what models cost against the channel's budget, and the notes it kept, which people can still correct
+(`src/weekly.ts`). A channel with nothing to report gets nothing, and each channel gets each week once.
+`SCOUT_WEEKLY_SUMMARY=off` turns it off.
+
 ## Schedules
 
 People give Scout recurring work by asking for it in a thread ("every Monday at 9, check for dependency updates").

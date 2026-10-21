@@ -10,6 +10,8 @@ import { hostname } from "node:os";
 import { Bridge } from "./bridge.ts";
 import { Collector } from "./dash/collect.ts";
 import { type Ask, forgeFor, Inbox } from "./forge.ts";
+import { MAX_TRIES as UPKEEP_TRIES, PullUpkeep } from "./upkeep.ts";
+import { channelWeeks, WeeklySummaries } from "./weekly.ts";
 import { startDashboard } from "./dash/server.ts";
 import { ThreadDoc } from "./docs.ts";
 import { Health } from "./health.ts";
@@ -430,6 +432,75 @@ function quote(text: string): string {
 	const clipped = text.trim().length > 600 ? `${text.trim().slice(0, 599)}…` : text.trim();
 	return clipped === "" ? "" : clipped.split("\n").map((line) => `> ${line}`).join("\n");
 }
+// Scout's own open pull requests, between people's visits (upkeep.ts): kept mergeable, and not left to rot.
+const DAY = 24 * HOUR;
+const upkeep = new PullUpkeep({
+	path: join(config.dataDir, "scout.sqlite"),
+	forge,
+	pingAfterMs: config.pullUpkeep.staleDays * DAY,
+	closeAfterMs: config.pullUpkeep.closeDays * DAY,
+	handlers: {
+		threadActivity: (pull) => threads.byConversation(pull.conversationId)?.lastActivity,
+		conflict: async (pull, status, attempt) => {
+			if (threads.byConversation(pull.conversationId) === undefined) return;
+			const base = await workspaces.refreshBase(pull.conversationId);
+			const prompt = [
+				`Your pull request ${pull.url} (${pull.slug} #${pull.number}) no longer merges cleanly into ${status.baseRef}: it has moved on since you branched. Its latest commits are now in your clone as origin/${base}.`,
+				"Rebase your branch onto it (or merge it in), resolve the conflicts keeping what both sides meant, run the tests, and call open_pull_request again: it updates the same pull request. If a conflict needs a person's call, say which and why, and leave it.",
+				`This is automatic attempt ${attempt} of ${UPKEEP_TRIES}.`,
+			].join("\n\n");
+			await bridge.work(pull.conversationId, prompt, `conflict:${pull.url}:${status.head}:${status.base}`, "bring it up to date");
+		},
+		conflictStuck: async (pull, status) => {
+			const asker = threads.byConversation(pull.conversationId)?.lastAsker;
+			const who = !asker || asker === "scout" ? "Could someone" : `<@${asker}>, could you`;
+			await inThread(pull.conversationId, `<${pull.url}|${pull.title}> still doesn't merge cleanly into ${status.baseRef} after ${UPKEEP_TRIES} tries at bringing it up to date. ${who} take a look?`);
+		},
+		nudge: async (pull, quietMs, closeAfterMs) => {
+			const asker = threads.byConversation(pull.conversationId)?.lastAsker;
+			const quiet = Math.round(quietMs / DAY);
+			const close = Math.round(closeAfterMs / DAY);
+			const who = !asker || asker === "scout" ? "" : `<@${asker}> `;
+			await inThread(pull.conversationId, `${who}<${pull.url}|${pull.title}> has had no activity for ${quiet} days. Is it still wanted? If nothing changes, I'll close it in ${close} days; it can always be reopened.`);
+			await forge.comment(pull.slug, pull.number, `This has had no activity for ${quiet} days. Is it still wanted? If nothing changes, I'll close it in ${close} days; it can always be reopened.`);
+		},
+		close: async (pull, quietMs) => {
+			const quiet = Math.round(quietMs / DAY);
+			await forge.comment(pull.slug, pull.number, `Closing this: no activity for ${quiet} days, including since I asked whether it's still wanted. Reopen it, or ask me in its thread, if it is.`);
+			await forge.closePull(pull.slug, pull.number);
+			await inThread(pull.conversationId, `I closed <${pull.url}|${pull.title}> after ${quiet} quiet days. Reopen it, or ask me here, if it's still wanted.`);
+			audit.record("pull_decided", { actor: "scout", conversationId: pull.conversationId, detail: { url: pull.url, state: "closed", why: "stale" } });
+		},
+	},
+});
+
+// Each channel's week, Mondays after the reflection hour (weekly.ts).
+const weekly = new WeeklySummaries(join(config.dataDir, "scout.sqlite"));
+async function postChannelWeeks(): Promise<void> {
+	const to = weekStart(new Date());
+	const from = to - 7 * DAY;
+	const key = weekOf(new Date(from));
+	const summaries = await channelWeeks(
+		{
+			threads: threads.startedBetween(from, to),
+			pulls: pulls.touched(from, to),
+			stillOpen: pulls.open("work"),
+			notes: memory.active().filter((n) => n.createdAt >= from && n.createdAt < to),
+			channelOf,
+			spend: (channel) => {
+				const budget = scout.limits.budgetFor(channel);
+				return { cost: scout.spend.spent(from, channel) - scout.spend.spent(to, channel), ...(budget === undefined ? {} : { budget }) };
+			},
+		},
+		Date.now(),
+	);
+	for (const [name, text] of summaries) {
+		const id = await slack.channelId(name);
+		if (id === undefined || !weekly.claim(key, name)) continue;
+		await slack.surface.post(id, undefined, { text, blocks: [{ type: "markdown", text }] });
+	}
+}
+
 const inboxTick = setInterval(() => void health.watch("code host", "reading the code host's notifications failed", () => inbox.poll()), MINUTE);
 
 /** Housekeeping every few minutes; also soon after a start, so a restart doesn't hold up reviews and retries. */
@@ -447,6 +518,7 @@ const housekeeping = () => {
 	}
 	if (new Date(now).getHours() >= config.reflect.hour) void reflect(localDay(new Date(now)));
 	void health.watch("reviews", "reviewing pull requests failed", () => pullReviewer.poll());
+	void health.watch("upkeep", "looking after Scout's pull requests failed", () => upkeep.poll(pulls.open("work")));
 	void health.watch("images", "building repository images failed", async () => {
 		for (const line of await scout.refreshImages()) console.log(line);
 	});
@@ -462,6 +534,7 @@ const housekeeping = () => {
 		if (today.getDay() !== 1 || today.getHours() < config.reflect.hour) return;
 		const text = pulls.weeklyReport(weekOf(today), Date.now(), scout.spend.spent(0));
 		if (text !== undefined) announce(text);
+		if (config.weeklySummary) await health.watch("weekly", "posting the channels' weekly summaries failed", postChannelWeeks);
 	});
 	// What quiet threads leave behind, past the retention period.
 	const retentionDays = config.governance.retentionDays;
@@ -547,6 +620,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		clearInterval(inboxTick);
 		clearInterval(scheduleTick);
 		inbox.close();
+		upkeep.close();
+		weekly.close();
 		if (alertTick !== undefined) clearInterval(alertTick);
 		alertLog.close();
 		await slack.stop().catch(() => {});

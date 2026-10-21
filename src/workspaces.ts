@@ -283,6 +283,20 @@ export class Workspaces {
 		}
 	}
 
+	/**
+	 * Bring the base branch's latest commits into the thread's clone, as `origin/<base>`, so the thread can rebase or
+	 * merge onto it (sandboxes can't reach the code host themselves). Returns the base's name.
+	 */
+	async refreshBase(conversationId: number): Promise<string> {
+		const opened = await this.#ensure(conversationId);
+		const { repo, handle } = opened;
+		const env = this.#envAt(conversationId, opened, `${handle.workdir}/repo`);
+		const inside = await this.#baseBundleIn(env, opened);
+		await must(env, ["git", "fetch", "--quiet", inside, `+refs/heads/${repo.base}:refs/remotes/origin/${repo.base}`]);
+		await env.remove(inside, { force: true }, BACKGROUND_CONTEXT);
+		return repo.base;
+	}
+
 	/** The repository's `.scout/setup.sh` on its base branch (the script's git blob, and the base commit), if it has one. */
 	async setupScript(repoName: string): Promise<{ script: string; base: string } | undefined> {
 		const repo = this.repo(repoName);

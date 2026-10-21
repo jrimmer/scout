@@ -31,6 +31,9 @@ export type Issue = {
  */
 export type Remark = { id: string; author: string; body: string; at: number; url?: string; review?: string; path?: string; line?: number };
 
+/** Where a pull request stands: open or not, whether it merges cleanly (unknown while the host works it out), its last activity, and the commits at its two ends. */
+export type PullStatus = { open: boolean; mergeable?: boolean; updatedAt: number; head: string; base: string; baseRef: string };
+
 /** An unread notification: which issue or pull request something happened on. */
 export type Notice = { id: string; slug: string; number: number };
 
@@ -51,6 +54,8 @@ export interface Forge {
 	headBranch(slug: string, number: number): Promise<string | undefined>;
 	/** Whether anyone can read the repository. When the code host won't say, assume so. */
 	isPublic(slug: string): Promise<boolean>;
+	pullStatus(slug: string, number: number): Promise<PullStatus>;
+	closePull(slug: string, number: number): Promise<void>;
 }
 
 /** Where Forgejo and GitHub differ. */
@@ -223,6 +228,28 @@ class RestForge implements Forge {
 	async headBranch(slug: string, number: number): Promise<string | undefined> {
 		const pull = (await this.#api("GET", `/repos/${slug}/pulls/${number}`)) as { head?: { ref?: string; repo?: { full_name?: string } | null } };
 		return pull.head?.repo?.full_name?.toLowerCase() === slug.toLowerCase() ? pull.head.ref : undefined;
+	}
+
+	async pullStatus(slug: string, number: number): Promise<PullStatus> {
+		const p = (await this.#api("GET", `/repos/${slug}/pulls/${number}`)) as {
+			state: string;
+			mergeable?: boolean | null;
+			updated_at: string;
+			head: { sha: string };
+			base: { sha: string; ref: string };
+		};
+		return {
+			open: p.state === "open",
+			...(typeof p.mergeable === "boolean" ? { mergeable: p.mergeable } : {}),
+			updatedAt: Date.parse(p.updated_at),
+			head: p.head.sha,
+			base: p.base.sha,
+			baseRef: p.base.ref,
+		};
+	}
+
+	async closePull(slug: string, number: number): Promise<void> {
+		await this.#api("PATCH", `/repos/${slug}/pulls/${number}`, { state: "closed" });
 	}
 
 	async isPublic(slug: string): Promise<boolean> {

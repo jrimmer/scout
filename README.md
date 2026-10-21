@@ -19,7 +19,10 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
   - Scout keeps notes as it works.
   - Every night it reads its threads and opens a pull request against its profile with what it learned. Merge it,
     and every thread gets it.
-  - Every Monday it reports its merge rate.
+  - Every Monday it reports its merge rate, and posts each channel's week: what it did there, what's still open,
+    and what it noted.
+- **A tidy colleague.** It keeps its pull requests mergeable when the base moves (or says why it can't), and asks
+  about ones that have gone quiet before closing them.
 - **Beyond code.** MCP servers (the data warehouse, traces, CI) run on the host, optionally per channel.
 - **A dashboard** (after spoond's): what Scout is working on, its merge rate, what it's learning, the notes nobody
   has reviewed yet, and what it costs, live, at `http://127.0.0.1:8893/`.

@@ -90,6 +90,11 @@ export class Threads {
 		return { day: String(row.day), conversationId: Number(row.conversation_id), threads: (JSON.parse(String(row.threads)) as string[]).length };
 	}
 
+	/** Threads started between `from` and `to`. */
+	startedBetween(from: number, to: number): ThreadRow[] {
+		return this.#db.prepare("SELECT * FROM threads WHERE created_at >= ? AND created_at < ?").all(from, to).map(toThread);
+	}
+
 	activeSince(since: number): ThreadRow[] {
 		return this.#db.prepare("SELECT * FROM threads WHERE last_activity >= ?").all(since).map(toThread);
 	}

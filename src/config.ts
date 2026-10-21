@@ -87,6 +87,13 @@ export type Config = {
 	dash?: { addr: string; auth?: { user: string; passwordHash: string } };
 	/** MCP servers whose tools Scout may use (see mcp.ts). */
 	mcpFile?: string;
+	/**
+	 * Looking after Scout's own pull requests (upkeep.ts): after `staleDays` quiet, ask whoever wanted one if it's still
+	 * wanted; `closeDays` later, still quiet, close it. 0 days leaves them alone.
+	 */
+	pullUpkeep: { staleDays: number; closeDays: number };
+	/** Each channel's weekly summary, Mondays (weekly.ts). */
+	weeklySummary: boolean;
 	/** Largest change, in lines added plus removed, Scout puts in one pull request. */
 	maxPullLines: number;
 	/** Scout's commit identity, and the SSH key the host pushes and pulls with: Scout's own, not a person's. */
@@ -197,6 +204,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			...(env.SCOUT_REFLECT_CHANNEL?.replace(/^#/, "") ? { channel: env.SCOUT_REFLECT_CHANNEL.replace(/^#/, "") } : {}),
 		},
 		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
+		pullUpkeep: {
+			staleDays: Number(env.SCOUT_PR_STALE_DAYS ?? 14),
+			// Half as long again, unless set.
+			closeDays: Number(env.SCOUT_PR_CLOSE_DAYS ?? Number(env.SCOUT_PR_STALE_DAYS ?? 14) / 2),
+		},
+		weeklySummary: env.SCOUT_WEEKLY_SUMMARY !== "off",
 		...(env.SCOUT_MCP_FILE ? { mcpFile: resolve(env.SCOUT_MCP_FILE) } : {}),
 		governance: {
 			...(env.SCOUT_PRICES_FILE ? { pricesFile: resolve(env.SCOUT_PRICES_FILE) } : {}),

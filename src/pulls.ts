@@ -114,6 +114,14 @@ export class Pulls {
 			.map(toPull);
 	}
 
+	/** Scout's work pull requests opened or decided between `from` and `to`. */
+	touched(from: number, to: number): PullRow[] {
+		return this.#db
+			.prepare("SELECT * FROM pulls WHERE kind = 'work' AND ((opened_at >= ? AND opened_at < ?) OR (decided_at >= ? AND decided_at < ?)) ORDER BY opened_at")
+			.all(from, to, from, to)
+			.map(toPull);
+	}
+
 	latest(limit: number): PullRow[] {
 		return this.#db.prepare("SELECT * FROM pulls ORDER BY opened_at DESC LIMIT ?").all(limit).map(toPull);
 	}
