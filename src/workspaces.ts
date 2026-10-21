@@ -67,6 +67,14 @@ class TrackedConnection extends Connection {
 /** A prepared workspace; `connection` is its daemon's, absent on substrates that serve files and commands themselves. */
 type Opened = { handle: SandboxHandle; connection?: TrackedConnection; repo: WorkspaceRepo };
 
+/** Left in a sandbox built as an image (`buildImage`); a thread that finds it adopts the prebuilt checkout. */
+const IMAGE_MARK = ".scout/image";
+
+/** The snapshot a repository's image is saved as. */
+export function imageName(repoName: string): string {
+	return `scout/${repoName}`;
+}
+
 /** How long a sandbox connection may sit unused before it's closed; the next tool call opens it again. */
 const IDLE_DISCONNECT_MS = 2 * 60 * 1000;
 
@@ -88,6 +96,8 @@ export class Workspaces {
 	repoOf: (conversationId: number) => Promise<string | undefined> = async () => undefined;
 	/** A conversation's own base branch, when it isn't the repository's (a reviewed pull request's branch). */
 	baseOf: (conversationId: number) => Promise<string | undefined> = async () => undefined;
+	/** The snapshot Scout built for a repository (images.ts), which its new threads start from, if there is one. */
+	builtImage: (repoName: string) => string | undefined = () => undefined;
 	/** What a conversation is about and where it's discussed, to label its sandbox for people. */
 	describe: (conversationId: number) => Promise<{ about?: string; link?: string }> = async () => ({});
 	readonly #sweep: ReturnType<typeof setInterval>;
@@ -162,9 +172,10 @@ export class Workspaces {
 			if (driver.supports(allow)) network = allow;
 			else console.error(`${driver.name} can't limit ${repo.name}'s sandboxes to its egress list; using "${sandbox.network}"`);
 		}
+		const snapshot = this.builtImage(repo.name) ?? repo.snapshot;
 		return {
 			image: repo.image ?? sandbox.image,
-			...(repo.snapshot === undefined ? {} : { snapshot: repo.snapshot }),
+			...(snapshot === undefined ? {} : { snapshot }),
 			network,
 			...(sandbox.size === undefined ? {} : { size: sandbox.size }),
 			labels: { conversation: String(conversationId), repo: repo.name, instance: this.#config.instance },
@@ -178,7 +189,10 @@ export class Workspaces {
 	}
 
 	#envAt(conversationId: number, opened: Opened, cwd: string): ExecutionEnv {
-		const id = `sandbox:${this.key(conversationId)}`;
+		return this.#envFor(`sandbox:${this.key(conversationId)}`, opened, cwd);
+	}
+
+	#envFor(id: string, opened: Opened, cwd: string): ExecutionEnv {
 		const shellEnv = opened.handle.env;
 		if (opened.connection === undefined) return opened.handle.connect!({ id, cwd, ...(shellEnv === undefined ? {} : { shellEnv }) });
 		return new RemoteExecutionEnv({
@@ -221,11 +235,95 @@ export class Workspaces {
 		const env = this.#envAt(conversationId, opened, handle.workdir);
 		const clone = `${handle.workdir}/repo`;
 		const cloned = await env.exists(`${clone}/.git`, BACKGROUND_CONTEXT);
+		const prebuilt = await env.exists(`${handle.workdir}/${IMAGE_MARK}`, BACKGROUND_CONTEXT);
 		if (!(cloned.ok && cloned.value)) await this.#clone(env, opened, clone, conversationId);
+		else if (prebuilt.ok && prebuilt.value) await this.#fromImage(env, opened, clone, conversationId);
 		return opened;
 	}
 
+	/**
+	 * Build the repository's image (`scout/<repo>`): a sandbox from where its threads would otherwise start, its base
+	 * cloned where threads keep their checkout, the repository's `.scout/setup.sh` run there, and the result saved as a
+	 * snapshot. A thread that starts from it has its checkout already built: it only fetches the latest base. `label`
+	 * names this build (the setup script and base it was made from), so saving the same build twice doesn't add a
+	 * version.
+	 */
+	async buildImage(repoName: string, label: string): Promise<{ name: string; version: number }> {
+		const driver = this.#config.driver;
+		if (driver.snapshot === undefined) throw new Error(`${driver.name} sandboxes can't be saved as images`);
+		const repo = this.repo(repoName);
+		const key = `${this.#config.instance}-image-${repo.name}`;
+		// Built from the configured start, not the last build, so builds don't drift. Setup scripts download things.
+		const egress: NetworkPolicy | undefined = repo.egress === undefined ? undefined : { mode: "allow", hosts: repo.egress };
+		const spec: SandboxSpec = {
+			image: repo.image ?? this.#config.sandbox.image,
+			...(repo.snapshot === undefined ? {} : { snapshot: repo.snapshot }),
+			network: egress !== undefined && driver.supports(egress) ? egress : { mode: "open" },
+			...(this.#config.sandbox.size === undefined ? {} : { size: this.#config.sandbox.size }),
+			labels: { image: repo.name, instance: this.#config.instance },
+			about: `building the ${repo.name} image`,
+		};
+		await driver.remove(key).catch(() => {});
+		const handle = await driver.open(key, spec);
+		const connection = handle.connect === undefined ? new TrackedConnection({ command: handle.daemonCommand }) : undefined;
+		try {
+			const opened: Opened = { handle, ...(connection === undefined ? {} : { connection }), repo };
+			const id = `sandbox:${key}`;
+			const clone = `${handle.workdir}/repo`;
+			// Whatever the starting point had there gives way to a clean clone of the base.
+			await must(this.#envFor(id, opened, "/"), ["rm", "-rf", clone, `${handle.workdir}/${IMAGE_MARK}`]);
+			await this.#cloneBase(this.#envFor(id, opened, handle.workdir), opened, clone);
+			const setup = await exec(this.#envFor(id, opened, clone), ["bash", ".scout/setup.sh"], BACKGROUND_CONTEXT, 3600);
+			if (setup.code !== 0) throw new Error(`.scout/setup.sh failed (${setup.code}): ${setup.output.trim().slice(-1500)}`);
+			await copyIn(this.#envFor(id, opened, handle.workdir), `${handle.workdir}/${IMAGE_MARK}`, new TextEncoder().encode(label));
+			return await driver.snapshot(key, imageName(repo.name), { keep: 3, idempotencyKey: label });
+		} finally {
+			connection?.close();
+			await driver.remove(key).catch(() => {});
+		}
+	}
+
+	/** The repository's `.scout/setup.sh` on its base branch (the script's git blob, and the base commit), if it has one. */
+	async setupScript(repoName: string): Promise<{ script: string; base: string } | undefined> {
+		const repo = this.repo(repoName);
+		const mirror = this.mirrorFor(repo.name);
+		await mirror.refresh();
+		const base = await run("git", ["-C", mirror.path, "rev-parse", `refs/heads/${repo.base}`]).then((r) => r.stdout.trim());
+		const script = await run("git", ["-C", mirror.path, "rev-parse", "--verify", "--quiet", `refs/heads/${repo.base}:.scout/setup.sh`])
+			.then((r) => r.stdout.trim())
+			.catch(() => "");
+		return script === "" ? undefined : { script, base };
+	}
+
+	/** A checkout that came built with the sandbox's image: bring it up to the base branch now, and start the thread's own. */
+	async #fromImage(env: ExecutionEnv, opened: Opened, clone: string, conversationId: number): Promise<void> {
+		const { repo } = opened;
+		const inside = await this.#baseBundleIn(env, opened);
+		// Forced, so files the setup script changed give way; what it built (ignored by git) stays.
+		await must(env, ["git", "-C", clone, "fetch", "--quiet", inside, `+refs/heads/${repo.base}:refs/remotes/origin/${repo.base}`]);
+		await must(env, ["git", "-C", clone, "checkout", "--quiet", "--force", "-B", this.branch(conversationId), `refs/remotes/origin/${repo.base}`]);
+		await env.remove(inside, { force: true }, BACKGROUND_CONTEXT);
+		await env.remove(`${opened.handle.workdir}/${IMAGE_MARK}`, { force: true }, BACKGROUND_CONTEXT);
+	}
+
 	async #clone(env: ExecutionEnv, opened: Opened, clone: string, conversationId: number): Promise<void> {
+		await this.#cloneBase(env, opened, clone);
+		await must(env, ["git", "-C", clone, "checkout", "--quiet", "-b", this.branch(conversationId)]);
+	}
+
+	/** The repository's base branch, cloned at `clone` from the host's mirror (as a bundle: no sandbox reaches the code host). */
+	async #cloneBase(env: ExecutionEnv, opened: Opened, clone: string): Promise<void> {
+		const { repo } = opened;
+		const inside = await this.#baseBundleIn(env, opened);
+		await must(env, ["git", "clone", "--quiet", "--branch", repo.base, inside, clone]);
+		await must(env, ["git", "-C", clone, "remote", "set-url", "origin", repo.gitUrl]);
+		await must(env, ["git", "-C", clone, "config", "user.name", this.#config.git.name]);
+		await must(env, ["git", "-C", clone, "config", "user.email", this.#config.git.email]);
+		await env.remove(inside, { force: true }, BACKGROUND_CONTEXT);
+	}
+
+	/** A bundle of the base branch, fresh from the mirror, inside the sandbox; returns its path there. */
+	async #baseBundleIn(env: ExecutionEnv, opened: Opened): Promise<string> {
 		const { repo } = opened;
 		const mirror = this.mirrorFor(repo.name);
 		await mirror.refresh();
@@ -235,12 +333,7 @@ export class Workspaces {
 			await run("git", ["-C", mirror.path, "bundle", "create", "--quiet", bundle, `refs/heads/${repo.base}`]);
 			const inside = `${opened.handle.workdir}/.scout/base.bundle`;
 			await copyIn(env, inside, await readFile(bundle));
-			await must(env, ["git", "clone", "--quiet", "--branch", repo.base, inside, clone]);
-			await must(env, ["git", "-C", clone, "remote", "set-url", "origin", repo.gitUrl]);
-			await must(env, ["git", "-C", clone, "checkout", "--quiet", "-b", this.branch(conversationId)]);
-			await must(env, ["git", "-C", clone, "config", "user.name", this.#config.git.name]);
-			await must(env, ["git", "-C", clone, "config", "user.email", this.#config.git.email]);
-			await env.remove(inside, { force: true }, BACKGROUND_CONTEXT);
+			return inside;
 		} finally {
 			await rm(host, { recursive: true, force: true });
 		}
@@ -328,9 +421,9 @@ async function copyIn(env: ExecutionEnv, path: string, bytes: Uint8Array): Promi
 	}
 }
 
-async function exec(env: ExecutionEnv, argv: string[], context: Context = BACKGROUND_CONTEXT): Promise<{ code: number; output: string }> {
+async function exec(env: ExecutionEnv, argv: string[], context: Context = BACKGROUND_CONTEXT, timeout?: number): Promise<{ code: number; output: string }> {
 	let output = "";
-	const result = await env.exec(argv, { onOutput: (text) => (output += text) }, context);
+	const result = await env.exec(argv, { onOutput: (text) => (output += text), ...(timeout === undefined ? {} : { timeout }) }, context);
 	if (!result.ok) throw result.error;
 	return { code: result.value.exitCode, output };
 }

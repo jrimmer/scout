@@ -49,4 +49,10 @@ export interface SandboxDriver {
 	remove(key: string): Promise<void>;
 	/** Which network policies this substrate can enforce. */
 	supports(policy: NetworkPolicy): boolean;
+	/**
+	 * Save the sandbox as a named snapshot that later sandboxes can start from (`SandboxSpec.snapshot`), keeping the
+	 * last `keep` versions. Saving again with the same `idempotencyKey` returns that version. Substrates that can't
+	 * leave it out, and repositories there keep starting from their image.
+	 */
+	snapshot?(key: string, name: string, options: { keep: number; idempotencyKey: string }): Promise<{ name: string; version: number }>;
 }

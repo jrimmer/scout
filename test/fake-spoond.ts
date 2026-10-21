@@ -21,6 +21,8 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 	const leases = new Map<string, FakeLease>();
 	const jobs = new Map<string, FakeJob>();
 	const calls: string[] = [];
+	/** Named snapshots saved, by name: their versions, idempotency keys, and the lease each came from. */
+	const snapshots = new Map<string, { version: number; key?: string; from: string }[]>();
 	let next = 1;
 
 	/** A failed file route's answer, with spoond's code unless this fake plays an older spoond. */
@@ -62,6 +64,16 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 			lease.holder = label.holder;
 			lease.holder_url = label.holder_url;
 			return json(200, { id: lease.id, ...label, ok: true });
+		}
+		if (rest === "snapshots" && req.method === "POST") {
+			const save = JSON.parse(body.toString()) as { name: string; keep?: number; idempotency_key?: string };
+			const versions = snapshots.get(save.name) ?? [];
+			const replay = versions.find((v) => v.key !== undefined && v.key === save.idempotency_key);
+			if (replay !== undefined) return json(200, { name: save.name, version: replay.version });
+			const version = (versions.at(-1)?.version ?? 0) + 1;
+			versions.push({ version, ...(save.idempotency_key === undefined ? {} : { key: save.idempotency_key }), from: lease.id });
+			snapshots.set(save.name, versions);
+			return json(201, { name: save.name, version });
 		}
 		if (rest === "suspend") {
 			lease.state = "suspended";
@@ -232,6 +244,7 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 		leases,
 		jobs,
 		calls,
+		snapshots,
 		close: () => {
 			for (const job of jobs.values()) if (job.state === "running") process.kill(-job.child.pid!, "SIGKILL");
 			server.closeAllConnections();

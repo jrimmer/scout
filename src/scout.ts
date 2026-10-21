@@ -14,6 +14,7 @@ import { loadPeople, Permissions } from "./permissions.ts";
 import { Pricing } from "./pricing.ts";
 import { Counters, Tracer } from "./telemetry.ts";
 import { AutheliaFile, approversOf, loadRoles, requestersOf } from "./directory.ts";
+import { Images } from "./images.ts";
 import { Schedules, schedulesExtension } from "./schedules.ts";
 import { Approvals, closeMcp, connectMcp, loadMcpConfig, type McpConnection, mcpExtension } from "./mcp.ts";
 import { ThreadDoc } from "./docs.ts";
@@ -236,6 +237,9 @@ export async function openScout(options: ScoutOptions) {
 	const searchTools = searchExtension(search, threads, options.threadLink ?? (async () => undefined));
 	const memoryTools = memoryExtension(memory, audit);
 	const schedules = new Schedules(db);
+	// Each repository's image, built from its own setup script (images.ts); new threads start from it.
+	const images = new Images(db);
+	workspaces.builtImage = (repo) => images.get(repo)?.snapshot;
 	// Who asked for a schedule change: the latest person to ask for work in the thread.
 	const scheduleTools = schedulesExtension(schedules, (id) => threads.byConversation(id)?.lastAsker ?? "scout", audit);
 
@@ -412,6 +416,16 @@ export async function openScout(options: ScoutOptions) {
 		mayAsk,
 		approvals,
 		schedules,
+		images,
+		/** Build the images that are due (only where the sandboxes can be saved as images). */
+		refreshImages: () =>
+			workspaces.driver.snapshot === undefined
+				? Promise.resolve([])
+				: images.refresh({
+						repos: () => config.repos.map((r) => r.name),
+						setup: (repo) => workspaces.setupScript(repo),
+						build: (repo, label) => workspaces.buildImage(repo, label),
+					}),
 		alertChannel,
 		responder,
 		alertPolicy,
@@ -445,6 +459,7 @@ export async function openScout(options: ScoutOptions) {
 			memory.close();
 			approvals.close();
 			schedules.close();
+			images.close();
 			await tracer?.close();
 			audit.close();
 			spend.close();

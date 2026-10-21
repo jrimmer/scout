@@ -1,5 +1,6 @@
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -126,6 +127,69 @@ describe("spoond driver", () => {
 	it("deletes the lease when the work is over", async () => {
 		await workspaces.remove(1);
 		assert.equal(spoond.leases.size, 0);
+	});
+});
+
+describe("repository images", () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-images-")));
+	const remote = bareRepo(root, "app");
+	const seed = join(root, "app-seed");
+	const commit = (message: string) => {
+		execFileSync("git", ["-C", seed, "add", "."]);
+		execFileSync("git", ["-C", seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", message]);
+		execFileSync("git", ["-C", seed, "push", "--quiet", remote, "main"]);
+	};
+	let spoond: Awaited<ReturnType<typeof fakeSpoond>>;
+	let workspaces: Workspaces;
+
+	before(async () => {
+		spoond = await fakeSpoond("sdt-test");
+		process.env.SCOUT_SPOOND_TOKEN = "sdt-test";
+		workspaces = new Workspaces({
+			dataDir: join(root, "data"),
+			instance: "t",
+			repos: [{ name: "app", gitUrl: remote, base: "main" }],
+			// The fake keeps one guest home for every lease, which stands in for a sandbox starting from a snapshot.
+			driver: new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest") }),
+			sandbox: { image: "dev-base", network: "none" },
+			git: { name: "Scout", email: "scout@localhost" },
+		});
+	});
+	after(async () => {
+		await workspaces.close();
+		await spoond.close();
+	});
+
+	it("has none until the repository has a setup script", async () => {
+		assert.equal(await workspaces.setupScript("app"), undefined);
+	});
+
+	it("builds an image from the setup script, and new threads start from it with their checkout already built", async () => {
+		mkdirSync(join(seed, ".scout"), { recursive: true });
+		writeFileSync(join(seed, ".scout", "setup.sh"), "mkdir -p _build && echo built > _build/out && echo changed >> README.md\n");
+		writeFileSync(join(seed, ".gitignore"), "_build/\n");
+		commit("add a setup script");
+		const setup = await workspaces.setupScript("app");
+		assert.ok(setup !== undefined && /^[0-9a-f]{40}$/.test(setup.script));
+
+		const saved = await workspaces.buildImage("app", "build-1");
+		assert.deepEqual(saved, { name: "scout/app", version: 1 });
+		assert.equal(spoond.leases.size, 0, "the build's sandbox is gone once saved");
+		const build = [...spoond.calls].filter((c) => c === "POST /api/leases").length;
+		assert.equal(build, 1);
+		assert.deepEqual(await workspaces.buildImage("app", "build-1"), saved, "the same build saved twice is one version");
+
+		// The base moves on after the image was built; a thread still starts at the latest base.
+		writeFileSync(join(seed, "NEWS.md"), "news\n");
+		commit("news");
+		workspaces.builtImage = (repo) => (repo === "app" ? "scout/app" : undefined);
+		const env = await workspaces.env(5);
+		let out = "";
+		const result = await env.exec("git branch --show-current; cat _build/out; cat NEWS.md; git status --porcelain; ls ../.scout", { onOutput: (t) => (out += t) }, context);
+		assert.ok(result.ok, out);
+		assert.deepEqual(out.trim().split("\n"), ["scout/t-5", "built", "news"], "on its own branch at the latest base, the build kept, the setup's edit undone, the mark gone");
+		const lease = [...spoond.leases.values()].find((l) => l.holder.startsWith("scout:t-5"));
+		assert.equal(lease?.body.snapshot, "scout/app");
 	});
 });
 

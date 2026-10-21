@@ -41,6 +41,22 @@ When spoond is nearly full it answers new leases with "wait" or "full", and Scou
 before the thread hears that no sandbox was free. spoond also pauses leases to keep memory free; a paused lease
 resumes on its next use, so a thread's first command after a quiet spell can take longer.
 
+### Repository images
+
+A repository can carry `.scout/setup.sh` on its base branch: what gets a fresh sandbox ready to work (toolchain,
+dependencies, a first build). On spoond, Scout builds an image from it, `scout/<repo>` (`src/images.ts`):
+- In a temporary sandbox from the repository's configured image or snapshot (with its egress list, or else open
+  network, since setup downloads things), Scout clones the base where threads keep their checkout and runs the script
+  there, with up to an hour.
+- It saves the result as a named snapshot, keeping the last 3 versions.
+- New threads in that repository start from the image. Instead of cloning, they fetch the latest base into the
+  prebuilt checkout and start their branch, so what the script built (ignored by git) is already there.
+- Scout rebuilds when the script changes on the base branch, and weekly. A failed build is reported on the dashboard,
+  threads keep starting from the last good image, and the same script is tried again after an hour.
+
+Scout's CI runner will start jobs from the same image (`runs-on: scout-<repo>`) once spoond's runner can start jobs
+from a named snapshot (#24).
+
 ## Model gateway
 
 `SCOUT_GATEWAY_URL` sends model calls to a gateway (Bifrost, LiteLLM, Cloudflare AI Gateway) instead of the provider,

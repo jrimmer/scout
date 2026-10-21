@@ -427,6 +427,9 @@ const housekeeping = () => {
 	}
 	if (new Date(now).getHours() >= config.reflect.hour) void reflect(localDay(new Date(now)));
 	void health.watch("reviews", "reviewing pull requests failed", () => pullReviewer.poll());
+	void health.watch("images", "building repository images failed", async () => {
+		for (const line of await scout.refreshImages()) console.log(line);
+	});
 	void health.watch("pulls", "checking pull requests failed", () => pulls.refresh(config.codeHost)).then(async (decided = []) => {
 		// A reflection's proposal was decided: merged retires the notes it covered; rejected keeps them.
 		for (const pull of decided) {

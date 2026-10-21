@@ -98,6 +98,12 @@ export class SpoondDriver implements SandboxDriver {
 		if (lease !== undefined) await this.#api("DELETE", `/api/leases/${lease.id}`, { reason: "work is over" });
 	}
 
+	async snapshot(key: string, name: string, options: { keep: number; idempotencyKey: string }): Promise<{ name: string; version: number }> {
+		const lease = await this.#find(key);
+		if (lease === undefined) throw new Error(`no sandbox ${key} to save`);
+		return (await this.#api("POST", `/api/leases/${lease.id}/snapshots`, { name, keep: options.keep, idempotency_key: options.idempotencyKey })) as { name: string; version: number };
+	}
+
 	async #find(key: string): Promise<Lease | undefined> {
 		// An owner with no leases gets `"sandboxes": null`.
 		const { sandboxes } = (await this.#api("GET", "/api/leases")) as { sandboxes: Lease[] | null };
