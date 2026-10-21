@@ -20,6 +20,14 @@ on and prints one line each, ✅, ⚠️ or ❌, with how to fix what isn't (`sr
 
 It exits 1 when anything is broken, so it can gate a deploy.
 
+## How much Scout does on its own
+
+`SCOUT_INITIATIVE` (`asked`, `own`, or `team`, the default) sets how much Scout does without being asked
+(`src/initiative.ts`); see the table in [setup.md](setup.md#9-how-much-scout-does-on-its-own). Every proactive
+feature checks it before acting: `own` covers Scout's own work (CI fixes, mergeability, its quiet pull requests and
+branches, follow-ups, images, reviewer requests, the reflection), `team` the team's (alerts, review reminders, the
+weekly report and summaries, canvases, the work list, link previews). Requests from people are never affected.
+
 ## Sandboxes
 
 Each thread works in its own sandbox. `SCOUT_SANDBOX_DRIVER` picks where:

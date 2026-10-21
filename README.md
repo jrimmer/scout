@@ -29,6 +29,9 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
     and every thread gets it.
   - Every Monday it reports its merge rate, and posts each channel's week: what it did there, what's still open,
     and what it noted.
+- **As proactive as you want.** `SCOUT_INITIATIVE` is one dial: `asked` (only what people ask), `own` (also looks
+  after its own work), or `team` (also acts on the team's work: alerts, reminders, summaries). Scout says which, and
+  what it means, when it starts.
 - **A tidy colleague.** It asks the code's owners to review its pull requests, keeps them mergeable when the base
   moves (or says why it can't), asks about ones that have gone quiet before closing them, deletes its branches once
   they're merged, and reminds reviewers of anyone's pull requests that have waited on them for days.

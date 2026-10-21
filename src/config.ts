@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { type Initiative, parseInitiative } from "./initiative.ts";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { GatewayConfig } from "./gateway.ts";
@@ -94,6 +95,8 @@ export type Config = {
 	pullUpkeep: { staleDays: number; closeDays: number };
 	/** Each channel's weekly summary, Mondays (weekly.ts). */
 	weeklySummary: boolean;
+	/** How much Scout does on its own initiative (initiative.ts): asked, own or team. */
+	initiative: Initiative;
 	/** The repos file (SCOUT_REPOS_FILE), where an egress host people allow is saved (egress.ts). */
 	reposFile?: string;
 	/** Searching and reading every configured repository's code from any thread (codesearch.ts). */
@@ -250,6 +253,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			closeDays: Number(env.SCOUT_PR_CLOSE_DAYS ?? Number(env.SCOUT_PR_STALE_DAYS ?? 14) / 2),
 		},
 		weeklySummary: env.SCOUT_WEEKLY_SUMMARY !== "off",
+		initiative: parseInitiative(env.SCOUT_INITIATIVE),
 		codeSearch: env.SCOUT_CODE_SEARCH !== "off",
 		...(env.SCOUT_REPOS_FILE ? { reposFile: resolve(env.SCOUT_REPOS_FILE) } : {}),
 		reviewNudgeDays: Number(env.SCOUT_REVIEW_NUDGE_DAYS ?? 3),

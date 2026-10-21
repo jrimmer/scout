@@ -15,6 +15,7 @@ import { ChannelCanvases, channelCanvas, channelWeeks, WeeklySummaries } from ".
 import { asksSomething, Recaps } from "./recaps.ts";
 import { type HomeData, type HomeThread, homeView } from "./home.ts";
 import { Capabilities } from "./capabilities.ts";
+import { allows, describeInitiative } from "./initiative.ts";
 import { allowInReposFile, EgressRequests } from "./egress.ts";
 import { parseCodeLink, previewBlocks } from "./previews.ts";
 import { type WorkRow, WorkList } from "./worklist.ts";
@@ -241,6 +242,15 @@ await slack.start({
 		return slack.permalink(ask.channel, threadTs);
 	},
 });
+// How much Scout does on its own: in the log at every start, and in its home channel the first time on each level.
+console.log(describeInitiative(config.initiative));
+{
+	const told = join(config.dataDir, "initiative-told");
+	if (!existsSync(told) || readFileSync(told, "utf8").trim() !== config.initiative) {
+		announce(describeInitiative(config.initiative));
+		writeFileSync(told, config.initiative);
+	}
+}
 capabilities.granted(slack.scopes);
 for (const line of capabilities.summary()) console.log(line);
 audit.record("capabilities", { actor: "scout", detail: { scopes: slack.scopes, off: Object.fromEntries((["attachments", "emails", "reactions", "shortcuts", "unfurls", "canvases", "lists", "workflowSteps"] as const).flatMap((f) => { const why = capabilities.off(f); return why === undefined ? [] : [[f, why]]; })) } });
@@ -395,7 +405,7 @@ async function slashCommand(c: { user: string; channel: string; channelName: str
 /** Previews for pasted links to pull requests and issues in repositories Scout works in. */
 async function previews(links: string[]): Promise<Record<string, { blocks: unknown[] }>> {
 	const out: Record<string, { blocks: unknown[] }> = {};
-	if (!capabilities.on("unfurls")) return out;
+	if (!capabilities.on("unfurls") || !allows(config.initiative, "team")) return out;
 	for (const url of links.slice(0, 5)) {
 		const link = parseCodeLink(url);
 		if (link === undefined || !config.repos.some((r) => r.slug.toLowerCase() === link.slug.toLowerCase())) continue;
@@ -522,11 +532,10 @@ const alertWatcher = new AlertWatcher({
 		},
 	},
 });
-const alertTick =
-	alertSources.length === 0
-		? undefined
-		: setInterval(() => void health.watch("alerts", "watching for alerts failed", () => alertWatcher.poll()), MINUTE);
-if (alertSources.length > 0) console.log(`watching for alerts: ${alertSources.map((s) => s.source).join(", ")}`);
+const watchingAlerts = alertSources.length > 0 && allows(config.initiative, "team");
+const alertTick = watchingAlerts ? setInterval(() => void health.watch("alerts", "watching for alerts failed", () => alertWatcher.poll()), MINUTE) : undefined;
+if (watchingAlerts) console.log(`watching for alerts: ${alertSources.map((s) => s.source).join(", ")}`);
+else if (alertSources.length > 0) console.log(`not watching for alerts: initiative is ${config.initiative} (team watches them)`);
 
 // CI on Scout's own pull requests: green says so in the thread, red goes back to the thread to fix (ci.ts).
 const checkList = (checks: Check[]) => checks.map((c) => `• ${c.context}: ${c.state}${c.url === undefined ? "" : ` (${c.url})`}`).join("\n");
@@ -561,7 +570,9 @@ const ciWatcher = new CiWatcher({
 });
 // Runs that haven't moved on for a while say so; ones stuck far too long stop with a summary (render.ts).
 const watchdog = setInterval(() => void health.watch("watchdog", "watching for stuck runs failed", () => bridge.watch()), MINUTE);
-const ciTick = setInterval(() => void health.watch("ci", "watching CI failed", () => ciWatcher.poll()), MINUTE);
+const ciTick = setInterval(() => {
+	if (allows(config.initiative, "own")) void health.watch("ci", "watching CI failed", () => ciWatcher.poll());
+}, MINUTE);
 
 // Scheduled work (schedules.ts): each schedule that's due starts a new thread in its channel, saying which one it is.
 async function runSchedules(): Promise<void> {
@@ -852,6 +863,7 @@ const workList = new WorkList({
 	shareWith: async () => (config.reflect.channel === undefined ? undefined : slack.channelId(config.reflect.channel)),
 });
 async function track(conversationId: number, row: WorkRow): Promise<void> {
+	if (!allows(config.initiative, "team")) return;
 	const thread = threads.byConversation(conversationId);
 	if (thread === undefined) return;
 	const first = workList.id === undefined || !trackedOnce.has(conversationId);
@@ -925,6 +937,7 @@ async function deleteBranchOf(pull: { slug: string; number: number; conversation
 
 /** Ask the files' owners (CODEOWNERS, or who changed them lately) and whoever asked to review a new pull request; returns who. */
 async function askForReviews(pull: { slug: string; number: number }, asker: string | undefined): Promise<string[]> {
+	if (!allows(config.initiative, "own")) return [];
 	const repo = config.repos.find((r) => r.slug.toLowerCase() === pull.slug.toLowerCase());
 	if (repo === undefined) return [];
 	const me = await forge.me();
@@ -974,17 +987,22 @@ const housekeeping = () => {
 	if (config.profileRepo !== undefined) {
 		void health.watch("profile", "pulling the profile failed", () => pullProfile(config.profileDir));
 	}
-	if (new Date(now).getHours() >= config.reflect.hour) void reflect(localDay(new Date(now)));
+	const own = allows(config.initiative, "own");
+	const team = allows(config.initiative, "team");
+	if (own && new Date(now).getHours() >= config.reflect.hour) void reflect(localDay(new Date(now)));
 	void health.watch("reviews", "reviewing pull requests failed", () => pullReviewer.poll());
-	void health.watch("upkeep", "looking after Scout's pull requests failed", () => upkeep.poll(pulls.open("work")));
-	void health.watch("branches", "deleting closed pull requests' branches failed", cleanUpBranches);
-	void health.watch("recaps", "following up on stalled threads failed", followUpStalledThreads);
-	void health.watch("canvases", "refreshing the channels' canvases failed", () => refreshCanvases());
+	if (own) {
+		void health.watch("upkeep", "looking after Scout's pull requests failed", () => upkeep.poll(pulls.open("work")));
+		void health.watch("branches", "deleting closed pull requests' branches failed", cleanUpBranches);
+		void health.watch("recaps", "following up on stalled threads failed", followUpStalledThreads);
+	}
+	if (team) void health.watch("canvases", "refreshing the channels' canvases failed", () => refreshCanvases());
 	const today = new Date(now);
-	if (today.getDay() >= 1 && today.getDay() <= 5 && today.getHours() >= 9 && today.getHours() < 17) {
+	if (team && today.getDay() >= 1 && today.getDay() <= 5 && today.getHours() >= 9 && today.getHours() < 17) {
 		void health.watch("review nudges", "reminding reviewers failed", nudgeReviews);
 	}
 	void health.watch("images", "building repository images failed", async () => {
+		if (!allows(config.initiative, "own")) return;
 		for (const line of await scout.refreshImages()) console.log(line);
 	});
 	void health.watch("pulls", "checking pull requests failed", () => pulls.refresh(config.codeHost)).then(async (decided = []) => {
@@ -993,6 +1011,7 @@ const housekeeping = () => {
 			audit.record("pull_decided", { actor: "code host", conversationId: pull.conversationId, detail: { url: pull.url, state: pull.state } });
 			// Merged: its branch has done its job. Closed: kept a while, so it can still be reopened.
 			if (pull.kind === "work") void track(pull.conversationId, { state: pull.state === "merged" ? "Merged" : "Closed" });
+			if (!allows(config.initiative, "own")) continue;
 			if (pull.state === "merged") await deleteBranchOf(pull).catch((error: unknown) => console.error(`deleting ${pull.url}'s branch failed:`, error));
 			else branches.later(pull, Date.now() + config.closedBranchDays * DAY);
 			const day = pull.kind === "profile" ? threads.reflectionDay(pull.conversationId) : undefined;
@@ -1000,7 +1019,7 @@ const housekeeping = () => {
 		}
 		// Mondays, after the reflection hour: how last week went.
 		const today = new Date();
-		if (today.getDay() !== 1 || today.getHours() < config.reflect.hour) return;
+		if (!allows(config.initiative, "team") || today.getDay() !== 1 || today.getHours() < config.reflect.hour) return;
 		const text = pulls.weeklyReport(weekOf(today), Date.now(), scout.spend.spent(0));
 		if (text !== undefined) announce(text);
 		if (config.weeklySummary) await health.watch("weekly", "posting the channels' weekly summaries failed", postChannelWeeks);

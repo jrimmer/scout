@@ -90,7 +90,22 @@ By default anyone in a channel Scout is in may ask it for work. To narrow it, se
 identity provider (`SCOUT_DIRECTORY`, `SCOUT_ROLES_FILE`), which also decide who may approve changes made through
 tools and network access for sandboxes. Set budgets (`SCOUT_LIMITS_FILE`) before you open it up widely.
 
-## 9. Check, then run
+## 9. How much Scout does on its own
+
+Scout always does what people ask. How much it does **on its own initiative** is one setting, `SCOUT_INITIATIVE`,
+with three positions. Scout says which it's on in its log at every start, and in its home channel the first time.
+
+| `SCOUT_INITIATIVE` | Scout… |
+|---|---|
+| `asked` | only does what people ask for: mentions, replies, the code host, reactions, the shortcut, `/scout`, workflows, and schedules people set up |
+| `own` | also looks after its own work: fixes CI on its pull requests, keeps them mergeable, asks about quiet ones and closes them, deletes its branches, follows up on its stalled threads, builds its sandbox images, asks reviewers for its pull requests, and runs the nightly reflection on its own profile |
+| `team` (default) | also acts on the team's work: watches and investigates alerts, reminds reviewers of anyone's pull requests, posts the weekly report and channel summaries, keeps channel canvases and the list of its work, previews code host links |
+
+The dial is a ceiling: each feature also has its own setting (`SCOUT_PR_STALE_DAYS`, `SCOUT_REVIEW_NUDGE_DAYS`,
+`SCOUT_WEEKLY_SUMMARY` and so on), and `team` doesn't switch on anything you've turned off. Start with `own` if
+you'd rather get to know Scout before it acts on the team's work.
+
+## 10. Check, then run
 
 ```bash
 npm run doctor   # every integration: ✅, ⚠️ or ❌, with how to fix it; exits 1 if anything is broken
@@ -104,7 +119,7 @@ To run it as a service, a systemd unit with `WorkingDirectory=` this checkout, `
 src/main.ts`, and its own user is enough; [operations.md](operations.md) covers backups, secrets, telemetry and the
 dashboard.
 
-## 10. Keeping it up to date
+## 11. Keeping it up to date
 
 `git pull`, `npm ci`, and restart, ideally when Scout is idle: runs survive a restart, but a reply being written at
 that moment is delayed. Paste the Slack manifest again if it changed.
