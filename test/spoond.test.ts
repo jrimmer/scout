@@ -225,8 +225,23 @@ describe("spoond driver when spoond is full", () => {
 	it("gives up when spoond stays full past its patience", async () => {
 		const spoond = answering([503, 503]);
 		const driver = new SpoondDriver({ url: "http://spoond", token: "t", fetch: spoond.fetch, patience: 0 });
-		await assert.rejects(driver.remove("t-1"), /503 capacity_wait/);
+		await assert.rejects(driver.remove("t-1"), /The sandbox host stayed full for 0 minutes, so I couldn't get a workspace\. Try again in a while/);
 		assert.equal(spoond.calls, 1);
+	});
+
+	it("says when a new sandbox starts and stops waiting for room, so its thread can tell people", async () => {
+		let calls = 0;
+		const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+			calls++;
+			if (String(url).endsWith("/api/leases") && (init?.method ?? "GET") === "GET") return Response.json({ sandboxes: [] });
+			if (calls === 2) return new Response("full", { status: 503, headers: { "retry-after": "0" } });
+			if (String(url).endsWith("/api/leases")) return Response.json({ id: "lease1", holder: "scout:t-9" }, { status: 201 });
+			return Response.json({ stdout: "x86_64\n" });
+		}) as typeof globalThis.fetch;
+		const waits: string[] = [];
+		const driver = new SpoondDriver({ url: "http://spoond", token: "t", fetch, transport: "rest", onWait: (key, waiting) => void waits.push(`${key} ${waiting}`) });
+		await driver.open("t-9", { image: "dev-base", network: { mode: "none" }, labels: {} });
+		assert.deepEqual(waits, ["t-9 true", "t-9 false"]);
 	});
 });
 

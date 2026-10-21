@@ -132,6 +132,15 @@ export class Limits implements Observer {
 		return this.config.weekly?.channels?.[channel] ?? this.config.weekly?.perChannel;
 	}
 
+	/** How many more runs could start in `channel` now, with these going (Infinity without limits). */
+	free(channel: string, working: readonly { channel: string }[]): number {
+		const { total, perChannel } = this.config.concurrency ?? {};
+		let room = Number.POSITIVE_INFINITY;
+		if (total !== undefined) room = Math.min(room, total - working.length);
+		if (perChannel !== undefined) room = Math.min(room, perChannel - working.filter((w) => w.channel === channel).length);
+		return Math.max(0, room);
+	}
+
 	/** May a new request start in `channel`, with these runs already going? */
 	admit(channel: string, working: readonly { channel: string }[], now = Date.now()): Admission {
 		const week = weekStart(new Date(now));

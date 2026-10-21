@@ -95,6 +95,11 @@ export type Config = {
 	pullUpkeep: { staleDays: number; closeDays: number };
 	/** Each channel's weekly summary, Mondays (weekly.ts). */
 	weeklySummary: boolean;
+	/**
+	 * How much runs at once (capacity.ts): runs in all and per channel (unless the limits file says), model calls in
+	 * flight (0: no limit), and how long a new sandbox may wait for room on a full sandbox host, in seconds.
+	 */
+	capacity: { maxRuns: number; maxRunsPerChannel: number; maxModelCalls: number; sandboxPatience: number };
 	/** Whether a request's reaction follows what Scout is doing (🧠, 📖, 🧪…), or only 👀 then ✅ (reactions.ts). */
 	statusReactions: boolean;
 	/** How much Scout does on its own initiative (initiative.ts): asked, own or team. */
@@ -259,6 +264,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		weeklySummary: env.SCOUT_WEEKLY_SUMMARY !== "off",
 		initiative: parseInitiative(env.SCOUT_INITIATIVE),
 		statusReactions: env.SCOUT_STATUS_REACTIONS !== "off",
+		capacity: {
+			maxRuns: count(env, "SCOUT_MAX_RUNS", 8, 1),
+			maxRunsPerChannel: count(env, "SCOUT_MAX_RUNS_PER_CHANNEL", 3, 1),
+			maxModelCalls: count(env, "SCOUT_MAX_MODEL_CALLS", 6, 0),
+			sandboxPatience: count(env, "SCOUT_SANDBOX_PATIENCE", 1800, 60),
+		},
 		codeSearch: env.SCOUT_CODE_SEARCH !== "off",
 		parallel: env.SCOUT_PARALLEL !== "off",
 		...(env.SCOUT_REPOS_FILE ? { reposFile: resolve(env.SCOUT_REPOS_FILE) } : {}),
@@ -320,4 +331,13 @@ export function useScoutsKey(sshKey: string | undefined): void {
 	if (sshKey !== undefined) {
 		process.env.GIT_SSH_COMMAND = `ssh -i '${sshKey}' -o IdentitiesOnly=yes -o IdentityAgent=none`;
 	}
+}
+
+/** A whole-number setting, at least `min`, with a plain message when it isn't one. */
+function count(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number): number {
+	const raw = env[name];
+	if (raw === undefined || raw.trim() === "") return fallback;
+	const value = Number(raw);
+	if (!Number.isInteger(value) || value < min) throw new Error(`${name} must be a whole number of at least ${min} (it's "${raw}").`);
+	return value;
 }

@@ -22,6 +22,7 @@ export function layout(s: Snapshot, width = WIDTH): Grid {
 	}
 
 	y = sideBySide(grid, y, width, half, ["now", nowLines(s)], ["pull requests", pullLines(s)]);
+	if (s.capacity !== undefined) y = panel(grid, 0, y, width, "capacity", capacityLines(s.capacity, s.now));
 	y = panel(grid, 0, y, width, "threads", threadLines(s));
 	y = sideBySide(grid, y, width, half, ["learning", learningLines(s)], ["spend", spendLines(s)]);
 	if (s.learning.notes.length > 0) y = panel(grid, 0, y, width, "unreviewed notes", noteLines(s));
@@ -253,4 +254,44 @@ function clock(ms: number): string {
 
 function dollars(amount: number): string {
 	return `$${amount.toFixed(2)}`;
+}
+
+function capacityLines(c: NonNullable<Snapshot["capacity"]>, _now: number): Line[] {
+	const used = (n: number, max: number) => (max <= 0 ? `${n}` : `${n} of ${max}`);
+	const waitWords = { run: "requests waiting their turn", model: "model calls waiting for a slot", sandbox: "sandboxes waiting for room" } as Record<string, string>;
+	const lines: Line[] = [
+		{
+			left: [
+				{ text: "runs         ", style: "dim" },
+				{ text: used(c.active, c.maxRuns), style: c.active >= c.maxRuns ? "warn" : "text" },
+				{ text: c.queued > 0 ? `  · ${c.queued} waiting their turn` : "", style: "warn" },
+			],
+		},
+		{
+			left: [
+				{ text: "model calls  ", style: "dim" },
+				{ text: used(c.modelInFlight, c.modelMax), style: c.modelMax > 0 && c.modelInFlight >= c.modelMax ? "warn" : "text" },
+				{ text: c.modelWaiting > 0 ? `  · ${c.modelWaiting} waiting` : "", style: "warn" },
+			],
+		},
+		{
+			left: [
+				{ text: "sandboxes    ", style: "dim" },
+				{ text: `${c.sandboxes} open` },
+				{ text: c.sandboxWaiting > 0 ? `  · ${c.sandboxWaiting} waiting for room` : "", style: "warn" },
+			],
+		},
+		{
+			left: [
+				{ text: "event loop   ", style: "dim" },
+				{ text: `${c.loopLag.mean.toFixed(1)} ms mean, ${c.loopLag.p99.toFixed(1)} ms p99`, style: c.loopLag.p99 > 200 ? "warn" : "text" },
+				{ text: c.progressWaiting > 0 ? `  · ${c.progressWaiting} progress edits paced` : "", style: "dim" },
+			],
+		},
+	];
+	for (const w of c.waits) {
+		if (w.count === 0) continue;
+		lines.push({ left: [{ text: "last day     ", style: "dim" }, { text: `${w.count} ${waitWords[w.kind] ?? w.kind}: half over ${Math.round(w.p50 / 1000)}s, slowest tenth over ${Math.round(w.p90 / 1000)}s` }] });
+	}
+	return lines;
 }

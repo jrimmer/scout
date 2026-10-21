@@ -5,7 +5,7 @@ import { delivery } from "./etiquette.ts";
 import type { Admission } from "./limits.ts";
 import { ThreadDoc } from "./docs.ts";
 import type { ThreadSearch } from "./search.ts";
-import { type ChatMessage, type ChatSurface, type RunOutcome, ThreadView } from "./render.ts";
+import { type ChatMessage, type ChatSurface, ProgressPacer, type RunOutcome, ThreadView } from "./render.ts";
 import { DEFAULT_EMOJI, type Ending, type Phase, StatusReactions } from "./reactions.ts";
 import { asksSomething } from "./recaps.ts";
 import { threadKey, type ThreadRow, type Threads } from "./threads.ts";
@@ -62,6 +62,14 @@ export type BridgeOptions = {
 	reactionsOn?: () => boolean;
 	/** Whether the reaction follows what Scout is doing (🧠, 📖, 🧪…) or only picked up and done (SCOUT_STATUS_REACTIONS). */
 	reactionPhases?: () => boolean;
+	/** What to expect when `place`th in line ("about 2–6 minutes"), from how long runs take; undefined without data. */
+	queueEta?: (place: number) => string | undefined;
+	/** Something waited its turn (a request in the queue), for the capacity record. */
+	waited?: (kind: "run", ms: number) => void;
+	/** A run finished after `ms`, for the capacity record. */
+	ran?: (ms: number) => void;
+	/** What a run is waiting on right now, in Scout's words (a sandbox, the model), or nothing. */
+	waitingFor?: (conversationId: number) => Promise<string | undefined>;
 	/** The emoji for a phase (the profile's reactions.md, or the defaults). */
 	reactionEmoji?: (phase: Phase | Ending) => string;
 	/** What a run in this conversation since `since` cost, for its reply's footer (limits.ts). */
@@ -120,6 +128,8 @@ export class Bridge {
 	readonly #requests = new Map<number, { channel: string; ts: string }[]>();
 	/** One reaction per request, smoothed and paced for the whole workspace (reactions.ts). */
 	readonly #status: StatusReactions;
+	/** Progress edits for every thread, paced under Slack's limit (render.ts). */
+	readonly pacer = new ProgressPacer();
 	/** When a model call last had to wait and retry, in any thread: lately, new runs warn they may be slow. */
 	#slowAt = 0;
 	readonly #locks = new Map<string, Promise<unknown>>();
@@ -192,6 +202,7 @@ export class Bridge {
 				const outcome = await this.#serialized(item.key, () => this.#deliver(item.key, message, mentions, true));
 				if (outcome === "waiting") return;
 				this.#options.threads.dequeue(item.id);
+				this.#options.waited?.("run", Date.now() - item.at);
 			}
 		} finally {
 			this.#draining = false;
@@ -269,6 +280,15 @@ export class Bridge {
 	}
 
 	/** The watchdog: runs that haven't moved on for a while say so, and ones stuck far too long stop with a summary. */
+	/** Each busy run's progress message says what it's waiting on right now, if anything (every few seconds). */
+	async refreshWaits(): Promise<void> {
+		if (this.#options.waitingFor === undefined) return;
+		for (const [conversationId, view] of this.#views) {
+			if (!view.busy) continue;
+			view.waiting(await this.#options.waitingFor(conversationId).catch(() => undefined));
+		}
+	}
+
 	async watch(now = Date.now()): Promise<void> {
 		const { harness, context } = this.#options;
 		for (const [conversationId, view] of this.#views) {
@@ -356,7 +376,8 @@ export class Bridge {
 						threads.enqueue(key, message);
 						// The message this run will use once it starts says it's waiting, and where it is in line.
 						const place = threads.queued().length;
-						view.queued(`⏳ ${admission.reason}${place > 1 ? ` You're ${ordinal(place)} in line.` : ""}`);
+						const eta = this.#options.queueEta?.(place);
+						view.queued(`⏳ ${admission.reason}${place > 1 ? ` You're ${ordinal(place)} in line.` : ""}${eta === undefined ? "" : ` My guess: ${eta}.`}`);
 						this.#phase(message.channel, message.ts, "queued");
 						this.#options.audit?.record("refused", { actor: message.user, conversationId: thread.conversationId, channel: message.channelName, detail: { reason: admission.reason, ts: message.ts, queued: true } });
 					}
@@ -572,7 +593,9 @@ export class Bridge {
 			},
 			behind: () => Date.now() - this.#slowAt < BEHIND_MS,
 			...(this.#options.costNote === undefined ? {} : { cost: (since: number) => this.#options.costNote?.(thread.conversationId, since) }),
-			onRunEnd: (answer, ts, outcome) => {
+			pacer: this.pacer,
+			onRunEnd: (answer, ts, outcome, durationMs) => {
+				this.#options.ran?.(durationMs);
 				// How the requests this run took ended: ✅, ⚠️, ✋ when stopped, 🙋 when the answer waits on someone.
 				const ending: Ending = outcome === "stopped" ? "stopped" : outcome === "problem" ? "problem" : answer !== undefined && asksSomething(answer) ? "waiting" : "done";
 				for (const request of this.#requests.get(thread.conversationId) ?? []) this.#status.finish(request.channel, request.ts, ending);

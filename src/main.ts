@@ -15,6 +15,7 @@ import { ChannelCanvases, channelCanvas, channelWeeks, WeeklySummaries } from ".
 import { asksSomething, Recaps } from "./recaps.ts";
 import { type HomeData, type HomeThread, homeView } from "./home.ts";
 import { Capabilities } from "./capabilities.ts";
+import { aboutHowLong, eventLoopLag, WAIT_KINDS } from "./capacity.ts";
 import { comparison } from "./approaches.ts";
 import { allows, describeInitiative } from "./initiative.ts";
 import { allowInReposFile, EgressRequests } from "./egress.ts";
@@ -212,7 +213,14 @@ const bridge = new Bridge({
 	costNote: (conversationId, since) => scout.limits.costNote(conversationId, since),
 	approvalAskedIn: (ts) => scout.approvals.askedIn(ts),
 	audit,
-	admit: scout.admitter(async () => Promise.all(bridge.working().map(async (w) => ({ channel: await channelOf(w.conversationId) })))),
+	admit: scout.admitter(() => runsNow()),
+	queueEta: (place) => {
+		const range = scout.capacity.eta(place, config.capacity.maxRuns);
+		return range === undefined ? undefined : aboutHowLong(range);
+	},
+	waited: (kind, ms) => scout.capacity.waited(kind, ms),
+	ran: (ms) => scout.capacity.ran(ms),
+	waitingFor: (conversationId) => scout.waitingFor(conversationId),
 	modelFor: scout.modelFor,
 	download: (url) => slack.download(url),
 	saveAttachment: (id, name, bytes) => workspaces.saveAttachment(id, name, bytes),
@@ -607,6 +615,9 @@ const ciWatcher = new CiWatcher({
 	},
 });
 // Runs that haven't moved on for a while say so; ones stuck far too long stop with a summary (render.ts).
+// What each run is waiting on (a sandbox, the model) shows in its progress message, kept current.
+const waitsTick = setInterval(() => void bridge.refreshWaits().catch((error: unknown) => console.error("showing waits failed:", error)), 3_000);
+waitsTick.unref();
 const watchdog = setInterval(() => void health.watch("watchdog", "watching for stuck runs failed", () => bridge.watch()), MINUTE);
 const ciTick = setInterval(() => {
 	if (allows(config.initiative, "own")) void health.watch("ci", "watching CI failed", () => ciWatcher.poll());
@@ -826,6 +837,54 @@ async function followUpStalledThreads(): Promise<void> {
 	}
 }
 
+// Runs at once, for the run limits: every busy thread, plus the approaches threads are trying beyond their own run.
+async function runsNow(): Promise<{ channel: string }[]> {
+	const runs = await Promise.all(bridge.working().map(async (w) => ({ channel: await channelOf(w.conversationId) })));
+	for (const { parentId, count } of scout.approaches.working()) {
+		const channel = await channelOf(parentId);
+		for (let i = 1; i < count; i++) runs.push({ channel });
+	}
+	return runs;
+}
+// How many approaches a thread may run at once: what's free, plus the slot its own run already holds.
+scout.setApproachRoom(async (parentId) => scout.limits.free(await channelOf(parentId), await runsNow()) + 1);
+
+// Capacity now, for the dashboard and the metrics.
+const loopLag = eventLoopLag();
+function capacityNow() {
+	return {
+		active: bridge.working().length,
+		maxRuns: config.capacity.maxRuns,
+		queued: threads.queued().length,
+		modelInFlight: scout.modelLimiter.inFlight,
+		modelWaiting: scout.modelLimiter.waiting,
+		modelMax: config.capacity.maxModelCalls,
+		sandboxWaiting: scout.board.count("sandbox"),
+		sandboxes: workspaces.open,
+		progressWaiting: bridge.pacer.waiting,
+		loopLag: loopLag(),
+		waits: WAIT_KINDS.map((kind) => ({ kind, ...scout.capacity.waits(kind, 24 * HOUR) })),
+	};
+}
+function capacityGauges(): Record<string, { help: string; value: number }> {
+	const c = capacityNow();
+	const gauges: Record<string, { help: string; value: number }> = {
+		scout_runs_queued: { help: "Requests waiting their turn.", value: c.queued },
+		scout_model_calls_in_flight: { help: "Model calls running now.", value: c.modelInFlight },
+		scout_model_calls_waiting: { help: "Model calls waiting for a slot.", value: c.modelWaiting },
+		scout_sandboxes_open: { help: "Sandboxes Scout has open.", value: c.sandboxes },
+		scout_sandboxes_waiting: { help: "New sandboxes waiting for room on the sandbox host.", value: c.sandboxWaiting },
+		scout_progress_edits_waiting: { help: "Progress edits waiting their turn under Slack's rate limit.", value: c.progressWaiting },
+		scout_event_loop_lag_ms: { help: "Event-loop lag, mean over the last minute.", value: Math.round(c.loopLag.mean * 10) / 10 },
+		scout_event_loop_lag_p99_ms: { help: "Event-loop lag, 99th percentile over the last minute.", value: Math.round(c.loopLag.p99 * 10) / 10 },
+	};
+	for (const w of c.waits) {
+		gauges[`scout_wait_${w.kind}_p50_seconds`] = { help: `Median wait for ${w.kind} over the last day.`, value: Math.round(w.p50 / 1000) };
+		gauges[`scout_wait_${w.kind}_p90_seconds`] = { help: `90th percentile wait for ${w.kind} over the last day.`, value: Math.round(w.p90 / 1000) };
+	}
+	return gauges;
+}
+
 // What Scout is doing, for "what are you working on?" (scout_status) and each person's App Home tab (home.ts).
 async function linkOf(conversationId: number): Promise<string | undefined> {
 	const thread = threads.byConversation(conversationId);
@@ -1035,6 +1094,11 @@ const housekeeping = () => {
 		void health.watch("recaps", "following up on stalled threads failed", followUpStalledThreads);
 	}
 	if (team) void health.watch("canvases", "refreshing the channels' canvases failed", () => refreshCanvases());
+	// Waiting that has become common or is growing: tell whoever runs Scout, with what would help (once a day at most).
+	if (team) {
+		const notice = scout.capacity.notice({ maxRuns: config.capacity.maxRuns, maxModelCalls: config.capacity.maxModelCalls });
+		if (notice !== undefined) announce(notice);
+	}
 	const today = new Date(now);
 	if (team && today.getDay() >= 1 && today.getDay() <= 5 && today.getHours() >= 9 && today.getHours() < 17) {
 		void health.watch("review nudges", "reminding reviewers failed", nudgeReviews);
@@ -1058,7 +1122,9 @@ const housekeeping = () => {
 		// Mondays, after the reflection hour: how last week went.
 		const today = new Date();
 		if (!allows(config.initiative, "team") || today.getDay() !== 1 || today.getHours() < config.reflect.hour) return;
-		const text = pulls.weeklyReport(weekOf(today), Date.now(), scout.spend.spent(0));
+		const report = pulls.weeklyReport(weekOf(today), Date.now(), scout.spend.spent(0));
+		const waits = scout.capacity.weekLine();
+		const text = report === undefined || waits === undefined ? report : `${report} ${waits}`;
 		if (text !== undefined) announce(text);
 		if (config.weeklySummary) await health.watch("weekly", "posting the channels' weekly summaries failed", postChannelWeeks);
 	});
@@ -1113,6 +1179,7 @@ const dashboard =
 						}),
 					alerts: () => health.list(),
 					schedules: () => scout.schedules.all(),
+					capacity: () => capacityNow(),
 				}),
 				metrics: {
 					...(config.governance.metricsToken === undefined ? {} : { token: config.governance.metricsToken }),
@@ -1126,6 +1193,7 @@ const dashboard =
 							scout_problems: { help: "Things that need a person (see the dashboard).", value: health.list().length },
 							scout_spend_week_dollars: { help: "Model spend this week.", value: scout.spend.spent(weekStart(new Date())) },
 							scout_sandbox_connections: { help: "Sandbox daemon connections open.", value: workspaces.connected },
+							...capacityGauges(),
 						});
 					},
 				},
@@ -1144,6 +1212,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		clearTimeout(firstTick);
 		clearInterval(ciTick);
 		clearInterval(watchdog);
+		clearInterval(waitsTick);
 		clearInterval(heartbeat);
 		clearInterval(inboxTick);
 		clearInterval(scheduleTick);

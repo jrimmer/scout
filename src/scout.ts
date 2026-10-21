@@ -3,7 +3,8 @@ import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { Type } from "@earendil-works/pi-ai";
-import { type AgentChange, type ConversationId, createRegistry, defineExtension, defineTool, type Extension, Harness, type Storage } from "@earendil-works/pi-durable";
+import { type AgentChange, type ConversationId, createRegistry, defineExtension, defineTool, type Extension, Harness, ProviderDoc, type Storage } from "@earendil-works/pi-durable";
+import { Capacity, limitModels, minutes, ModelLimiter, WaitBoard } from "./capacity.ts";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createCodeHostExtension, type OpenedPull } from "./codehost.ts";
 import type { Config, RepoConfig } from "./config.ts";
@@ -74,15 +75,17 @@ export type ScoutOptions = {
 	fetch?: typeof fetch;
 };
 
+const DAY = 24 * 60 * 60 * 1000;
+
 export type Scout = Awaited<ReturnType<typeof openScout>>;
 
-function driverFor(config: Config, dataDir: string, instance: string): SandboxDriver {
+function driverFor(config: Config, dataDir: string, instance: string, onWait?: (key: string, waiting: boolean) => void): SandboxDriver {
 	const { sandbox } = config;
 	if (sandbox.driver === "spoond") {
 		// The relay that carries the daemon's stream reads the token from here (see drivers/spoond-relay.ts).
 		process.env.SCOUT_SPOOND_TOKEN = sandbox.spoond!.token;
 		const { url, token, transport } = sandbox.spoond!;
-		return new SpoondDriver({ url, token, transport });
+		return new SpoondDriver({ url, token, transport, patience: config.capacity.sandboxPatience, ...(onWait === undefined ? {} : { onWait }) });
 	}
 	if (sandbox.driver === "local") {
 		console.error("SCOUT_SANDBOX_DRIVER=local: commands run on this host with no isolation. Never with people you don't fully trust.");
@@ -99,11 +102,17 @@ export async function openScout(options: ScoutOptions) {
 	const pulls = new Pulls(db);
 	const search = new ThreadSearch(db);
 	const memory = new Memory(db);
+	// Capacity (capacity.ts): what waits, for how long, and what to tell people about it.
+	const capacity = new Capacity(db);
+	const board = new WaitBoard();
 	const workspaces = new Workspaces({
 		dataDir,
 		instance: options.instance,
 		repos: config.repos,
-		driver: options.driver ?? driverFor(config, dataDir, options.instance),
+		driver: options.driver ?? driverFor(config, dataDir, options.instance, (key, waiting) => {
+			if (waiting) board.start("sandbox", key);
+			else capacity.waited("sandbox", board.end("sandbox", key));
+		}),
 		sandbox: {
 			image: config.sandbox.image,
 			network: config.sandbox.network,
@@ -114,7 +123,10 @@ export async function openScout(options: ScoutOptions) {
 	let reflector: Reflector | undefined;
 	let harness: Harness | undefined;
 
-	const models = options.models ?? modelsFor(config.gateway);
+	// Model calls take turns: at most SCOUT_MAX_MODEL_CALLS at once, so a busy moment queues instead of overrunning the
+	// gateway, and each run can say it's waiting.
+	const modelLimiter = new ModelLimiter({ max: config.capacity.maxModelCalls, board, onWaited: (ms) => capacity.waited("model", ms) });
+	const models = limitModels(options.models ?? modelsFor(config.gateway), modelLimiter);
 
 	// What Scout knows. With a profile repo, the directory is a clone kept pulled, so merged changes just arrive.
 	if (config.profileRepo !== undefined) await cloneProfile(config.profileDir, config.profileRepo);
@@ -139,7 +151,10 @@ export async function openScout(options: ScoutOptions) {
 	const pricing = Pricing.load(governance.pricesFile);
 	const audit = new Audit(db);
 	const spend = new SpendLedger(db, pricing);
-	const limits = new Limits(loadLimits(governance.limitsFile), spend, pricing);
+	// Runs at once: the limits file's say, else SCOUT_MAX_RUNS in all and SCOUT_MAX_RUNS_PER_CHANNEL per channel.
+	const limitsConfig = loadLimits(governance.limitsFile);
+	limitsConfig.concurrency = { total: config.capacity.maxRuns, perChannel: config.capacity.maxRunsPerChannel, ...limitsConfig.concurrency };
+	const limits = new Limits(limitsConfig, spend, pricing);
 	const counters = new Counters(pricing);
 	const tracer = governance.otlp === undefined ? undefined : new Tracer({ ...governance.otlp, pricing });
 	// The identity provider: who a Slack user is (by email), their code host login, and their groups.
@@ -287,11 +302,15 @@ export async function openScout(options: ScoutOptions) {
 	// service's to say (main.ts sets it); each approach works without this tool, and without opening pull requests.
 	const approaches = new Approaches(db);
 	let showApproaches: ApproachesOptions["show"] = async () => undefined;
+	// How many approaches may run at once for a thread, given the run limits (main.ts sets it; it can see every run).
+	let approachRoom: (parentId: number) => Promise<number> = async () => Number.POSITIVE_INFINITY;
 	const approachesTools: Extension = approachesExtension({
 		store: approaches,
 		workspaces,
 		costOf: (id, since) => spend.spentOn(id, since).cost,
 		show: (parentId, message, ts) => showApproaches(parentId, message, ts),
+		room: (parentId) => approachRoom(parentId),
+		onWaited: (ms) => capacity.waited("run", ms),
 		childWithout: () => [approachesTools, workCodeHost],
 	});
 	const schedules = new Schedules(db);
@@ -401,6 +420,7 @@ export async function openScout(options: ScoutOptions) {
 
 	if (config.profileRepo !== undefined) {
 		reflector = new Reflector({
+			waits: () => capacity.weekLine(),
 			harness,
 			threads,
 			pulls,
@@ -500,7 +520,28 @@ export async function openScout(options: ScoutOptions) {
 		/** Why this person may not approve changes to `server` (an MCP server, or "egress"), if they may not. */
 		refuseApprover,
 		approaches,
-		/** Where a thread's comparison of approaches is shown: set by the service. */
+		capacity,
+		board,
+		modelLimiter,
+		/** What a run is waiting on right now, in Scout's words, or nothing: a sandbox on a full host, or the model. */
+		waitingFor: async (conversationId: number): Promise<string | undefined> => {
+			const now = Date.now();
+			const sandboxSince = board.since("sandbox", workspaces.key(conversationId));
+			if (sandboxSince !== undefined) {
+				const usual = capacity.waits("sandbox", 7 * DAY, now);
+				return `Waiting for a workspace: the sandbox host is full right now (${minutes(now - sandboxSince)} so far). ${usual.count >= 3 ? `It usually frees up within ${minutes(usual.p90)}.` : "I'll carry on as soon as there's room."}`;
+			}
+			const provider = harness === undefined ? undefined : await harness.snapshot(ProviderDoc, conversationId as ConversationId, context).catch(() => undefined);
+			const position = provider === undefined ? undefined : modelLimiter.position(provider.sessionId);
+			if (position === undefined) return undefined;
+			const usual = capacity.waits("model", DAY, now);
+			const ahead = position === 1 ? "I'm next" : `${position - 1} ahead of me`;
+			return `Waiting my turn for the model: it's busy with other threads, ${ahead}.${usual.count >= 5 ? ` That usually takes under ${minutes(usual.p90)}.` : ""}`;
+		},
+		/** How many approaches a thread may run at once: set by the service, which sees every run. */
+		setApproachRoom: (room: (parentId: number) => Promise<number>) => {
+			approachRoom = room;
+		},		/** Where a thread's comparison of approaches is shown: set by the service. */
 		setApproachesView: (show: ApproachesOptions["show"]) => {
 			showApproaches = show;
 		},
@@ -567,6 +608,7 @@ export async function openScout(options: ScoutOptions) {
 			approvals.close();
 			schedules.close();
 			images.close();
+			capacity.close();
 			await tracer?.close();
 			audit.close();
 			spend.close();

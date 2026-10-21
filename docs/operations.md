@@ -118,6 +118,12 @@ either way.
   ("Still on `mix test`, 23 minutes in"). A run that starts soon after another had to wait on the model warns that
   Scout is slow today. Model calls are retried up to six times, backing off from 5 s to a minute, about three
   minutes in all.
+- **Progress edits are paced across the workspace.** Slack allows about one `chat.update` a second per workspace,
+  so every thread's progress edits share one pace (`ProgressPacer` in `src/render.ts`): with a few threads working,
+  each message updates about every 1.5 s; with many, the total stays under one edit a second and each message
+  updates less often, oldest change first, and only its latest state is sent. The rate wins over freshness: past
+  about ten working threads a message can go more than 10 s between updates. Answers skip the pace, go out at once,
+  and replace any progress edit still waiting, so an answer is never held back or overwritten.
 - **Stuck runs.** After 10 minutes without a new step the status line says what Scout is still doing. After 45
   minutes with nothing running (no command in progress, no answer), the run stops with where it got to. A long
   command is never stopped this way; it has its own timeout.
@@ -219,8 +225,11 @@ asked: the profile tells it so, and it says the cost first, about one request's 
   opening the pull request when asked). Nobody choosing leaves them until retention cleans up.
 - **Cost** counts against the channel's budget, and each approach answers to the per-run limits on its own.
 
-`SCOUT_PARALLEL=off` turns it off. What's rough: the approaches don't count toward Scout's concurrency limit, the
-live lines show elapsed time and cost but not steps, and Scout won't suggest it on its own yet.
+- **Run limits** apply: each approach counts as a run. When the limits leave room for fewer than asked, the
+  rest wait (⏳ "waiting for room" in the comparison, which says so) and start as the others finish.
+
+`SCOUT_PARALLEL=off` turns it off. What's rough: the thread's own run and its first approach share one slot, a
+waiting approach's model waits don't show in the thread's message, the live lines show elapsed time and cost but not steps, and Scout won't suggest it on its own yet.
 
 ## Work from the code host
 
@@ -451,7 +460,7 @@ Slack tokens and MCP servers' credentials need a restart.
   call.
 - **Metrics**: Prometheus text at `/metrics` on the dashboard's listener: model requests, tokens, spend, tool calls,
   runs, and gauges for working threads, open pull requests, unreviewed notes, problems, this week's spend and open
-  sandbox connections. With `SCOUT_METRICS_TOKEN` it takes that bearer token; otherwise the dashboard's login.
+  sandbox connections, and the capacity gauges (below). With `SCOUT_METRICS_TOKEN` it takes that bearer token; otherwise the dashboard's login.
 
 ## Who may ask for work
 
@@ -497,7 +506,8 @@ and protected tags.
 - **Weekly budgets** are dollars per calendar week, from Monday. Past a budget, new requests in that channel are
   declined until Monday.
 - **Concurrency limits** queue requests: Scout says so, and starts them in order as runs finish. The queue survives
-  restarts.
+  restarts. They're on even without a limits file: 8 runs in all and 3 per channel (`SCOUT_MAX_RUNS`,
+  `SCOUT_MAX_RUNS_PER_CHANNEL`); the file's `concurrency` wins where it's set.
 - **Per-run limits** stop a runaway request. Scout is told to summarize and ask before going on.
 
 Spend comes from a ledger of every model response. Prices are pi-ai's catalog prices, unless `SCOUT_PRICES_FILE`
@@ -508,6 +518,37 @@ overrides them (dollars per million tokens):
 ```
 
 The dashboard shows this week's spend by channel against each budget.
+
+## Capacity: when people wait, saying so
+
+With many threads (and approaches) working, something runs out first: Scout's runs, the model gateway, or spoond's
+sandboxes. Scout holds the extra work rather than letting everything slow down at once, tells people what they're
+waiting on and roughly how long, and tells whoever runs it when waiting becomes common (`src/capacity.ts`).
+
+- **Runs**: 8 at once in all and 3 per channel by default (above). Beyond that, requests queue. 8 fits a spoond
+  share of about 10 to 15 sandboxes with room for short commands; 3 per channel keeps one busy channel from
+  taking every slot.
+- **Model calls**: at most `SCOUT_MAX_MODEL_CALLS` in flight (default 6; 0 for no limit). Each run makes many calls
+  in a row, so 8 runs rarely need 8 at once; 6 keeps the gateway out of the overload that 4 busy threads with tool
+  loops caused. Waiting calls go in order, and the run's status line says so: "Waiting my turn for the model: it's
+  busy with other threads, 2 ahead of me."
+- **Sandboxes**: when spoond is full (429 or 503), Scout keeps asking for up to `SCOUT_SANDBOX_PATIENCE` seconds
+  (default 1800, at least 60) and says so in the status line: "Waiting for a workspace: the sandbox host is full
+  right now (3 minutes so far)." If it gives up, it says why in plain words and what would help.
+- **ETAs** come from what Scout measured: how long recent runs took and how long recent waits lasted (kept 30 days in
+  `scout.sqlite`). They're ranges ("My guess: about 3–10 minutes"), from the quicker to the slower quartile, and
+  there's no guess until there are at least three runs to go on. A queued request's placeholder says where it is in
+  line and the guess; the status lines of waiting runs say the usual wait for the model or a sandbox.
+- **When waiting becomes common**, Scout posts in its home channel at most once a day, with the numbers and what
+  would help (raise `SCOUT_MAX_RUNS` or a channel's limit, give the gateway more room, a bigger share on spoond):
+  when over a fifth of the day's requests waited over a minute, model waits were long (p90 over 30 s), sandboxes
+  ran out, or waiting doubled from the week before. Only with team initiative (`SCOUT_INITIATIVE=team`).
+- **Each Monday** the weekly report adds a line on last week's waits, and the nightly reflection gets the same line,
+  so it can propose working differently when its own long runs are why people waited.
+- **Gauges** on `/metrics`: `scout_runs_queued`, `scout_model_calls_in_flight`, `scout_model_calls_waiting`,
+  `scout_sandboxes_open`, `scout_sandboxes_waiting`, `scout_progress_edits_waiting`, `scout_event_loop_lag_ms` and
+  `_p99_ms`, and `scout_wait_{run,model,sandbox}_p50_seconds` / `_p90_seconds` over the last day. The dashboard's
+  "capacity" panel shows the same.
 
 ## Audit trail and retention
 

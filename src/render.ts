@@ -64,6 +64,8 @@ type Run = {
 	status?: string;
 	/** Why it gave up on its own, for its final message. */
 	gaveUp?: string;
+	/** What it's waiting on right now (a sandbox, the model), said in Scout's voice; it outranks `status` while it lasts. */
+	waiting?: string;
 	note?: string;
 	text?: string;
 	error?: string;
@@ -81,7 +83,8 @@ export class ThreadView {
 	readonly #surface: ChatSurface;
 	readonly #channel: string;
 	readonly #threadTs: string;
-	readonly #onRunEnd: (answer: string | undefined, ts: string | undefined, outcome: RunOutcome) => void;
+	readonly #onRunEnd: (answer: string | undefined, ts: string | undefined, outcome: RunOutcome, durationMs: number) => void;
+	readonly #pacer: ProgressPacer | undefined;
 	readonly #now: () => number;
 	readonly #onRunMessage: (ts: string | undefined) => void;
 	readonly #cost: ((startedAt: number) => string | undefined) | undefined;
@@ -98,8 +101,10 @@ export class ThreadView {
 		channel: string;
 		threadTs: string;
 		/** After the run's final message is in Slack, with Scout's answer when it gave one. */
-		/** The run's answer (none when it was stopped), the message it's in, and how it ended. */
-		onRunEnd?: (answer: string | undefined, ts: string | undefined, outcome: RunOutcome) => void;
+		/** The run's answer (none when it was stopped), the message it's in, how it ended, and how long it took. */
+		onRunEnd?: (answer: string | undefined, ts: string | undefined, outcome: RunOutcome, durationMs: number) => void;
+		/** Paces progress edits across every thread in the workspace (one per thread without it). */
+		pacer?: ProgressPacer;
 		/** The Slack message of a run in progress before a restart, to keep editing instead of posting another. */
 		resumeTs?: string;
 		/** A run's message was posted (its ts), or the run ended (undefined): remember it across restarts. */
@@ -115,6 +120,7 @@ export class ThreadView {
 		now?: () => number;
 	}) {
 		this.#cost = options.cost;
+		this.#pacer = options.pacer;
 		this.#mood = options.behind;
 		this.#onSlow = options.onSlow ?? (() => {});
 		this.#onPhase = options.onPhase ?? (() => {});
@@ -125,6 +131,10 @@ export class ThreadView {
 		this.#threadTs = options.threadTs;
 		this.#onRunEnd = options.onRunEnd ?? (() => {});
 		this.#now = options.now ?? Date.now;
+	}
+
+	get #key(): string {
+		return `${this.#channel}:${this.#threadTs}`;
 	}
 
 	get busy(): boolean {
@@ -348,7 +358,29 @@ export class ThreadView {
 		return posted;
 	}
 
+	/** What the run is waiting on right now (undefined when it isn't): shown in its progress message. */
+	waiting(text: string | undefined): void {
+		const run = this.#run;
+		if (run === undefined || run.waiting === text) return;
+		if (text === undefined) delete run.waiting;
+		else run.waiting = text;
+		this.#schedule();
+	}
+
 	#schedule(): void {
+		const pacer = this.#pacer;
+		if (pacer !== undefined) {
+			const run = this.#run;
+			if (run === undefined) return;
+			// The pacer sends the latest state when this thread's turn comes, never a stale one after the answer.
+			pacer.want(this.#key, () => {
+				if (this.#run !== run || run.ts === undefined) return;
+				this.#enqueue(async () => {
+					if (this.#run === run && run.ts !== undefined) await this.#surface.update(this.#channel, run.ts, progressMessage(run, this.#now()));
+				});
+			});
+			return;
+		}
 		if (this.#timer !== undefined) return;
 		this.#timer = setTimeout(() => {
 			this.#timer = undefined;
@@ -367,6 +399,8 @@ export class ThreadView {
 		this.#run = undefined;
 		if (this.#timer !== undefined) clearTimeout(this.#timer);
 		this.#timer = undefined;
+		// The answer goes out now, never behind other threads' progress, and no queued progress edit can follow it.
+		this.#pacer?.cancel(this.#key);
 		this.#enqueue(async () => {
 			const cost = this.#cost?.(run.startedAt);
 			const message = finalMessage(cost === undefined ? run : { ...run, cost }, this.#now());
@@ -374,7 +408,7 @@ export class ThreadView {
 			const ts = await this.#deliver(run.ts, answer, message);
 			this.#onRunMessage(undefined);
 			const outcome: RunOutcome = run.stoppedBy !== undefined ? "stopped" : run.gaveUp !== undefined || run.error !== undefined ? "problem" : "answered";
-			this.#onRunEnd(run.stoppedBy === undefined && run.gaveUp === undefined ? run.text : undefined, ts, outcome);
+			this.#onRunEnd(run.stoppedBy === undefined && run.gaveUp === undefined ? run.text : undefined, ts, outcome, this.#now() - run.startedAt);
 		});
 	}
 
@@ -385,9 +419,10 @@ export class ThreadView {
 	}
 }
 
-export function progressMessage(run: Pick<Run, "startedAt" | "steps" | "note" | "status">, now: number): ChatMessage {
+export function progressMessage(run: Pick<Run, "startedAt" | "steps" | "note" | "status" | "waiting">, now: number): ChatMessage {
 	const lines = [`_Working… ${duration(now - run.startedAt)}_`];
-	if (run.status !== undefined) lines.push(`_${run.status}_`);
+	const status = run.waiting ?? run.status;
+	if (status !== undefined) lines.push(`_${status}_`);
 	if (run.note !== undefined) lines.push("", quote(clip(run.note, 600)));
 	const hidden = run.steps.length - VISIBLE_STEPS;
 	if (run.steps.length > 0) lines.push("");
@@ -517,4 +552,83 @@ function parts(text: string, max: number): string[] {
 	}
 	if (current !== "") out.push(current);
 	return out;
+}
+
+/**
+ * Progress edits for every thread in the workspace, paced so Slack never throttles them. Slack allows about one
+ * chat.update a second per workspace; with a few threads working each still updates every `minIntervalMs`, and with
+ * many, each updates less often, oldest change first, so the total stays under one edit per `spacingMs`. Only the
+ * latest state of each message is ever sent. Answers don't go through here: they go out at once, and cancel any
+ * progress edit still waiting for that thread.
+ */
+export class ProgressPacer {
+	readonly #spacingMs: number;
+	readonly #minIntervalMs: number;
+	readonly #now: () => number;
+	readonly #later: (run: () => void, delayMs: number) => void;
+	readonly #wanted = new Map<string, { send: () => void; since: number }>();
+	readonly #lastSent = new Map<string, number>();
+	#lastAny = Number.NEGATIVE_INFINITY;
+	#timer: ReturnType<typeof setTimeout> | undefined;
+	#scheduledFor = Number.POSITIVE_INFINITY;
+
+	constructor(options: { spacingMs?: number; minIntervalMs?: number; now?: () => number; later?: (run: () => void, delayMs: number) => void } = {}) {
+		this.#spacingMs = options.spacingMs ?? 1_000;
+		this.#minIntervalMs = options.minIntervalMs ?? PROGRESS_INTERVAL_MS;
+		this.#now = options.now ?? Date.now;
+		this.#later = options.later ?? ((run, delayMs) => {
+			if (this.#timer !== undefined) clearTimeout(this.#timer);
+			this.#timer = setTimeout(run, delayMs);
+			this.#timer.unref?.();
+		});
+	}
+
+	/** A thread's progress changed: `send` shows its latest state, when its turn comes. */
+	want(key: string, send: () => void): void {
+		const existing = this.#wanted.get(key);
+		this.#wanted.set(key, { send, since: existing?.since ?? this.#now() });
+		this.#plan();
+	}
+
+	/** The thread's run ended: drop its waiting edit, so nothing stale lands after the answer. */
+	cancel(key: string): void {
+		this.#wanted.delete(key);
+		this.#lastSent.delete(key);
+	}
+
+	/** Send the next edit that's due, oldest change first; then plan the next. */
+	tick(): void {
+		this.#scheduledFor = Number.POSITIVE_INFINITY;
+		const now = this.#now();
+		if (now < this.#lastAny + this.#spacingMs) return this.#plan();
+		let chosen: [string, { send: () => void; since: number }] | undefined;
+		for (const entry of this.#wanted) {
+			const ready = (this.#lastSent.get(entry[0]) ?? Number.NEGATIVE_INFINITY) + this.#minIntervalMs;
+			if (ready > now) continue;
+			if (chosen === undefined || entry[1].since < chosen[1].since) chosen = entry;
+		}
+		if (chosen !== undefined) {
+			this.#wanted.delete(chosen[0]);
+			this.#lastSent.set(chosen[0], now);
+			this.#lastAny = now;
+			chosen[1].send();
+		}
+		this.#plan();
+	}
+
+	/** Edits waiting their turn, for gauges. */
+	get waiting(): number {
+		return this.#wanted.size;
+	}
+
+	#plan(): void {
+		if (this.#wanted.size === 0) return;
+		const now = this.#now();
+		let at = Number.POSITIVE_INFINITY;
+		for (const [key] of this.#wanted) at = Math.min(at, (this.#lastSent.get(key) ?? Number.NEGATIVE_INFINITY) + this.#minIntervalMs);
+		at = Math.max(at, this.#lastAny + this.#spacingMs, now);
+		if (at >= this.#scheduledFor) return;
+		this.#scheduledFor = at;
+		this.#later(() => this.tick(), at - now);
+	}
 }

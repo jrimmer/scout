@@ -70,8 +70,9 @@ npm start
 
 Invite Scout to a public channel and mention it. Data (transcripts, notes, the thread map, the audit trail) lives in
 `data/`. [docs/operations.md](docs/operations.md) covers the rest: sandboxes on Docker or spoond microVMs, a model
-gateway, backups with Litestream, secrets from files or 1Password, telemetry, who may ask for work, budgets, the
-audit trail and retention.
+gateway, backups with Litestream, secrets from files or 1Password, telemetry, who may ask for work, budgets,
+capacity (how many runs and model calls at once, and what Scout tells people while they wait), the audit trail and
+retention.
 
 For the learning loop, put `profile/` in its own repository and set `SCOUT_PROFILE_REPO_URL`. Everything else
 optional is in `.env.example`.

@@ -4,6 +4,20 @@ import type { PullRow, PullState, ReviewRow } from "../pulls.ts";
 import type { ThreadRow } from "../threads.ts";
 
 /** Everything the dashboard shows, read at one moment. Plain data, so layouts can be tested with fixtures. */
+export type CapacitySnapshot = {
+	active: number;
+	maxRuns: number;
+	queued: number;
+	modelInFlight: number;
+	modelWaiting: number;
+	modelMax: number;
+	sandboxes: number;
+	sandboxWaiting: number;
+	progressWaiting: number;
+	loopLag: { mean: number; p99: number };
+	waits: { kind: string; count: number; p50: number; p90: number }[];
+};
+
 export type Snapshot = {
 	now: number;
 	startedAt: number;
@@ -29,6 +43,8 @@ export type Snapshot = {
 	reviews: { latest: { slug: string; number: number; sha: string; posted: boolean }[] };
 	/** Every channel's schedules, with when each runs next. */
 	schedules: { id: number; channel: string; when: string; task: string; paused: boolean; next?: number; lastRun?: number }[];
+	/** Runs, model calls and sandboxes against their limits, what's waiting, and how long waits have been (capacity.ts). */
+	capacity?: CapacitySnapshot;
 	spend: {
 		total: number;
 		byModel: { model: string; cost: number }[];
@@ -66,6 +82,7 @@ export type Sources = {
 	week?(): { channel: string; cost: number; budget?: number }[];
 	alerts(): { message: string; since: number }[];
 	schedules?(): Schedule[];
+	capacity?(): CapacitySnapshot;
 };
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -144,6 +161,7 @@ export class Collector {
 				proposals: s.pulls.rate(now - 30 * DAY, now, "profile"),
 				notes: s.memory.active(),
 			},
+			...(s.capacity === undefined ? {} : { capacity: s.capacity() }),
 			schedules: (s.schedules?.() ?? []).map((sc) => {
 				const next = sc.paused ? undefined : nextTime(sc.cron, now);
 				return { id: sc.id, channel: sc.channel, when: sc.when, task: sc.task, paused: sc.paused, ...(next === undefined ? {} : { next }), ...(sc.lastRun === undefined ? {} : { lastRun: sc.lastRun }) };

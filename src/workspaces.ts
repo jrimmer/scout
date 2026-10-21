@@ -133,6 +133,11 @@ export class Workspaces {
 	}
 
 	/** Conversations with a daemon connection open right now. */
+	/** Sandboxes this process has open (prepared for a thread, connected or not). */
+	get open(): number {
+		return this.#open.size;
+	}
+
 	get connected(): number {
 		return this.#connected.size;
 	}

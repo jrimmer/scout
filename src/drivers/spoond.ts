@@ -29,13 +29,15 @@ export type SpoondOptions = {
 	home?: string;
 	/** Seconds to keep retrying while spoond is full or busy (default 600). */
 	patience?: number;
+	/** A new sandbox (by key) started or stopped waiting for room on a full spoond, so the thread can say so. */
+	onWait?: (key: string, waiting: boolean) => void;
 	/** How commands and files reach the lease: a pi-env daemon over the stream WebSocket, or spoond's REST API. */
 	transport?: "stream" | "rest";
 };
 
 /** One request to spoond, waiting out busy and full answers. */
 export type SpoondRequest = (method: string, path: string, init?: RequestOptions) => Promise<Response>;
-type RequestOptions = { body?: string | Uint8Array<ArrayBuffer>; headers?: Record<string, string>; signal?: AbortSignal };
+type RequestOptions = { body?: string | Uint8Array<ArrayBuffer>; headers?: Record<string, string>; signal?: AbortSignal; waitingAs?: string };
 
 type Lease = { id: string; holder?: string; holder_url?: string; state?: string };
 
@@ -138,7 +140,7 @@ export class SpoondDriver implements SandboxDriver {
 			idle_suspend: this.#options.idleSuspend ?? 900,
 			checkpoint_interval: this.#options.checkpointInterval ?? 600,
 			wait: 60,
-		})) as Lease;
+		}, key)) as Lease;
 		return lease;
 	}
 
@@ -161,8 +163,15 @@ export class SpoondDriver implements SandboxDriver {
 		return path;
 	}
 
-	async #api(method: string, path: string, body?: unknown): Promise<unknown> {
-		const response = await this.#request(method, path, body === undefined ? {} : { body: JSON.stringify(body) });
+	async #api(method: string, path: string, body?: unknown, waitingAs?: string): Promise<unknown> {
+		const response = await this.#request(method, path, { ...(body === undefined ? {} : { body: JSON.stringify(body) }), ...(waitingAs === undefined ? {} : { waitingAs }) });
+		if (response.status === 429 || response.status === 503) {
+			const minutes = Math.round((this.#options.patience ?? 600) / 60);
+			throw new Error(
+				`The sandbox host stayed full for ${minutes} minute${minutes === 1 ? "" : "s"}, so I couldn't get a workspace. Try again in a while; ` +
+					"if this keeps happening, whoever runs me can give me a bigger share on spoond or let fewer threads run at once.",
+			);
+		}
 		if (!response.ok) {
 			throw new Error(`spoond ${method} ${path}: ${response.status} ${(await response.text()).slice(0, 300)}`);
 		}
@@ -174,8 +183,22 @@ export class SpoondDriver implements SandboxDriver {
 	 * answers creates with 503 or 429 more often, and pauses leases to keep memory free, so this waits minutes, not tries.
 	 */
 	async #request(method: string, path: string, init: RequestOptions = {}): Promise<Response> {
-		const { body, signal } = init;
+		const { waitingAs } = init;
 		const deadline = Date.now() + (this.#options.patience ?? 600) * 1000;
+		let waiting = false;
+		try {
+			return await this.#attempts(method, path, init, deadline, () => {
+				if (waiting || waitingAs === undefined) return;
+				waiting = true;
+				this.#options.onWait?.(waitingAs, true);
+			});
+		} finally {
+			if (waiting && waitingAs !== undefined) this.#options.onWait?.(waitingAs, false);
+		}
+	}
+
+	async #attempts(method: string, path: string, init: RequestOptions, deadline: number, waiting: () => void): Promise<Response> {
+		const { body, signal } = init;
 		for (;;) {
 			const response = await this.#fetch(`${this.#options.url}${path}`, {
 				method,
@@ -188,6 +211,7 @@ export class SpoondDriver implements SandboxDriver {
 				...(signal === undefined ? {} : { signal }),
 			});
 			if (!(await busy(response))) return response;
+			if (response.status === 429 || response.status === 503) waiting();
 			const seconds = Number(response.headers.get("retry-after") ?? 5);
 			const wait = Math.min(60, Number.isFinite(seconds) && seconds >= 0 ? seconds : 5) * 1000;
 			if (Date.now() + wait >= deadline) return response;

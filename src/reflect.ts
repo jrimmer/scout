@@ -43,6 +43,8 @@ export type ReflectorOptions = {
 	memory?: Memory;
 	/** Where to read what people said on Scout's pull requests. */
 	codeHost?: CodeHost;
+	/** How long people waited on Scout lately (capacity.ts), so proposals can account for it. */
+	waits?: () => string | undefined;
 	fetch?: typeof fetch;
 	context: Context;
 	dataDir: string;
@@ -174,8 +176,10 @@ export class Reflector {
 				? ""
 				: `Your recent proposals to this profile, what people did with them, and what they said:\n${await this.#withFeedback(proposals, self)}\n\n`;
 		const notes = describeNotes(this.#options.memory?.active() ?? []);
+		const waits = this.#options.waits?.();
 		const intro =
 			`${outcomes}${notes === "" ? "" : `${notes}\n\n`}` +
+			(waits === undefined ? "" : `${waits} If people waited because of how you work (long runs, many steps), say what would help.\n\n`) +
 			`Threads with new activity since the last reflection: ${pending.length}.`;
 		const tail = omitted > 0 ? `\n\n(${omitted} more thread${omitted === 1 ? "" : "s"} left out for length.)` : "";
 		return `${intro}\n\n${parts.join("\n\n")}${tail}`;
