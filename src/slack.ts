@@ -1,4 +1,4 @@
-import { App, LogLevel, type Receiver } from "@slack/bolt";
+import { App, LogLevel, type Receiver, webApi } from "@slack/bolt";
 import type { IncomingMessage, SharedFile } from "./bridge.ts";
 import type { ChatMessage, ChatSurface } from "./render.ts";
 
@@ -17,6 +17,8 @@ export const EGRESS_ALLOW = "scout_egress_allow";
 export const EGRESS_DECLINE = "scout_egress_decline";
 /** The Ask Scout step in Workflow Builder (slack-manifest.yaml `functions`). */
 const WORKFLOW_STEP = "ask_scout";
+const NOT_HERE = "I only work in public channels I'm in. Invite me here, or ask me in a channel I'm in.";
+const WORKABLE_MS = 10 * 60_000;
 /** 🔍 on any message: "Scout, look into this". */
 const LOOK_REACTIONS = new Set(["mag", "mag_right"]);
 
@@ -59,17 +61,25 @@ export class Slack {
 	botUserId = "";
 	readonly #names = new Map<string, string>();
 	readonly #channels = new Map<string, string>();
+	/** Channels Scout found it can work in (public, and it's in them), and when: so the Ask Scout form needn't ask Slack. */
+	readonly #workable = new Map<string, number>();
+	/** For answers Slack wants within three seconds: two seconds, and no trying again. */
+	readonly #quick: webApi.WebClient;
 	readonly #botToken: string;
 
 	/** `receiver` and `apiUrl` are for tests: Slack's events from somewhere other than Socket Mode, its Web API elsewhere. */
 	constructor(tokens: { botToken: string; appToken: string }, test: { receiver?: Receiver; apiUrl?: string } = {}) {
 		this.#botToken = tokens.botToken;
+		const api = test.apiUrl === undefined ? {} : { slackApiUrl: test.apiUrl };
 		this.app = new App({
 			token: tokens.botToken,
 			logLevel: LogLevel.WARN,
 			...(test.receiver === undefined ? { appToken: tokens.appToken, socketMode: true } : { receiver: test.receiver }),
-			...(test.apiUrl === undefined ? {} : { clientOptions: { slackApiUrl: test.apiUrl } }),
+			// Five minutes of trying again, not the default half hour: a thread shouldn't sit silent that long. A final
+			// answer Slack still won't take is tried again by render.ts.
+			clientOptions: { ...api, retryConfig: webApi.retryPolicies.fiveRetriesInFiveMinutes },
 		});
+		this.#quick = new webApi.WebClient(tokens.botToken, { ...api, logLevel: LogLevel.ERROR, timeout: 2_000, retryConfig: { retries: 0 } });
 		const client = this.app.client;
 		this.surface = {
 			post: async (channel, threadTs, original) => {
@@ -298,16 +308,22 @@ export class Slack {
 		this.app.view(ASK_FORM, async ({ ack, view, body }) => {
 			const meta = JSON.parse(view.private_metadata) as { channel: string; ts: string; threadTs?: string; author?: string; text: string };
 			const request = view.state.values.request?.text?.value?.trim() ?? "";
-			// Scout works only in public channels it's in; say so in the form rather than failing afterwards.
-			const info = await this.app.client.conversations.info({ channel: meta.channel }).catch(() => undefined);
-			const open = info?.channel?.is_channel === true && info.channel.is_private !== true && info.channel.is_member === true;
-			if (!open) {
-				await ack({ response_action: "errors", errors: { request: "I only work in public channels I'm in. Invite me here, or ask me in a channel I'm in." } });
+			const user = body.user.id;
+			// Scout works only in public channels it's in; say so in the form rather than failing afterwards. Slack closes
+			// the form with an error after three seconds, so when it's slow to say, take the form and check afterwards.
+			let workable = await this.#canWork(meta.channel, true);
+			if (workable === false) {
+				await ack({ response_action: "errors", errors: { request: NOT_HERE } });
 				return;
 			}
 			await ack();
 			try {
-				await handlers.onAsk?.({ user: body.user.id, channel: meta.channel, channelName: info?.channel?.name ?? meta.channel, ts: meta.ts, ...(meta.threadTs === undefined ? {} : { threadTs: meta.threadTs }), ...(meta.author === undefined ? {} : { author: meta.author }), text: meta.text, request });
+				workable ??= await this.#canWork(meta.channel);
+				if (workable === false) {
+					await this.app.client.chat.postMessage({ channel: user, text: `About your Ask Scout request in <#${meta.channel}>: ${NOT_HERE}` });
+					return;
+				}
+				await handlers.onAsk?.({ user, channel: meta.channel, channelName: await this.channelName(meta.channel), ts: meta.ts, ...(meta.threadTs === undefined ? {} : { threadTs: meta.threadTs }), ...(meta.author === undefined ? {} : { author: meta.author }), text: meta.text, request });
 			} catch (error) {
 				console.error(`asking about ${meta.channel}/${meta.ts} failed:`, error);
 			}
@@ -502,6 +518,27 @@ export class Slack {
 	async emailOf(user: string): Promise<string | undefined> {
 		const info = await this.app.client.users.info({ user }).catch(() => undefined);
 		return info?.user?.profile?.email || undefined;
+	}
+
+	/**
+	 * Whether Scout can work in a channel: public, and it's in it. A yes is remembered for ten minutes. `quick` gives
+	 * Slack two seconds and one try, and is undefined when Slack didn't say in time.
+	 */
+	async #canWork(channel: string, quick = false): Promise<boolean | undefined> {
+		const at = this.#workable.get(channel);
+		if (at !== undefined && Date.now() - at < WORKABLE_MS) return true;
+		let info;
+		try {
+			info = await (quick ? this.#quick : this.app.client).conversations.info({ channel });
+		} catch (error) {
+			if ((error as { code?: string }).code === "slack_webapi_platform_error") return false;
+			if (quick) return undefined;
+			throw error;
+		}
+		const ok = info.channel?.is_channel === true && info.channel.is_private !== true && info.channel.is_member === true;
+		if (ok) this.#workable.set(channel, Date.now());
+		if (info.channel?.name !== undefined) this.#channels.set(channel, info.channel.name);
+		return ok;
 	}
 
 	async channelName(channel: string): Promise<string> {

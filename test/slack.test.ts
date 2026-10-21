@@ -211,6 +211,36 @@ describe("slack", () => {
 			}
 			assert.equal(seen.ask, undefined);
 		});
+
+		it("remembers a channel it can work in, so the next form needn't ask Slack", async () => {
+			await start({ onAsk: record("ask") });
+			await deliver("view-submission-ask");
+			await deliver("view-submission-ask");
+			assert.equal(seen.ask?.length, 2);
+			assert.equal(fake.called("conversations.info").length, 1);
+		});
+
+		it("takes the form when Slack is slow to say where it was sent, and checks afterwards", async () => {
+			await start({ onAsk: record("ask") });
+			fake.stall("conversations.info", 2_500);
+			const started = Date.now();
+			assert.equal(await deliver("view-submission-ask"), null, "taken, not an error");
+			assert.ok(Date.now() - started < 2_900, "within Slack's three seconds");
+			assert.equal(seen.ask?.length, 1, "and started once Slack said it was a channel Scout's in");
+		});
+
+		it("tells the person privately when a form it took turns out to be from a channel it can't work in", async () => {
+			await start({ onAsk: record("ask") });
+			fake.stall("conversations.info", 2_500);
+			await deliver("view-submission-ask", (p) => {
+				const view = p.view as { private_metadata: string };
+				view.private_metadata = JSON.stringify({ ...JSON.parse(view.private_metadata), channel: ELSEWHERE_CHANNEL });
+			});
+			assert.equal(seen.ask, undefined);
+			const [told] = fake.called("chat.postMessage");
+			assert.equal(told?.args.channel, ANN);
+			assert.match(String(told?.args.text), /^About your Ask Scout request in <#C0ELSE0001>: I only work in public channels I'm in\./);
+		});
 	});
 
 	describe("buttons", () => {

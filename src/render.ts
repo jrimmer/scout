@@ -20,6 +20,12 @@ export type RunOutcome = "answered" | "stopped" | "problem";
 const MARKDOWN_LIMIT = 11_500;
 const PROGRESS_INTERVAL_MS = 1_500;
 const VISIBLE_STEPS = 6;
+/**
+ * A final answer Slack won't take (after its client's own five minutes of trying) is tried again this often, for this
+ * long. A restart in the meantime doesn't lose it either: the run's message is remembered until the answer is in.
+ */
+const REDELIVER_MS = 2 * 60_000;
+const REDELIVER_FOR_MS = 6 * 60 * 60_000;
 /** Longer than this, an answer's message shows its opening and the whole answer is attached as a file. */
 const LONG_ANSWER = 6_000;
 /**
@@ -91,6 +97,7 @@ export class ThreadView {
 	readonly #mood: (() => boolean) | undefined;
 	readonly #onPhase: (phase: Phase) => void;
 	readonly #onSlow: () => void;
+	readonly #wait: (ms: number) => Promise<void>;
 	#resumeTs: string | undefined;
 	#run: Run | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
@@ -118,7 +125,9 @@ export class ThreadView {
 		/** What the run is doing now (thinking, reading, testing…), for the request's reaction (reactions.ts). */
 		onPhase?: (phase: Phase) => void;
 		now?: () => number;
+		wait?: (ms: number) => Promise<void>;
 	}) {
+		this.#wait = options.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 		this.#cost = options.cost;
 		this.#pacer = options.pacer;
 		this.#mood = options.behind;
@@ -346,16 +355,32 @@ export class ThreadView {
 			shown = { ...message, blocks: [{ type: "markdown", text: first! }, ...message.blocks.slice(1)] };
 			rest = others;
 		}
-		let posted = ts;
-		try {
-			if (ts === undefined) posted = await this.#surface.post(this.#channel, this.#threadTs, shown);
-			else await this.#surface.update(this.#channel, ts, shown);
-		} catch (error) {
-			console.error(`updating ${this.#channel}/${ts} failed, posting the answer anew:`, error);
-			posted = await this.#surface.post(this.#channel, this.#threadTs, shown);
+		let posted: string | undefined;
+		let sent = 0;
+		const first = this.#now();
+		for (;;) {
+			try {
+				if (posted === undefined) {
+					try {
+						if (ts === undefined) posted = await this.#surface.post(this.#channel, this.#threadTs, shown);
+						else await this.#surface.update(this.#channel, ts, shown).then(() => (posted = ts));
+					} catch (error) {
+						console.error(`updating ${this.#channel}/${ts} failed, posting the answer anew:`, error);
+						posted = await this.#surface.post(this.#channel, this.#threadTs, shown);
+					}
+				}
+				for (; sent < rest.length; sent++) {
+					const part = rest[sent]!;
+					await this.#surface.post(this.#channel, this.#threadTs, { text: clip(part, 3_000), blocks: [{ type: "markdown", text: part }] });
+				}
+				return posted;
+			} catch (error) {
+				// Slack said no (the channel is gone, Scout was removed): trying again won't change that.
+				if ((error as { code?: string }).code === "slack_webapi_platform_error" || this.#now() - first >= REDELIVER_FOR_MS) throw error;
+				console.error(`Slack won't take the answer in ${this.#channel}/${this.#threadTs}; trying again in ${REDELIVER_MS / 60_000} minutes:`, error);
+				await this.#wait(REDELIVER_MS);
+			}
 		}
-		for (const part of rest) await this.#surface.post(this.#channel, this.#threadTs, { text: clip(part, 3_000), blocks: [{ type: "markdown", text: part }] });
-		return posted;
 	}
 
 	/** What the run is waiting on right now (undefined when it isn't): shown in its progress message. */

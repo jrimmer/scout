@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import { delivery } from "../src/etiquette.ts";
 import { frontmatter } from "../src/profile.ts";
 import { type ChatMessage, describeStep, finalMessage, progressMessage, SAYINGS, ThreadView } from "../src/render.ts";
@@ -161,6 +161,58 @@ describe("answers that always arrive", () => {
 		await view.settled();
 		assert.deepEqual(s.calls.map((c) => c.split("\n")[0]), ["post _Working… 0s_", "post All done."]);
 		assert.deepEqual(ends, ["p2"], "the answer's own message, for approvals and 🔁");
+	});
+
+	/** A surface whose calls (posts and edits, counted together from 1) fail as `fails` says. */
+	function flaky(fails: Record<number, "down" | "no">) {
+		const calls: string[] = [];
+		let n = 0;
+		const call = (what: string) => {
+			const failure = fails[++n];
+			if (failure === "down") throw Object.assign(new Error("connect ECONNREFUSED"), { code: "slack_webapi_request_error" });
+			if (failure === "no") throw Object.assign(new Error("not_in_channel"), { code: "slack_webapi_platform_error" });
+			calls.push(what);
+		};
+		return {
+			calls,
+			post: async (_c: string, _t: string | undefined, m: ChatMessage) => {
+				call(`post ${(m.blocks[0] as { text: string }).text.slice(0, 20)}`);
+				return `p${n}`;
+			},
+			update: async (_c: string, ts: string, m: ChatMessage) => call(`update ${ts} ${(m.blocks[0] as { text: string }).text.slice(0, 20)}`),
+		};
+	}
+
+	it("keeps trying to send the answer while Slack is down, without sending any part twice", async () => {
+		// The progress message goes out; Slack is down for the answer's edit and its new post, then for its second part.
+		const s = flaky({ 2: "down", 3: "down", 5: "down" });
+		const waits: number[] = [];
+		const ends: (string | undefined)[] = [];
+		const remembered: (string | undefined)[] = [];
+		const errors = mock.method(console, "error", () => {});
+		const view = new ThreadView({ surface: s, channel: "C", threadTs: "1", onRunEnd: (_a, ts) => ends.push(ts), onRunMessage: (ts) => remembered.push(ts), wait: async (ms) => void waits.push(ms) });
+		view.handle([{ type: "run_start", inputs: [] }, said(`First. ${"More. ".repeat(2_500)}`), { type: "run_end", inputs: [] }] as never);
+		await view.settled();
+		errors.mock.restore();
+		assert.deepEqual(waits, [120_000, 120_000], "a wait each time Slack was down");
+		assert.deepEqual(s.calls.map((c) => c.split(/\n| More/)[0]), ["post _Working… 0s_", "update p1 First.", "post e."], "the progress message, the answer's first part, then its second");
+		assert.deepEqual(ends, ["p1"], "the run counts as answered once it's all in");
+		assert.deepEqual(remembered, ["p1", undefined]);
+	});
+
+	it("stops trying when Slack says no, and keeps the run's message for a restart to finish", async () => {
+		const s = flaky({ 2: "no", 3: "no" });
+		const waits: number[] = [];
+		const ends: (string | undefined)[] = [];
+		const remembered: (string | undefined)[] = [];
+		const errors = mock.method(console, "error", () => {});
+		const view = new ThreadView({ surface: s, channel: "C", threadTs: "1", onRunEnd: (_a, ts) => ends.push(ts), onRunMessage: (ts) => remembered.push(ts), wait: async (ms) => void waits.push(ms) });
+		view.handle([{ type: "run_start", inputs: [] }, said("All done."), { type: "run_end", inputs: [] }] as never);
+		await view.settled();
+		errors.mock.restore();
+		assert.deepEqual(waits, []);
+		assert.deepEqual(ends, []);
+		assert.deepEqual(remembered, ["p1"], "still remembered: after a restart, it gets the answer");
 	});
 
 	it("shows a long answer's opening and attaches the whole of it, or posts it in parts without attachments", async () => {

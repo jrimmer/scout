@@ -54,6 +54,8 @@ export async function fakeSlack() {
 	/** The next answers for a method, used up in order before the defaults apply again. */
 	const queued = new Map<string, Answer[]>();
 	const overrides = new Map<string, (args: Record<string, unknown>) => Answer>();
+	/** How long to hold the next call(s) to a method before answering, in order. */
+	const stalls = new Map<string, number[]>();
 	const channels = new Map<string, Channel>([
 		[TEAM_CHANNEL, { id: TEAM_CHANNEL, name: "team", is_channel: true, is_private: false, is_member: true }],
 		[SECRET_CHANNEL, { id: SECRET_CHANNEL, name: "secret", is_channel: true, is_private: true, is_member: true }],
@@ -129,6 +131,9 @@ export async function fakeSlack() {
 		const method = url.pathname.replace(/^\/api\//, "");
 		const args = parseArgs(raw, String(req.headers["content-type"] ?? ""));
 		calls.push({ method, args, token: String(req.headers.authorization ?? "").replace(/^Bearer /, "") });
+		const stall = stalls.get(method)?.shift();
+		if (stall !== undefined) await new Promise((resolve) => setTimeout(resolve, stall));
+		if (res.destroyed) return;
 		const answer = queued.get(method)?.shift() ?? overrides.get(method)?.(args) ?? defaults(method, args, base);
 		if (!("ok" in answer)) {
 			const a = answer as { status: number; headers?: Record<string, string>; body?: Record<string, unknown> };
@@ -156,6 +161,8 @@ export async function fakeSlack() {
 		called: (method: string) => calls.filter((c) => c.method === method),
 		/** Answer the next call(s) to `method` with these, then go back to the default. */
 		queue: (method: string, ...answers: Answer[]) => queued.set(method, [...(queued.get(method) ?? []), ...answers]),
+		/** Hold the next call(s) to `method` this long (ms) before answering: a slow Slack. */
+		stall: (method: string, ...ms: number[]) => stalls.set(method, [...(stalls.get(method) ?? []), ...ms]),
 		/** Answer every call to `method` this way from now on. */
 		answer: (method: string, answer: (args: Record<string, unknown>) => Answer) => overrides.set(method, answer),
 		/** A Socket Mode envelope from test/fixtures/slack, its response_url pointing here; a fresh copy each time. */

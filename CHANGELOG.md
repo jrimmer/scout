@@ -35,6 +35,8 @@ A change to any of these that needs people to act is a major version. Everything
 
 ### Fixed
 - **spoond restarts:** a running command no longer fails when spoond restarts or the network hiccups. Scout keeps following it for two minutes, then stops and says it may still be running.
+- **Ask Scout form:** when Slack was slow to say where the form was sent, the form failed after Slack's three seconds and no thread started. Scout now remembers channels it can work in, gives Slack two seconds, and otherwise takes the form and checks afterwards, telling the person privately if it can't work there.
+- **Slack outages:** Slack's client tried a failed call again for about half an hour while the thread sat silent. It now tries for five minutes. A final answer Slack still won't take is tried again every two minutes for up to six hours, and after a restart the thread still gets it.
 - **Docker sandboxes:** the sandbox's user couldn't write its own `/work`, so every Docker sandbox failed at its first file write. Docker gave the empty volume root's ownership each time a container mounted it. Found by the Docker tests' first run.
 
 ## Before 1.0 (2026-10-19 to 2026-10-21)
