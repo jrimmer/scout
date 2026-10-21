@@ -23,7 +23,7 @@ type Run = {
 };
 type Job = { id: number; name: string; status: string; attempt?: number };
 
-const REPO = { type: "string", description: "owner/name, e.g. jrimmer/scout" };
+const REPO = { type: "string", description: "owner/name, e.g. acme/web" };
 
 export function ciTools(api: string, token: string, fetch: typeof globalThis.fetch = globalThis.fetch): Tool[] {
 	const headers = { authorization: `token ${token}` };

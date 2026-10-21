@@ -152,7 +152,7 @@ either way.
 `SCOUT_GATEWAY_URL` sends model calls to a gateway (Bifrost, LiteLLM, Cloudflare AI Gateway) instead of the provider,
 with `SCOUT_GATEWAY_KEY` and any `SCOUT_GATEWAY_HEADERS` (JSON) on every request. Model names don't change. A model only
 the gateway knows is `gateway/<its name>` (`SCOUT_MODEL=gateway/lunaroute/deepseek-4.1-flash`), spoken to with
-OpenAI's chat completions API at `SCOUT_GATEWAY_URL` (the gateway's OpenAI base, e.g. `https://llm.lacy.casa/v1`);
+OpenAI's chat completions API at `SCOUT_GATEWAY_URL` (the gateway's OpenAI base, e.g. `https://llm.example.com/v1`);
 `SCOUT_GATEWAY_MODELS` lists more for channels' profiles. spoond's
 gateway serves only OpenAI's API and needs a lease id, so it isn't a good fit for Scout's own calls.
 

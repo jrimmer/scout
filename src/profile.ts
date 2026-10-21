@@ -45,7 +45,7 @@ export type ChannelProfile = {
 	/** `provider/modelId`, for a team that wants a different model than the default. */
 	model?: string;
 	zones: string[];
-	/** Alerts this team owns: a Gatus group or endpoint name, or a Grafana label value (`alerts: Immich, vm1`). */
+	/** Alerts this team owns: a Gatus group or endpoint name, or a Grafana label value (`alerts: Postgres, db1`). */
 	alerts: string[];
 	/** Whom to mention when one of its alerts fires: Slack user or group mentions, e.g. `<@U0123ABC>`. */
 	oncall?: string;

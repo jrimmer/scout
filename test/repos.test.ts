@@ -164,4 +164,17 @@ describe("repositories and zones", () => {
 		assert.match(String(text), /Repository web: \/data\/threads\/t-1\/repo \(your own clone, on branch scout\/t-1, from develop\)/);
 		assert.match(String(text), /This team mostly works in apps\/storefront, libs\/ui\. Start there\./);
 	});
+
+	it("says plainly what's wrong with common setting mistakes", () => {
+		const env = { SCOUT_REPO_URL: "git@host:team/api.git", SCOUT_REPO_SLUG: "team/api", SCOUT_CODEHOST_TOKEN: "t", SCOUT_CODEHOST_API: "http://forge/api/v1" };
+		assert.throws(() => loadConfig({ ...env, SCOUT_REPO_SLUG: "api" }), /SCOUT_REPO_SLUG should look like owner\/name, not "api"/);
+		assert.throws(() => loadConfig({ ...env, SCOUT_CODEHOST_API: "" }), /SCOUT_CODEHOST_API is required for Forgejo/);
+		assert.throws(() => loadConfig({ ...env, SCOUT_REFLECT_HOUR: "25" }), /SCOUT_REFLECT_HOUR should be an hour, 0 to 23/);
+		assert.throws(() => loadConfig({ ...env, SCOUT_REPOS_FILE: "/nowhere/repos.json" }), /SCOUT_REPOS_FILE: can't read \/nowhere\/repos\.json \(ENOENT\)/);
+		assert.throws(() => loadConfig({ ...env, SCOUT_MCP_FILE: "/nowhere/mcp.json" }), /SCOUT_MCP_FILE: there's no file at \/nowhere\/mcp\.json/);
+		assert.throws(
+			() => loadConfig({ ...env, SCOUT_MODEL: "gateway/m", SCOUT_GATEWAY_URL: "https://llm/v1", SCOUT_GATEWAY_HEADERS: "x-team: web" }),
+			/SCOUT_GATEWAY_HEADERS isn't valid JSON .*; it should look like \{"x-team": "web"\}/,
+		);
+	});
 });

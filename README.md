@@ -49,6 +49,9 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
 
 ## Run it
 
+Setting it up from scratch: [docs/setup.md](docs/setup.md). The security model: [docs/security.md](docs/security.md).
+
+
 Needs Node 24+, Docker, and git with access to your repositories. Give Scout its own code host account, token and SSH
 key, so its work is its own.
 

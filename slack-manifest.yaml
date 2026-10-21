@@ -23,9 +23,9 @@ features:
       description: What Scout is doing, schedules, what's waiting on you, or ask it something
       usage_hint: status | schedules | waiting | ask <request>
       should_escape: false
-  # Link previews for pull requests and issues on the code host: your code host's domain(s).
+  # Link previews for pull requests and issues on the code host: replace with your code host's domain(s).
   unfurl_domains:
-    - code.lacy.casa
+    - code.example.com
 oauth_config:
   scopes:
     bot:

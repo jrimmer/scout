@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { GatewayConfig } from "./gateway.ts";
@@ -116,6 +116,17 @@ function gatewayModels(env: NodeJS.ProcessEnv, model: string | undefined): strin
 	return [...new Set(model === undefined ? listed : [model, ...listed])];
 }
 
+/** A JSON setting, or a plain message saying what's wrong with it. */
+function jsonSetting<T>(env: NodeJS.ProcessEnv, name: string, example: string): T | undefined {
+	const raw = env[name];
+	if (raw === undefined || raw === "") return undefined;
+	try {
+		return JSON.parse(raw) as T;
+	} catch (error) {
+		throw new Error(`${name} isn't valid JSON (${error instanceof Error ? error.message : String(error)}); it should look like ${example}`);
+	}
+}
+
 function required(env: NodeJS.ProcessEnv, name: string): string {
 	const value = env[name];
 	if (value === undefined || value === "") throw new Error(`${name} is not set (see .env.example)`);
@@ -125,7 +136,19 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
 /** More repositories, from a JSON file: `[{ "name", "gitUrl", "slug", "base"?, "image"?, "snapshot"?, "egress"? }]`. */
 function moreRepos(path: string | undefined): RepoConfig[] {
 	if (path === undefined || path === "") return [];
-	const list = JSON.parse(readFileSync(path, "utf8")) as Partial<RepoConfig>[];
+	let text: string;
+	try {
+		text = readFileSync(path, "utf8");
+	} catch (error) {
+		throw new Error(`SCOUT_REPOS_FILE: can't read ${path} (${(error as { code?: string }).code ?? String(error)})`);
+	}
+	let list: Partial<RepoConfig>[];
+	try {
+		list = JSON.parse(text) as Partial<RepoConfig>[];
+	} catch (error) {
+		throw new Error(`SCOUT_REPOS_FILE: ${path} isn't valid JSON (${error instanceof Error ? error.message : String(error)})`);
+	}
+	if (!Array.isArray(list)) throw new Error(`SCOUT_REPOS_FILE: ${path} should be a list of repositories, [{ "name", "gitUrl", "slug" }, …]`);
 	return list.map((r, i) => {
 		if (!r.name || !r.gitUrl || !r.slug) throw new Error(`${path}: repository ${i + 1} needs name, gitUrl and slug`);
 		return {
@@ -162,6 +185,7 @@ function sandboxConfig(env: NodeJS.ProcessEnv): SandboxConfig {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	const slug = required(env, "SCOUT_REPO_SLUG");
+	if (!/^[^/\s]+\/[^/\s]+$/.test(slug)) throw new Error(`SCOUT_REPO_SLUG should look like owner/name, not "${slug}"`);
 	const repo: RepoConfig = {
 		name: env.SCOUT_REPO_NAME ?? slug.split("/").pop() ?? slug,
 		gitUrl: required(env, "SCOUT_REPO_URL"),
@@ -176,6 +200,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
 	const kind = env.SCOUT_CODEHOST ?? "forgejo";
 	if (kind !== "forgejo" && kind !== "github") throw new Error("SCOUT_CODEHOST must be forgejo or github");
+	if (kind === "forgejo" && !env.SCOUT_CODEHOST_API) {
+		throw new Error("SCOUT_CODEHOST_API is required for Forgejo: its API address, like https://forgejo.example.com/api/v1");
+	}
+	const reflectHour = Number(env.SCOUT_REFLECT_HOUR ?? 3);
+	if (!Number.isInteger(reflectHour) || reflectHour < 0 || reflectHour > 23) throw new Error(`SCOUT_REFLECT_HOUR should be an hour, 0 to 23, not "${env.SCOUT_REFLECT_HOUR}"`);
+	if (env.SCOUT_MCP_FILE && !existsSync(resolve(env.SCOUT_MCP_FILE))) throw new Error(`SCOUT_MCP_FILE: there's no file at ${resolve(env.SCOUT_MCP_FILE)}`);
 
 	return {
 		// Only the Slack service needs these (see main.ts); jobs run without them.
@@ -209,7 +239,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 				: {}),
 		},
 		reflect: {
-			hour: Number(env.SCOUT_REFLECT_HOUR ?? 3),
+			hour: reflectHour,
 			// A name, with or without `#` (in an env file an unquoted `#` starts a comment, so `scout` is the safe spelling).
 			...(env.SCOUT_REFLECT_CHANNEL?.replace(/^#/, "") ? { channel: env.SCOUT_REFLECT_CHANNEL.replace(/^#/, "") } : {}),
 		},
@@ -239,7 +269,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 				? {
 						otlp: {
 							endpoint: env.SCOUT_OTLP_ENDPOINT,
-							...(env.SCOUT_OTLP_HEADERS ? { headers: JSON.parse(env.SCOUT_OTLP_HEADERS) as Record<string, string> } : {}),
+							...(env.SCOUT_OTLP_HEADERS ? { headers: jsonSetting<Record<string, string>>(env, "SCOUT_OTLP_HEADERS", '{"authorization": "Bearer …"}')! } : {}),
 						},
 					}
 				: {}),
@@ -250,7 +280,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 					gateway: {
 						url: env.SCOUT_GATEWAY_URL.replace(/\/$/, ""),
 						...(env.SCOUT_GATEWAY_KEY ? { key: env.SCOUT_GATEWAY_KEY } : {}),
-						...(env.SCOUT_GATEWAY_HEADERS ? { headers: JSON.parse(env.SCOUT_GATEWAY_HEADERS) as Record<string, string> } : {}),
+						...(env.SCOUT_GATEWAY_HEADERS ? { headers: jsonSetting<Record<string, string>>(env, "SCOUT_GATEWAY_HEADERS", '{"x-team": "web"}')! } : {}),
 						...(env.SCOUT_GATEWAY_OPENAI_API === "responses" ? { openaiApi: "responses" as const } : {}),
 						models: gatewayModels(env, provider === "gateway" ? modelId : undefined),
 					},
