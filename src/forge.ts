@@ -25,8 +25,11 @@ export type Issue = {
 	createdAt: number;
 };
 
-/** Something people said on an issue or pull request: a comment, or a review's summary. */
-export type Remark = { id: string; author: string; body: string; at: number; url?: string; review?: string };
+/**
+ * Something people said on an issue or pull request: a comment, a review's summary, or a comment on a line (with its
+ * file and line, and its review's verdict).
+ */
+export type Remark = { id: string; author: string; body: string; at: number; url?: string; review?: string; path?: string; line?: number };
 
 /** An unread notification: which issue or pull request something happened on. */
 export type Notice = { id: string; slug: string; number: number };
@@ -39,8 +42,10 @@ export interface Forge {
 	unread(): Promise<Notice[]>;
 	markRead(notice: Notice): Promise<void>;
 	issue(slug: string, number: number): Promise<Issue>;
-	/** Comments, and for a pull request its reviews, oldest first. */
+	/** Comments, and for a pull request its reviews and comments on lines, oldest first. */
 	remarks(issue: Issue): Promise<Remark[]>;
+	/** React 👀 to a comment (`comment:<id>`), or to the issue itself, to say Scout has picked it up. */
+	acknowledge(slug: string, number: number, remarkId?: string): Promise<void>;
 	comment(slug: string, number: number, body: string): Promise<void>;
 	/** A pull request's branch, when it's in the repository itself (not a fork). */
 	headBranch(slug: string, number: number): Promise<string | undefined>;
@@ -54,7 +59,11 @@ type Dialect = {
 	headers(token: string): Record<string, string>;
 	unreadPath: string;
 	isIssue(subjectType: string): boolean;
+	/** Comments on lines of a pull request, with their review's id. */
+	lineComments(api: (path: string) => Promise<unknown>, slug: string, number: number, reviews: ApiReview[]): Promise<(ApiLineComment & { reviewId?: number })[]>;
 };
+
+type ApiLineComment = { id: number; body?: string | null; user?: User; created_at: string; html_url?: string; path?: string; line?: number | null; position?: number | null; pull_request_review_id?: number | null };
 
 const DIALECTS: Record<CodeHost["kind"], Dialect> = {
 	forgejo: {
@@ -62,12 +71,27 @@ const DIALECTS: Record<CodeHost["kind"], Dialect> = {
 		headers: (token) => ({ accept: "application/json", authorization: `token ${token}` }),
 		unreadPath: "/notifications?status-types=unread&limit=50",
 		isIssue: (type) => type === "Issue" || type === "Pull",
+		// Forgejo keeps them under each review, with the new file's line as `position`.
+		lineComments: async (api, slug, number, reviews) => {
+			const all = [];
+			for (const r of reviews) {
+				if ((r.comments_count ?? 0) === 0) continue;
+				const comments = (await api(`/repos/${slug}/pulls/${number}/reviews/${r.id}/comments`)) as ApiLineComment[];
+				all.push(...comments.map((c) => ({ ...c, line: c.line ?? c.position ?? null, reviewId: r.id })));
+			}
+			return all;
+		},
 	},
 	github: {
 		name: "GitHub",
 		headers: (token) => ({ accept: "application/vnd.github+json", authorization: `Bearer ${token}` }),
 		unreadPath: "/notifications?per_page=50",
 		isIssue: (type) => type === "Issue" || type === "PullRequest",
+		lineComments: async (api, slug, number) =>
+			((await api(`/repos/${slug}/pulls/${number}/comments?per_page=100`)) as ApiLineComment[]).map((c) => ({
+				...c,
+				...(c.pull_request_review_id == null ? {} : { reviewId: c.pull_request_review_id }),
+			})),
 	},
 };
 
@@ -88,7 +112,7 @@ type ApiIssue = {
 	created_at: string;
 };
 type ApiComment = { id: number; body?: string | null; user?: User; created_at: string; html_url?: string };
-type ApiReview = { id: number; body?: string | null; user?: User; state: string; submitted_at?: string; html_url?: string };
+type ApiReview = { id: number; body?: string | null; user?: User; state: string; submitted_at?: string; html_url?: string; comments_count?: number };
 
 class RestForge implements Forge {
 	readonly #host: CodeHost;
@@ -154,8 +178,10 @@ class RestForge implements Forge {
 		}));
 		if (issue.pull) {
 			const reviews = (await this.#api("GET", `/repos/${issue.slug}/pulls/${issue.number}/reviews`)) as ApiReview[];
+			const verdicts = new Map<number, string>();
 			for (const r of reviews) {
 				if (r.submitted_at === undefined || r.state === "PENDING") continue;
+				verdicts.set(r.id, r.state);
 				remarks.push({
 					id: `review:${r.id}`,
 					author: r.user?.login ?? "",
@@ -165,8 +191,29 @@ class RestForge implements Forge {
 					...(r.html_url ? { url: r.html_url } : {}),
 				});
 			}
+			for (const c of await this.#dialect.lineComments((path) => this.#api("GET", path), issue.slug, issue.number, reviews)) {
+				const verdict = c.reviewId === undefined ? undefined : verdicts.get(c.reviewId);
+				remarks.push({
+					id: `line:${c.id}`,
+					author: c.user?.login ?? "",
+					body: c.body ?? "",
+					at: Date.parse(c.created_at),
+					...(verdict === undefined ? {} : { review: verdict }),
+					...(c.path ? { path: c.path } : {}),
+					...(c.line == null ? {} : { line: c.line }),
+					...(c.html_url ? { url: c.html_url } : {}),
+				});
+			}
 		}
 		return remarks.sort((a, b) => a.at - b.at);
+	}
+
+	async acknowledge(slug: string, number: number, remarkId?: string): Promise<void> {
+		const comment = /^comment:(\d+)$/.exec(remarkId ?? "");
+		// Reviews and comments on lines: nowhere both hosts let you react.
+		if (remarkId !== undefined && comment === null) return;
+		const path = comment === null ? `/repos/${slug}/issues/${number}/reactions` : `/repos/${slug}/issues/comments/${comment[1]}/reactions`;
+		await this.#api("POST", path, { content: "eyes" });
 	}
 
 	async comment(slug: string, number: number, body: string): Promise<void> {
@@ -200,13 +247,20 @@ class RestForge implements Forge {
  */
 export type Ask = {
 	issue: Issue;
-	/** Who asked; the last of them when several did. */
+	/** Who asked; the last of them when several did (or who spoke last, for context alone). */
 	by: string;
-	/** What they said, oldest first: each remark, or the issue itself when that's what asked. */
-	said: { author: string; body: string; url?: string; review?: string }[];
+	/** What was said, oldest first: each remark, or the issue itself when that's what asked. */
+	said: Said[];
 	/** Why it's Scout's: assigned, mentioned, or a remark on a pull request Scout opened. */
 	why: "assigned" | "mentioned" | "own pull request";
+	/**
+	 * Whether anything in it asks Scout for something: a mention, an assignment, or a review asking for changes on its
+	 * pull request. Otherwise it's context for the thread, like a reply in Slack that isn't addressed to Scout.
+	 */
+	request: boolean;
 };
+
+export type Said = { id?: string; author: string; body: string; url?: string; review?: string; path?: string; line?: number; addressed: boolean };
 
 export type InboxHandlers = {
 	/** Is this one of Scout's own pull requests (it opened it)? */
@@ -276,35 +330,43 @@ export class Inbox {
 		const since = this.#since;
 		const mentions = (text: string) => new RegExp(`(^|[^\\w@/.-])@${me.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i").test(text);
 		const ours = this.#handlers.ownPull(issue);
-		const said: Ask["said"] = [];
+		const said: Said[] = [];
 		let why: Ask["why"] | undefined;
-		let by = "";
-		const take = (key: string, reason: Ask["why"], who: string, entry: Ask["said"][number]) => {
+		const take = (key: string, entry: Said, reason?: Ask["why"]) => {
 			if (this.#handled(key)) return;
 			this.#handle(key);
 			said.push(entry);
-			by = who;
 			// A mention or an assignment says more about what's wanted than "a comment on your pull request".
-			if (why === undefined || why === "own pull request") why = reason;
+			if (reason !== undefined && (why === undefined || why === "own pull request")) why = reason;
 		};
 
 		const fresh = issue.createdAt >= since && issue.author.toLowerCase() !== me;
-		if (issue.assignees.some((a) => a.toLowerCase() === me)) {
-			take(`assigned:${issue.slug}#${issue.number}`, "assigned", issue.author, { author: issue.author, body: `${issue.title}\n\n${issue.body}`.trim(), url: issue.url });
-		} else if (fresh && mentions(`${issue.title}\n${issue.body}`)) {
-			take(`opened:${issue.slug}#${issue.number}`, "mentioned", issue.author, { author: issue.author, body: `${issue.title}\n\n${issue.body}`.trim(), url: issue.url });
-		}
+		const opening = { author: issue.author, body: `${issue.title}\n\n${issue.body}`.trim(), url: issue.url, addressed: true };
+		if (issue.assignees.some((a) => a.toLowerCase() === me)) take(`assigned:${issue.slug}#${issue.number}`, opening, "assigned");
+		else if (fresh && mentions(`${issue.title}\n${issue.body}`)) take(`opened:${issue.slug}#${issue.number}`, opening, "mentioned");
 		for (const remark of await this.#forge.remarks(issue)) {
 			if (remark.at < since || remark.author.toLowerCase() === me) continue;
 			// Scout's own review comments, posted as a person would see them, aren't requests.
 			if (remark.body.startsWith("**Scout's review**")) continue;
-			const entry = { author: remark.author, body: remark.body, ...(remark.url === undefined ? {} : { url: remark.url }), ...(remark.review === undefined ? {} : { review: remark.review }) };
-			if (mentions(remark.body)) take(remark.id, "mentioned", remark.author, entry);
-			// On its own pull request, anything with words in it, or a request for changes; a bare approval needs nothing.
-			else if (ours && (remark.body.trim() !== "" || /CHANGES/.test(remark.review ?? ""))) take(remark.id, "own pull request", remark.author, entry);
+			const entry = {
+				id: remark.id,
+				author: remark.author,
+				body: remark.body,
+				...(remark.url === undefined ? {} : { url: remark.url }),
+				...(remark.review === undefined ? {} : { review: remark.review }),
+				...(remark.path === undefined ? {} : { path: remark.path }),
+				...(remark.line === undefined ? {} : { line: remark.line }),
+			};
+			if (mentions(remark.body)) take(remark.id, { ...entry, addressed: true }, "mentioned");
+			// On its own pull request: a review asking for changes (and its comments on lines) is for Scout; anything
+			// else people say there is context, as a reply in Slack that isn't addressed to Scout would be.
+			else if (ours && /CHANGES/.test(remark.review ?? "")) take(remark.id, { ...entry, addressed: true }, "own pull request");
+			else if (ours && remark.body.trim() !== "") take(remark.id, { ...entry, addressed: false }, "own pull request");
 			else this.#handle(remark.id);
 		}
-		if (why !== undefined) await this.#handlers.ask({ issue, by, said, why });
+		if (said.length === 0 || why === undefined) return;
+		const asking = said.filter((s) => s.addressed);
+		await this.#handlers.ask({ issue, by: (asking.at(-1) ?? said.at(-1))!.author, said, why, request: asking.length > 0 });
 	}
 
 	#handled(key: string): boolean {

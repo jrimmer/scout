@@ -17,6 +17,9 @@ function fakeHost(kind: "forgejo" | "github") {
 		posted: [] as string[],
 		auth: new Set<string>(),
 		privateRepos: new Set<string>(["o/r"]),
+		/** Comments on lines, by pull request, with the review each belongs to. */
+		lines: new Map<string, Record<string, unknown>[]>(),
+		reactions: [] as string[],
 		publicRepos: new Set<string>(),
 	};
 	const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -42,6 +45,13 @@ function fakeHost(kind: "forgejo" | "github") {
 			state.notices = state.notices.filter((n) => String(n.id) !== read[1]);
 			return new Response(null, { status: 205 });
 		}
+		const reaction = /^\/repos\/([^/]+\/[^/]+)\/issues\/(?:comments\/(\d+)|(\d+))\/reactions$/.exec(path);
+		if (reaction && method === "POST") {
+			state.reactions.push(`${reaction[1]} ${reaction[2] === undefined ? `issue ${reaction[3]}` : `comment ${reaction[2]}`} ${(JSON.parse(String(init?.body)) as { content: string }).content}`);
+			return Response.json({}, { status: 201 });
+		}
+		const perReview = /^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)\/reviews\/(\d+)\/comments$/.exec(path);
+		if (perReview) return Response.json(state.lines.get(`${perReview[1]}#${perReview[2]}`)?.filter((c) => c.review === Number(perReview[3])) ?? []);
 		const m = /^\/repos\/([^/]+\/[^/]+)\/(issues|pulls)\/(\d+)(\/comments|\/reviews)?$/.exec(path);
 		if (m) {
 			const key = `${m[1]}#${m[3]}`;
@@ -49,6 +59,7 @@ function fakeHost(kind: "forgejo" | "github") {
 				state.posted.push(`${key}: ${(JSON.parse(String(init?.body)) as { body: string }).body}`);
 				return Response.json({ id: 1 }, { status: 201 });
 			}
+			if (m[4] === "/comments" && m[2] === "pulls") return Response.json(state.lines.get(key)?.map(({ review, ...c }) => ({ ...c, pull_request_review_id: review })) ?? []);
 			if (m[4] === "/comments") return Response.json(state.comments.get(key) ?? []);
 			if (m[4] === "/reviews") return Response.json(state.reviews.get(key) ?? []);
 			if (m[2] === "pulls") return Response.json(state.heads.get(key) ?? {});
@@ -122,14 +133,38 @@ describe("work from the code host", () => {
 			{ id: 10, body: "", user: { login: "bob" }, state: "APPROVED", submitted_at: at(3) },
 			{ id: 11, body: "", user: { login: "cat" }, state: "CHANGES_REQUESTED", submitted_at: at(4) },
 		]);
+		host.state.lines.set("o/r#8", [{ id: 70, review: 11, body: "This rounds half to even; say so.", user: { login: "cat" }, created_at: at(4), path: "tally/stats.py", line: 12 }]);
 		host.state.notices.push({ id: 5, repo: "o/r", type: "PullRequest", number: 8 });
 		const { inbox, asks } = inboxOn(host, [8]);
 		await inbox.poll();
 		assert.equal(asks.length, 1, "several remarks since the last look come as one request");
 		assert.equal(asks[0]!.why, "own pull request");
+		assert.equal(asks[0]!.request, true);
 		assert.equal(asks[0]!.by, "cat");
-		assert.deepEqual(asks[0]!.said.map((s) => `${s.author} ${s.review ?? "comment"}`), ["ann comment", "cat CHANGES_REQUESTED"]);
+		assert.deepEqual(
+			asks[0]!.said.map((s) => `${s.author} ${s.review ?? "comment"}${s.path === undefined ? "" : ` ${s.path}:${s.line}`} ${s.addressed ? "asks" : "context"}`),
+			["ann comment context", "cat CHANGES_REQUESTED asks", "cat CHANGES_REQUESTED tally/stats.py:12 asks"],
+			"a bare approval is nothing; a request for changes and its comment on a line ask; a plain comment is context",
+		);
 		assert.deepEqual([...host.state.auth], ["Bearer"], "GitHub's way of authenticating");
+	});
+
+	it("passes on plain comments on Scout's pull request as context, not a request, and reads Forgejo's comments on lines", async () => {
+		const host = fakeHost("forgejo");
+		host.state.issues.set("o/r#8", issue(8, { pull_request: {}, user: { login: "scout" } }));
+		host.state.comments.set("o/r#8", [{ id: 1, body: "bob, does this match what we decided?", user: { login: "ann" }, created_at: at(2) }]);
+		host.state.reviews.set("o/r#8", [{ id: 20, body: "A couple of thoughts.", user: { login: "bob" }, state: "COMMENT", submitted_at: at(3), comments_count: 1 }]);
+		host.state.lines.set("o/r#8", [{ id: 71, review: 20, body: "Nit: name this mean_rounded?", user: { login: "bob" }, created_at: at(3), position: 7 }]);
+		host.state.notices.push({ id: 9, repo: "o/r", type: "Pull", number: 8 });
+		const { inbox, asks } = inboxOn(host, [8]);
+		await inbox.poll();
+		assert.equal(asks.length, 1);
+		assert.equal(asks[0]!.request, false, "nothing in it is addressed to Scout");
+		assert.deepEqual(asks[0]!.said.map((s) => `${s.author}${s.line === undefined ? "" : `:${s.line}`} ${s.body}`), [
+			"ann bob, does this match what we decided?",
+			"bob A couple of thoughts.",
+			"bob:7 Nit: name this mean_rounded?",
+		]);
 	});
 
 	it("ignores remarks on other people's pull requests unless they mention Scout", async () => {
@@ -141,6 +176,14 @@ describe("work from the code host", () => {
 		await inbox.poll();
 		assert.deepEqual(asks, []);
 		assert.deepEqual([...host.state.auth], ["token"], "Forgejo's way of authenticating");
+	});
+
+	it("acknowledges with 👀 on the comment that asked, or on the issue, and nowhere it can't", async () => {
+		const host = fakeHost("forgejo");
+		await host.forge.acknowledge("o/r", 12, "comment:2");
+		await host.forge.acknowledge("o/r", 3);
+		await host.forge.acknowledge("o/r", 8, "review:11");
+		assert.deepEqual(host.state.reactions, ["o/r comment 2 eyes", "o/r issue 3 eyes"]);
 	});
 
 	it("finds a pull request's own branch, but not a fork's", async () => {

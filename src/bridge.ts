@@ -367,6 +367,16 @@ export class Bridge {
 		this.#options.search?.add({ key, conversationId: row.conversationId, channelName: thread.channelName, speaker: "Scout", text: thread.about ?? thread.context });
 	}
 
+	/** Something said elsewhere (a comment on the code host) that a thread should know, without asking it for work. */
+	async note(conversationId: number, text: string, requestId: string): Promise<void> {
+		const { harness, context } = this.#options;
+		const conversation = await harness.conversation(conversationId as ConversationId, context);
+		await conversation?.submit(
+			{ type: "write", requestId, entry: { kind: "forge.comment", data: {}, model: [{ role: "user", content: text, timestamp: Date.now() }] } },
+			context,
+		);
+	}
+
 	/**
 	 * A thread for a conversation that started without one (a nightly reflection, from its announcement), so replies
 	 * there reach it and its runs answer there.

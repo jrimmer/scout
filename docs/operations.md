@@ -91,20 +91,25 @@ request from a fork gets the base branch instead. Nothing to configure; give Sco
 ## Work from the code host
 
 Once a minute Scout reads its code host account's unread notifications (Forgejo and GitHub both keep them) and looks
-at what's new on each issue or pull request they point at (`src/forge.ts`). These are requests:
+at what's new on each issue or pull request they point at (`src/forge.ts`). These ask Scout for something:
 
 - an issue assigned to Scout;
-- `@scout` (Scout's login) in a new issue or pull request, or in a comment on one;
-- anything said on a pull request Scout opened: comments, and reviews with words in them or a request for changes.
-  A bare approval isn't.
+- `@scout` (Scout's login) in a new issue or pull request, or in a comment, review or comment on a line;
+- on a pull request Scout opened, a review asking for changes, with its comments on lines.
 
-A request about an issue or pull request that already has a thread goes to that thread (a pull request's is the one
-that opened it), quoted there so people in Slack can see it. Otherwise Scout starts a thread in the repository's
-channel (or the alert channel, when the repository has none) and comments on the issue with a link to it. For
-someone else's pull request in the same repository, the thread's changes go into that pull request's branch. Either
-way, Scout's answer goes back on the issue or pull request as a comment: in full on a private repository, but on
-a public one (or one whose visibility the code host won't say) only a pointer to the Slack thread and any pull
-request it opened, since an answer can draw on anything said in Slack.
+Other things people say on Scout's own pull requests (comments, reviews, comments on lines, each with its file and
+line) are context: they're quoted in its thread and the conversation knows them, but Scout doesn't act on them,
+the way it treats a reply in Slack that isn't addressed to it. A bare approval is nothing. On other people's pull
+requests, only mentions count.
+
+Each issue or pull request has one thread: the one that opened Scout's own pull request, the review thread of one
+Scout reviewed, or the one an earlier request there started. A request goes to that thread, quoted there so people
+in Slack see it. Otherwise Scout starts a thread in the repository's channel (or the alert channel, when the
+repository has none) and comments on the issue with a link to it. For someone else's pull request in the same
+repository, the thread's changes go into that pull request's branch. Scout reacts 👀 to the comment (or issue)
+that asked when it picks it up, and when it's done its answer goes back as a comment: in full on a private
+repository, but on a public one (or one whose visibility the code host won't say) only a pointer to the Slack
+thread and any pull request it opened, since an answer can draw on anything said in Slack (#40).
 
 A reflection's proposal gets a thread too: its announcement in the home channel. Comments on the pull request, and
 requests in that thread, go to the reflection that wrote it, which revises the same pull request. Revisions don't

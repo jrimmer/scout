@@ -150,6 +150,9 @@ const pullReviewer = new PullReviewer({
 			].join("\n\n"),
 			...(posted.head === undefined ? {} : { base: posted.head }),
 		});
+		// A later @scout on that pull request goes to this thread.
+		const reviewThread = threads.get(threadKey(id, ts))?.conversationId;
+		if (reviewThread !== undefined) inbox.threadStarted(posted.slug, posted.number, reviewThread);
 	},
 });
 
@@ -344,11 +347,28 @@ async function takeAsk(ask: Ask): Promise<void> {
 	const kind = issue.pull ? "pull request" : "issue";
 	const ref = `${issue.slug}#${issue.number}`;
 	const own = pulls.byNumber(issue.slug, issue.number);
+	// One thread per issue or pull request: the one that opened Scout's own, the review thread of one Scout reviewed,
+	// or the one an earlier request here started.
+	const existing = own?.conversationId ?? inbox.threadOf(issue.slug, issue.number);
+	const thread = existing === undefined ? undefined : threads.byConversation(existing);
+	const where = (s: Ask["said"][number]) => (s.path === undefined ? "" : ` on ${s.path}${s.line === undefined ? "" : `:${s.line}`}`);
+	const quoted = ask.said
+		.map((s) => `*${s.author}*${s.review === undefined ? "" : ` ${REVIEW_WORDS[s.review] ?? "reviewed"}`}${where(s)} on <${s.url ?? issue.url}|${ref}>:\n${quote(s.body)}`)
+		.join("\n\n");
+	const said = ask.said.map((s) => `${s.author}${s.review === undefined ? "" : ` (${REVIEW_WORDS[s.review] ?? "reviewed"})`}${where(s)}: ${s.body.trim() || "(no comment)"}`).join("\n\n");
+
+	// Not addressed to Scout: the thread gets it as context, the way a reply in Slack that isn't for Scout does.
+	if (!ask.request) {
+		if (existing === undefined || thread === undefined) return;
+		await inThread(existing, quoted);
+		await bridge.note(existing, `On ${forge.name}, on ${kind} ${ref}:\n\n${said}`, `forge-note:${ref}:${ask.said.map((s) => s.id ?? "").join(",")}`);
+		return;
+	}
+
 	// A reflection's proposal is about the profile, which isn't a repository Scout works in, but people review it all the same.
 	const profile = own?.kind === "profile" && config.profileRepo !== undefined ? { name: "profile", slug: config.profileRepo.slug } : undefined;
 	const repo = profile ?? config.repos.find((r) => r.slug.toLowerCase() === issue.slug.toLowerCase());
-	// Only answer when someone asked Scout directly; a remark on its pull request in a repository it no longer has isn't that.
-	const say = (body: string) => (ask.why === "own pull request" ? Promise.resolve() : forge.comment(issue.slug, issue.number, body));
+	const say = (body: string) => forge.comment(issue.slug, issue.number, body);
 	if (repo === undefined) {
 		await say(`I'm not set up to work in ${issue.slug}, so I can't take this on. Whoever runs me can add it.`);
 		return;
@@ -358,7 +378,10 @@ async function takeAsk(ask: Ask): Promise<void> {
 		await say(`@${ask.by} ${allowed.reason}`);
 		return;
 	}
-	const said = ask.said.map((s) => `${s.author}${s.review === undefined ? "" : ` (${REVIEW_WORDS[s.review] ?? "reviewed"})`}: ${s.body.trim() || "(no comment)"}`).join("\n\n");
+	// 👀 on what asked, so people on the code host see it was picked up; the answer follows when it's done.
+	for (const s of ask.said.filter((x) => x.addressed)) {
+		await forge.acknowledge(issue.slug, issue.number, s.id).catch((error: unknown) => console.error(`couldn't react on ${ref}:`, error));
+	}
 	const verb = ask.why === "assigned" ? `assigned you ${kind}` : ask.why === "mentioned" ? `asked you in ${kind}` : `commented on your ${kind}`;
 	const prompt = [
 		`${ask.by} ${verb} ${ref} "${issue.title}" on ${forge.name} (${issue.url}):`,
@@ -368,12 +391,9 @@ async function takeAsk(ask: Ask): Promise<void> {
 			: `Work on it as you would a request in Slack. Your answer goes in this thread and back on the ${kind} as a comment.${issue.pull ? "" : ` If you open a pull request that resolves the issue, put "Closes #${issue.number}" in its description.`}`,
 	].join("\n\n");
 	audit.record("request", { actor: ask.by, detail: { as: forge.name.toLowerCase(), url: issue.url, why: ask.why, text: said.slice(0, 200) } });
-	const requestId = `forge:${ref}:${ask.said.map((s) => s.url ?? s.body.length).join(",")}`;
+	const requestId = `forge:${ref}:${ask.said.map((s) => s.id ?? s.url ?? s.body.length).join(",")}`;
 
-	// A thread it already has: the pull request Scout opened, or this issue's own.
-	const existing = own?.conversationId ?? inbox.threadOf(issue.slug, issue.number);
-	if (existing !== undefined && threads.byConversation(existing) !== undefined) {
-		const quoted = ask.said.map((s) => `*${s.author}*${s.review === undefined ? "" : ` ${REVIEW_WORDS[s.review] ?? "reviewed"}`} on <${s.url ?? issue.url}|${ref}>:\n${quote(s.body)}`).join("\n\n");
+	if (existing !== undefined && thread !== undefined) {
 		await inThread(existing, quoted);
 		inbox.replyTo(existing, issue.slug, issue.number);
 		await bridge.work(existing, prompt, requestId, "pick this up");
@@ -404,7 +424,7 @@ async function takeAsk(ask: Ask): Promise<void> {
 		inbox.replyTo(conversationId, issue.slug, issue.number);
 	}
 	const link = await slack.permalink(channel, threadTs);
-	await forge.comment(issue.slug, issue.number, `On it, in the open: ${link === undefined ? `#${name} in Slack` : `[#${name}](${link})`}. I'll answer here too.`);
+	await say(`On it, in the open: ${link === undefined ? `#${name} in Slack` : `[#${name}](${link})`}. I'll answer here too.`);
 }
 function quote(text: string): string {
 	const clipped = text.trim().length > 600 ? `${text.trim().slice(0, 599)}…` : text.trim();
