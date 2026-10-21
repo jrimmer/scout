@@ -446,7 +446,7 @@ const upkeep = new PullUpkeep({
 			const base = await workspaces.refreshBase(pull.conversationId);
 			const prompt = [
 				`Your pull request ${pull.url} (${pull.slug} #${pull.number}) no longer merges cleanly into ${status.baseRef}: it has moved on since you branched. Its latest commits are now in your clone as origin/${base}.`,
-				"Rebase your branch onto it (or merge it in), resolve the conflicts keeping what both sides meant, run the tests, and call open_pull_request again: it updates the same pull request. If a conflict needs a person's call, say which and why, and leave it.",
+				"If your branch has only your own commits, rebase it onto that; if anyone else has pushed to it, merge it in instead, so their commits stay as they made them. Resolve the conflicts keeping what both sides meant, run the tests, and call open_pull_request again: it updates the same pull request. If a conflict needs a person's call, say which and why, and leave it.",
 				`This is automatic attempt ${attempt} of ${UPKEEP_TRIES}.`,
 			].join("\n\n");
 			await bridge.work(pull.conversationId, prompt, `conflict:${pull.url}:${status.head}:${status.base}`, "bring it up to date");

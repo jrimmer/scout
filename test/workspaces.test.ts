@@ -67,8 +67,14 @@ describe("workspaces (local driver)", () => {
 		const extension = createCodeHostExtension({
 			name: "codehost",
 			codeHost: { kind: "forgejo", apiUrl: "http://forge/api/v1", token: "t" },
+			selfEmail: "scout@localhost",
 			target: async (id) => ({
-				source: { kind: "sandbox", status: () => workspaces.status(id), exportBranch: () => workspaces.exportBranch(id) },
+				source: {
+					kind: "sandbox",
+					status: () => workspaces.status(id),
+					exportBranch: () => workspaces.exportBranch(id),
+					importBranch: (bundle, branch) => workspaces.importBranch(id, bundle, branch),
+				},
 				branch: workspaces.branch(id),
 				base: "main",
 				slug: "o/api",
@@ -79,10 +85,36 @@ describe("workspaces (local driver)", () => {
 				return new Response(JSON.stringify({ html_url: "http://forge/o/api/pulls/1", number: 1 }), { status: 201 });
 			},
 		});
-		const result = await extension.tools![0]!.execute({ title: "Add feature", body: "Adds it." }, { conversationId: 1 } as never, context);
+		const open = () => extension.tools![0]!.execute({ title: "Add feature", body: "Adds it." }, { conversationId: 1 } as never, context);
+		const result = await open();
 		assert.match(JSON.stringify(result.output), /pulls\/1 \(1 commit\)/);
 		assert.equal(git("--git-dir", api, "show", "scout/t-1:feature.txt"), "new");
 		assert.equal((requests[0] as { head: string }).head, "scout/t-1");
+
+		// A teammate pushes a fix straight onto Scout's branch; Scout, not knowing, commits more and pushes again.
+		const teammate = join(root, "teammate");
+		git("clone", "--quiet", "--branch", "scout/t-1", api, teammate);
+		writeFileSync(join(teammate, "fix.txt"), "ann's fix\n");
+		git("-C", teammate, "add", ".");
+		git("-C", teammate, "-c", "user.name=Ann", "-c", "user.email=ann@example.com", "commit", "--quiet", "-m", "Ann's fix");
+		git("-C", teammate, "push", "--quiet", "origin", "scout/t-1");
+		await run(env, "echo more >> feature.txt && git commit -qam 'More'");
+		await assert.rejects(open(), /Someone else pushed to your branch scout\/t-1[\s\S]*- \w+ Ann: Ann's fix[\s\S]*git merge origin\/scout\/t-1/);
+		assert.equal(git("--git-dir", api, "log", "-1", "--format=%s", "scout/t-1"), "Ann's fix", "nothing of theirs was erased");
+		assert.equal(await run(env, "git log -1 --format=%s origin/scout/t-1"), "Ann's fix", "their commits are in the clone to build on");
+
+		// Built on, it goes: both are there, theirs as they made it.
+		await run(env, "git merge -q --no-edit origin/scout/t-1");
+		await open();
+		const annSha = git("-C", teammate, "rev-parse", "HEAD");
+		assert.equal(execFileSync("git", ["--git-dir", api, "merge-base", "--is-ancestor", annSha, "scout/t-1"]).toString(), "");
+		assert.equal(git("--git-dir", api, "show", "scout/t-1:feature.txt"), "new\nmore");
+
+		// Scout may still rewrite its own commits (here the merge, amended): only someone else's are protected.
+		await run(env, "git commit -q --amend -m 'Build on the fix'");
+		await open();
+		assert.equal(git("--git-dir", api, "log", "-1", "--format=%s", "scout/t-1"), "Build on the fix");
+		assert.equal(execFileSync("git", ["--git-dir", api, "merge-base", "--is-ancestor", annSha, "scout/t-1"]).toString(), "", "Ann's commit is still in it");
 	});
 
 	it("works on a reviewed pull request's branch, and hands out only its own commits beyond it", async () => {

@@ -124,6 +124,17 @@ repository Scout isn't set up for, gets a short reply saying why. Nothing from b
 becomes work, and each comment is a request at most once. The code host is behind an interface (`Forge`); Forgejo
 and GitHub share one implementation, with their differences in a small dialect.
 
+## Other people's commits on Scout's branches
+
+Teammates can push straight onto a branch Scout's pull request comes from, and Scout won't erase their work. Before
+each push the host compares the branch on the code host with what Scout would push: Scout may replace its own
+commits (a rebase, an amend), but if the push would drop anyone else's, it doesn't push. Instead their commits are
+brought into the thread's clone as `origin/<branch>`, and Scout is asked to merge them in (not rebase over them), run
+the tests and push again, and to say whose work it built on. A reflection's clone, which has no shell, gets them
+merged for it when they merge cleanly, and is told to leave the pull request for a person when they conflict. Pushes
+are leased (`--force-with-lease`), so a commit pushed while Scout was getting ready is never overwritten either.
+Commits are told apart by author email: Scout's is `SCOUT_GIT_EMAIL`.
+
 ## Looking after its pull requests
 
 Every few minutes Scout looks at its own open pull requests on the code host (`src/upkeep.ts`):

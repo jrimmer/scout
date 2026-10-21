@@ -201,6 +201,7 @@ export async function openScout(options: ScoutOptions) {
 	const workCodeHost = createCodeHostExtension({
 		name: "codehost",
 		codeHost: config.codeHost,
+		selfEmail: config.git.email,
 		target: async (id, ctx) => {
 			const link = await options.link?.(id);
 			const repo = await repoOf(id, ctx);
@@ -209,6 +210,7 @@ export async function openScout(options: ScoutOptions) {
 					kind: "sandbox",
 					status: () => workspaces.status(id),
 					exportBranch: () => workspaces.exportBranch(id),
+					importBranch: (bundle, branch) => workspaces.importBranch(id, bundle, branch),
 				},
 				branch: workspaces.branch(id),
 				base: repo.base,
@@ -248,6 +250,7 @@ export async function openScout(options: ScoutOptions) {
 	const profileCodeHost = createCodeHostExtension({
 		name: "profile-codehost",
 		codeHost: config.codeHost,
+		selfEmail: config.git.email,
 		commitAll: true,
 		target: (id, ctx) => {
 			if (reflector === undefined) throw new Error("No profile repository is configured.");

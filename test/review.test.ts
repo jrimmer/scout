@@ -39,6 +39,7 @@ async function setup(options: { maxChangedLines?: number }) {
 	const bodies: string[] = [];
 	const reviewer = reviewExtension(() => undefined);
 	const codeHost = createCodeHostExtension({
+		selfEmail: "scout@localhost",
 		name: "codehost",
 		codeHost: { kind: "forgejo", apiUrl: "http://forge/api/v1", token: "t" },
 		commitAll: true,

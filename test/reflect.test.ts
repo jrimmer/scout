@@ -75,6 +75,7 @@ describe("nightly reflection", () => {
 		const requests: { url: string; body: Record<string, unknown> }[] = [];
 		const reflection = reflectionExtensions(() => "Learn from the threads.");
 		const codeHost = createCodeHostExtension({
+		selfEmail: "scout@localhost",
 			name: "profile-codehost",
 			codeHost: { kind: "github", apiUrl: "https://api.example", token: "t" },
 			commitAll: true,

@@ -297,6 +297,16 @@ export class Workspaces {
 		return repo.base;
 	}
 
+	/** Put a bundle's `refs/heads/<branch>` into the thread's clone as `origin/<branch>` (commits someone else pushed to it). */
+	async importBranch(conversationId: number, bundle: string, branch: string): Promise<void> {
+		const opened = await this.#ensure(conversationId);
+		const env = this.#envAt(conversationId, opened, `${opened.handle.workdir}/repo`);
+		const inside = `${opened.handle.workdir}/.scout/theirs.bundle`;
+		await copyIn(env, inside, await readFile(bundle));
+		await must(env, ["git", "fetch", "--quiet", inside, `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+		await env.remove(inside, { force: true }, BACKGROUND_CONTEXT);
+	}
+
 	/** The repository's `.scout/setup.sh` on its base branch (the script's git blob, and the base commit), if it has one. */
 	async setupScript(repoName: string): Promise<{ script: string; base: string } | undefined> {
 		const repo = this.repo(repoName);
