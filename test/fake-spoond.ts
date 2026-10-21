@@ -14,7 +14,7 @@ import type { Duplex } from "node:stream";
 export type FakeLease = { id: string; holder: string; holder_url?: string; state: string; body: Record<string, unknown> };
 
 type Stream = { kept: Buffer; base: number; dropped: { bytes: number; newlines: number; ends_with_newline: boolean } };
-type FakeJob = { child: ChildProcess; state: "running" | "exited"; exit: number | null; out: Stream; err: Stream; cap: number; exited: Promise<void> };
+type FakeJob = { child: ChildProcess; state: "running" | "exited" | "lost"; reason?: string; exit: number | null; out: Stream; err: Stream; cap: number; exited: Promise<void> };
 
 /** `ranges` and `codes` (default on) are spoond 3.11's ranged file reads and stable error codes; off, an older spoond. */
 export async function fakeSpoond(token: string, options: { ranges?: boolean; codes?: boolean; maxRange?: number } = {}) {
@@ -25,7 +25,9 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 	const snapshots = new Map<string, { version: number; key?: string; from: string }[]>();
 	let next = 1;
 	/** Take the next background command and lose it on the way in, as spoond does when the substrate fails its start. */
-	const losing = { next: false };
+	const losing = { next: false, marked: false };
+	/** While on, the sandbox doesn't answer: file requests get spoond's 502, as when the guest under a lease has died. */
+	const unreachable = { on: false };
 
 	/** A failed file route's answer, with spoond's code unless this fake plays an older spoond. */
 	const coded = (error: string, code: string) => (options.codes === false ? { error } : { error, code });
@@ -88,12 +90,14 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 				return json(200, { stdout: ran.stdout, stderr: ran.stderr, exit: ran.status ?? 128 });
 			}
 			const lost = losing.next;
+			// spoond 3.12.1 notices a command lost on the way in and marks it so; older ones keep it "running".
+			const marked = lost && losing.marked;
 			losing.next = false;
 			const child = lost
-				? spawn("sleep", ["3600"], { detached: true, stdio: ["ignore", "pipe", "pipe"] })
+				? spawn("sleep", [marked ? "0" : "3600"], { detached: true, stdio: ["ignore", "pipe", "pipe"] })
 				: spawn("bash", ["-c", exec.cmd], { env: { ...process.env, ...exec.env }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
 			const stream = (): Stream => ({ kept: Buffer.alloc(0), base: 0, dropped: { bytes: 0, newlines: 0, ends_with_newline: false } });
-			const job: FakeJob = { child, state: "running", exit: null, out: stream(), err: stream(), cap: exec.output_max_bytes ?? 0, exited: Promise.resolve() };
+			const job: FakeJob = { child, state: marked ? "lost" : "running", exit: null, ...(marked ? { reason: "never_started" } : {}), out: stream(), err: stream(), cap: exec.output_max_bytes ?? 0, exited: Promise.resolve() };
 			const append = (s: Stream, data: Buffer) => {
 				s.kept = Buffer.concat([s.kept, data]);
 				if (job.cap > 0 && s.kept.length > job.cap) {
@@ -109,7 +113,7 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 			child.stderr?.on("data", (data: Buffer) => append(job.err, data));
 			job.exited = new Promise((resolve) =>
 				child.on("close", (code, signal) => {
-					job.state = "exited";
+					if (job.state !== "lost") job.state = "exited";
 					job.exit = code ?? (signal === null ? null : 128 + (signal === "SIGKILL" ? 9 : 15));
 					resolve();
 				}),
@@ -137,7 +141,7 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 					return s.dropped.bytes > 0 ? [[n, s.dropped]] : [];
 				}));
 				return json(200, {
-					job: { job_id: jobId, state: job.state, exit_code: job.exit, ...(Object.keys(skipped).length === 0 ? {} : { skipped }) },
+					job: { job_id: jobId, state: job.state, exit_code: job.exit, ...(job.reason === undefined ? {} : { reason: job.reason }), ...(Object.keys(skipped).length === 0 ? {} : { skipped }) },
 					stdout: job.out.kept.subarray(-65536).toString(),
 					stderr: job.err.kept.subarray(-65536).toString(),
 				});
@@ -160,6 +164,7 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 			return;
 		}
 		if (rest?.startsWith("files/")) {
+			if (unreachable.on) return json(502, { error: "e2b: unexpected status 502 Bad Gateway" });
 			const path = decodeURIComponent(`/${rest.slice("files/".length)}`);
 			if (req.method === "GET" && url.searchParams.get("list") === "1") {
 				// spoond 3.11's listing, without .gitignore (the live conformance run checks that): depth first, siblings in
@@ -252,6 +257,7 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 		calls,
 		snapshots,
 		losing,
+		unreachable,
 		close: () => {
 			for (const job of jobs.values()) if (job.state === "running") process.kill(-job.child.pid!, "SIGKILL");
 			server.closeAllConnections();

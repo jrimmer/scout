@@ -42,6 +42,9 @@ export type SpoondRestOptions = {
 	shellEnv?: Record<string, string>;
 	/** How long a command runs before Scout checks it started (tests shorten it). */
 	startCheckMs?: number;
+	/** How often Scout checks the sandbox still answers while a command runs, and how long it may not (tests shorten them). */
+	aliveCheckMs?: number;
+	unreachableMs?: number;
 };
 
 /** Seconds a finished job's record and output stay in spoond; Scout deletes them itself once read. */
@@ -63,6 +66,13 @@ const CANNOT_START = "scout:cannot-start";
  * cap, since there's no exit code to find. Every command's first act is to leave a marker, so a missing one says so.
  */
 const START_CHECK_MS = 20_000;
+/**
+ * While a command runs, Scout checks every minute that the sandbox still answers. If the sandbox dies under a command,
+ * spoond can't read its exit code and keeps it "running" until its 24-hour cap; five minutes without an answer is
+ * enough to say so. A sandbox that answers is never cut short, however long the command runs.
+ */
+const ALIVE_CHECK_MS = 60_000;
+const UNREACHABLE_MS = 5 * 60_000;
 
 type Sh = { stdout: string; stderr: string; exit: number };
 type Job = { state: "running" | "exited" | "lost"; exit_code: number | null; reason?: string };
@@ -75,6 +85,8 @@ export class SpoondRestEnv implements ExecutionEnv {
 	readonly #home: string;
 	readonly #shellEnv: Record<string, string>;
 	readonly #startCheckMs: number;
+	readonly #aliveCheckMs: number;
+	readonly #unreachableMs: number;
 	readonly #running = new Set<string>();
 	/** Whether this spoond answers `Range` on file reads; older ones send the whole file. */
 	#ranges = true;
@@ -86,6 +98,8 @@ export class SpoondRestEnv implements ExecutionEnv {
 		this.#home = options.home;
 		this.#shellEnv = options.shellEnv ?? {};
 		this.#startCheckMs = options.startCheckMs ?? START_CHECK_MS;
+		this.#aliveCheckMs = options.aliveCheckMs ?? ALIVE_CHECK_MS;
+		this.#unreachableMs = options.unreachableMs ?? UNREACHABLE_MS;
 	}
 
 	#resolve(path: string): string {
@@ -119,7 +133,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 		}
 	}
 
-	async #files(method: string, path: string, query = "", init: { body?: Uint8Array<ArrayBuffer>; headers?: Record<string, string> } = {}): Promise<Response> {
+	async #files(method: string, path: string, query = "", init: { body?: Uint8Array<ArrayBuffer>; headers?: Record<string, string>; signal?: AbortSignal } = {}): Promise<Response> {
 		return this.#request(method, `/files${path.split("/").map(encodeURIComponent).join("/")}${query}`, init);
 	}
 
@@ -437,6 +451,8 @@ export class SpoondRestEnv implements ExecutionEnv {
 		const startedAt = Date.now();
 		const deadline = timeout === undefined ? undefined : startedAt + timeout * 1000;
 		let started = false;
+		let checked = startedAt;
+		let unreachableSince: number | undefined;
 		try {
 			for (let polls = 1; ; polls++) {
 				const remaining = deadline === undefined ? Number.POSITIVE_INFINITY : deadline - Date.now();
@@ -453,14 +469,30 @@ export class SpoondRestEnv implements ExecutionEnv {
 					if (error instanceof ExecutionError) return err(await this.#stop(jobId, error));
 					throw error;
 				}
-				if (job.state === "lost") return err(new ExecutionError("unknown", "The sandbox restarted, and the command with it"));
-				if (job.state === "running" && !started && Date.now() - startedAt >= this.#startCheckMs) {
-					const seen = await this.#files("GET", marker, "?stat=1").catch(() => undefined);
+				if (job.state === "lost") {
+					// spoond 3.12.1 marks a command it lost on the way in, and says so.
+					if (job.reason === "never_started") return err(new ExecutionError("unknown", "spoond took the command but it never started in the sandbox (it was lost on the way in). Run it again."));
+					return err(new ExecutionError("unknown", "The sandbox restarted, and the command with it"));
+				}
+				const now = Date.now();
+				if (job.state === "running" && (started ? now - checked >= this.#aliveCheckMs : now - startedAt >= this.#startCheckMs)) {
+					checked = now;
+					const seen = await this.#files("GET", marker, "?stat=1", { signal: AbortSignal.timeout(30_000) }).catch(() => undefined);
 					await seen?.body?.cancel();
+					// The marker there, or definitely not there: either way, the sandbox answered.
+					const answered = seen !== undefined && (seen.ok || seen.status === 404);
 					if (seen?.ok === true) started = true;
 					// Only a definite "no such file" counts: a sandbox slow to answer is asked again at the next poll.
-					else if (seen?.status === 404) {
+					else if (seen?.status === 404 && !started) {
 						return err(await this.#stop(jobId, new ExecutionError("unknown", "spoond took the command but it never started in the sandbox (it was lost on the way in). Run it again.")));
+					}
+					if (answered) unreachableSince = undefined;
+					else if (started) {
+						unreachableSince ??= now;
+						if (now - unreachableSince >= this.#unreachableMs) {
+							const minutes = Math.round(this.#unreachableMs / 60_000);
+							return err(await this.#stop(jobId, new ExecutionError("unknown", `The sandbox stopped answering while the command ran (nothing for ${minutes > 0 ? `${minutes} minutes` : "a while"}), so it has probably crashed. Run it again; if it keeps happening, the sandbox needs replacing.`)));
+						}
 					}
 				}
 				if (job.state !== "running") {

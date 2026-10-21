@@ -99,6 +99,29 @@ describe("spoond REST environment", () => {
 		assert.ok(slow.ok && slow.value.exitCode === 0, "a command that started is left to run past the check");
 	});
 
+	it("says a command never started when spoond marks it so (spoond 3.12.1)", async () => {
+		spoond.losing.next = true;
+		spoond.losing.marked = true;
+		const lost = await env.exec("echo hi", {}, context);
+		spoond.losing.marked = false;
+		assert.ok(!lost.ok && /never started in the sandbox.*Run it again/.test(lost.error.message), String(!lost.ok && lost.error.message));
+	});
+
+	it("gives up on a command when the sandbox stops answering under it, and leaves one that answers alone", async () => {
+		const quick = (await new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest"), transport: "rest" }).open("t", spec)).connect!({ id: "sandbox:t", cwd: root, startCheckMs: 100, aliveCheckMs: 100, unreachableMs: 600 } as never);
+		const healthy = await quick.exec("sleep 1.5; echo fine", {}, context);
+		assert.ok(healthy.ok && healthy.value.exitCode === 0, "a long command in a sandbox that answers runs to the end");
+
+		const running = quick.exec("sleep 30", {}, context);
+		await new Promise((resolve) => setTimeout(resolve, 1200));
+		spoond.unreachable.on = true;
+		const started = Date.now();
+		const dead = await running;
+		spoond.unreachable.on = false;
+		assert.ok(!dead.ok && /stopped answering/.test(dead.error.message), String(!dead.ok && dead.error.message));
+		assert.ok(Date.now() - started < 10_000, "it gives up soon after the sandbox goes quiet, not when the command would end");
+	});
+
 	it("reports output spoond dropped under a window as skipped", async () => {
 		const window = { maxBytes: 10, maxLines: 2, minIntervalMs: 0, bytesPerSecond: 1e9 };
 		let skipped: { bytes: number; newlines: number; endsWithNewline: boolean } | undefined;

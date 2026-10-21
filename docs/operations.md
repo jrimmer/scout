@@ -63,6 +63,10 @@ commands running at that moment count against the account's limit, and nothing i
 (the command finishes in the lease). Output arrives a second or so later than over the stream, and file watching isn't
 available (Scout's tools don't use it).
 
+In REST mode Scout also watches that a command is really running. spoond can take a command and lose it on the way into the sandbox, or lose the sandbox under a running command. Either way it would report the command as running until its 24-hour cap. Scout checks for itself:
+- **Starting.** Every command first leaves a marker in the sandbox. A command still "running" after 20 seconds with no marker never started, and the thread hears to run it again. spoond 3.12.1 and later notice this themselves and mark the command lost. Scout reads that too.
+- **While it runs.** Scout checks every minute that the sandbox still answers. After five minutes without an answer, it stops waiting and says the sandbox has probably crashed. A sandbox that answers is never cut short, however long the command takes.
+
 When spoond is nearly full it answers new leases with "wait" or "full", and Scout retries for up to ten minutes
 before the thread hears that no sandbox was free. spoond also pauses leases to keep memory free; a paused lease
 resumes on its next use, so a thread's first command after a quiet spell can take longer.
