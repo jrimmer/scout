@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -42,34 +44,74 @@ export type McpServerConfig = {
 
 export type Writes = "off" | "approve" | "allow";
 
-/** Who approved a change in which thread, until it's used or 15 minutes pass (in memory: a restart asks again). */
+/**
+ * Approvals, kept in Scout's database so a restart loses none: who approved a change in which thread (until it's used
+ * or 15 minutes pass), whether a change is waiting for one, and which of Scout's answers asked, where a 👍 approves.
+ */
 export class Approvals {
-	readonly #given = new Map<number, { by: string; until: number }>();
-	readonly #asked = new Set<number>();
+	readonly #db: DatabaseSync;
+
+	constructor(path = ":memory:") {
+		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+		this.#db = new DatabaseSync(path, { timeout: 5000 });
+		this.#db.exec(`
+			PRAGMA journal_mode = WAL;
+			CREATE TABLE IF NOT EXISTS approvals (
+				conversation_id INTEGER PRIMARY KEY,
+				-- A change waited for approval in the run going on now.
+				asked INTEGER NOT NULL DEFAULT 0,
+				-- The answer that asked: a 👍 on it approves.
+				asked_in TEXT,
+				given_by TEXT,
+				given_until INTEGER
+			);
+		`);
+	}
 
 	/** A change in this thread waited for approval: the answer Scout gives next is where people can react 👍. */
 	ask(conversationId: number): void {
-		this.#asked.add(conversationId);
+		this.#db
+			.prepare("INSERT INTO approvals (conversation_id, asked) VALUES (?, 1) ON CONFLICT DO UPDATE SET asked = 1")
+			.run(conversationId);
 	}
 
-	/** Whether a change waited for approval since the last time this was asked. */
-	takeAsked(conversationId: number): boolean {
-		return this.#asked.delete(conversationId);
+	/** A run ended with its answer in message `ts`: that's where a 👍 approves if the run asked, else nowhere. */
+	answered(conversationId: number, ts: string | undefined): void {
+		this.#db
+			.prepare("UPDATE approvals SET asked_in = CASE WHEN asked = 1 THEN ? END, asked = 0 WHERE conversation_id = ?")
+			.run(ts ?? null, conversationId);
+	}
+
+	/** The conversation whose answer in message `ts` asked for approval, if one did. */
+	askedIn(ts: string): number | undefined {
+		const row = this.#db.prepare("SELECT conversation_id FROM approvals WHERE asked_in = ?").get(ts) as { conversation_id: number } | undefined;
+		return row?.conversation_id;
 	}
 
 	grant(conversationId: number, by: string, now = Date.now(), forMs = 15 * 60 * 1000): void {
-		this.#given.set(conversationId, { by, until: now + forMs });
+		this.#db
+			.prepare(
+				`INSERT INTO approvals (conversation_id, given_by, given_until) VALUES (?, ?, ?)
+				 ON CONFLICT DO UPDATE SET given_by = excluded.given_by, given_until = excluded.given_until`,
+			)
+			.run(conversationId, by, now + forMs);
 	}
 
 	/** Who approved, while it lasts and hasn't been used. */
 	by(conversationId: number, now = Date.now()): string | undefined {
-		const given = this.#given.get(conversationId);
-		return given !== undefined && given.until > now ? given.by : undefined;
+		const row = this.#db
+			.prepare("SELECT given_by FROM approvals WHERE conversation_id = ? AND given_until > ?")
+			.get(conversationId, now) as { given_by: string } | undefined;
+		return row?.given_by;
 	}
 
 	/** An approval covers one change: using it ends it, so the next change needs its own. */
 	use(conversationId: number): void {
-		this.#given.delete(conversationId);
+		this.#db.prepare("UPDATE approvals SET given_by = NULL, given_until = NULL WHERE conversation_id = ?").run(conversationId);
+	}
+
+	close(): void {
+		this.#db.close();
 	}
 }
 

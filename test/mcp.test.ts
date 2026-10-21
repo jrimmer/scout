@@ -41,6 +41,25 @@ describe("MCP tools", () => {
 		assert.throws(() => loadMcpConfig(path, {}), /WH_TOKEN is not set/);
 	});
 
+	it("keeps approvals across a restart: who approved, a change waiting, and the answer that asked", () => {
+		const path = join(mkdtempSync(join(tmpdir(), "scout-approvals-")), "scout.sqlite");
+		const before = new Approvals(path);
+		before.grant(1, "UANN");
+		before.ask(2);
+		before.answered(2, "200.1");
+		before.ask(3);
+		before.close();
+
+		const after = new Approvals(path);
+		assert.equal(after.by(1), "UANN", "an approval given before the restart still lets the change go ahead");
+		assert.equal(after.askedIn("200.1"), 2, "a 👍 on the answer that asked still approves");
+		after.answered(3, "300.1");
+		assert.equal(after.askedIn("300.1"), 3, "a run that asked before the restart and answered after it");
+		after.use(1);
+		assert.equal(after.by(1), undefined);
+		after.close();
+	});
+
 	it("offers a server's tools to threads in its channels, and only there", async () => {
 		const connections = await connectMcp({ servers: { warehouse: { command: "unused", channels: ["data"] } } }, () => {
 			const [client, server] = InMemoryTransport.createLinkedPair();
@@ -134,8 +153,11 @@ describe("MCP tools", () => {
 			return seen;
 		};
 		assert.match(await write(), /needs a person's approval first/);
-		assert.equal(approvals.takeAsked(conversation.id), true, "the answer after this is where a 👍 approves");
-		assert.equal(approvals.takeAsked(conversation.id), false);
+		approvals.answered(conversation.id, "200.1");
+		assert.equal(approvals.askedIn("200.1"), conversation.id, "the answer after this is where a 👍 approves");
+		approvals.answered(conversation.id, "200.2");
+		assert.equal(approvals.askedIn("200.1"), undefined, "a later answer that didn't ask takes it back");
+		assert.equal(approvals.askedIn("200.2"), undefined);
 		approvals.grant(conversation.id, "UANN");
 		assert.match(await write(), /written/);
 		assert.match(await write(), /needs a person's approval first/, "an approval covers one change, not the next");

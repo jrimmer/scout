@@ -243,7 +243,7 @@ export async function openScout(options: ScoutOptions) {
 	});
 	const consolidation = consolidationExtension(memory);
 	const mcp = options.mcp ?? (config.mcpFile === undefined ? [] : await connectMcp(loadMcpConfig(config.mcpFile)));
-	const approvals = new Approvals();
+	const approvals = new Approvals(db);
 	const mcpTools = await mcpExtension(mcp, approvals, refuseApprover);
 	if (mcp.length > 0) console.log(`MCP: ${mcp.map((c) => c.name).join(", ")} (${mcpTools.tools?.length ?? 0} tools)`);
 	// Reviewing other people's pull requests when asked: read-only files, the profile's reviewer.md, and the MCP tools
@@ -421,6 +421,7 @@ export async function openScout(options: ScoutOptions) {
 			pulls.close();
 			search.close();
 			memory.close();
+			approvals.close();
 			await tracer?.close();
 			audit.close();
 			spend.close();

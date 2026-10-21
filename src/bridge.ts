@@ -47,8 +47,10 @@ export type BridgeOptions = {
 	/** The repository a channel's threads work in. */
 	/** A person replied "approve" in a thread: let changes that need approval go ahead there (mcp.ts). */
 	approve?: (conversationId: number, user: string) => void;
-	/** Whether a change waited for approval in this run (mcp.ts): its answer is then where a 👍 approves. */
-	approvalAsked?: (conversationId: number) => boolean;
+	/** A run ended with its answer in message `ts` (mcp.ts): if a change waited for approval, a 👍 there approves. */
+	answered?: (conversationId: number, ts: string | undefined) => void;
+	/** The conversation whose answer in message `ts` asked for approval, if one did. */
+	approvalAskedIn?: (ts: string) => number | undefined;
 	/** The repository a thread starts in, from its channel and its first message. */
 	repoFor?: (channelName: string, text?: string) => string;
 	/** A channel's own model, if its profile names one; otherwise `agent`'s. */
@@ -89,8 +91,6 @@ export const DECLINE_PRIVATE =
 export class Bridge {
 	readonly #options: BridgeOptions;
 	readonly #views = new Map<number, ThreadView>();
-	/** Threads whose last answer asks for approval, and that answer's message (in memory: after a restart, reply instead). */
-	readonly #approvalAsks = new Map<number, string>();
 	readonly #locks = new Map<string, Promise<unknown>>();
 	readonly #refused = new Map<string, number>();
 	#draining = false;
@@ -163,13 +163,12 @@ export class Bridge {
 	 */
 	async onReaction(reaction: { channel: string; ts: string; name: string; user: string; eventTs: string }): Promise<void> {
 		if (APPROVE_REACTIONS.has(reaction.name)) {
-			for (const [conversationId, ts] of this.#approvalAsks) {
-				const thread = this.#options.threads.byConversation(conversationId);
-				if (ts !== reaction.ts || thread?.channel !== reaction.channel) continue;
-				const { harness, context } = this.#options;
-				const channelName = (await harness.snapshot(ThreadDoc, conversationId as ConversationId, context))?.channelName ?? "";
-				await this.onMessage({ channel: reaction.channel, channelType: "channel", channelName, user: reaction.user, text: "approve", ts: reaction.eventTs, threadTs: thread.threadTs });
-			}
+			const conversationId = this.#options.approvalAskedIn?.(reaction.ts);
+			const thread = conversationId === undefined ? undefined : this.#options.threads.byConversation(conversationId);
+			if (thread === undefined || thread.channel !== reaction.channel) return;
+			const { harness, context } = this.#options;
+			const channelName = (await harness.snapshot(ThreadDoc, thread.conversationId as ConversationId, context))?.channelName ?? "";
+			await this.onMessage({ channel: reaction.channel, channelType: "channel", channelName, user: reaction.user, text: "approve", ts: reaction.eventTs, threadTs: thread.threadTs });
 			return;
 		}
 		if (!STOP_REACTIONS.has(reaction.name)) return;
@@ -436,8 +435,7 @@ export class Bridge {
 			...(thread.runTs === undefined ? {} : { resumeTs: thread.runTs }),
 			onRunMessage: (ts) => threads.runMessage(thread.key, ts),
 			onRunEnd: (answer, ts) => {
-				if (ts !== undefined && this.#options.approvalAsked?.(thread.conversationId) === true) this.#approvalAsks.set(thread.conversationId, ts);
-				else this.#approvalAsks.delete(thread.conversationId);
+				this.#options.answered?.(thread.conversationId, ts);
 				threads.spoke(thread.key, "scout");
 				threads.ranOnce(thread.conversationId);
 				void this.drain().catch((error: unknown) => console.error("starting queued requests failed:", error));

@@ -11,6 +11,7 @@ import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } f
 import { ThreadDoc } from "../src/docs.ts";
 import { Bridge, DECLINE_PRIVATE, type IncomingMessage } from "../src/bridge.ts";
 import { loadProfile, profileExtension } from "../src/profile.ts";
+import { Approvals } from "../src/mcp.ts";
 import { ThreadSearch } from "../src/search.ts";
 import type { ChatMessage, ChatSurface } from "../src/render.ts";
 import { threadKey, Threads } from "../src/threads.ts";
@@ -53,6 +54,7 @@ describe("bridge", () => {
 	let approved: string[];
 	/** Whether the next run's answer asks for approval, as mcp.ts would say. */
 	let asking: boolean;
+	let approvals: Approvals;
 
 	const message = (overrides: Partial<IncomingMessage>): IncomingMessage => ({
 		channel: "C1",
@@ -97,14 +99,17 @@ describe("bridge", () => {
 			context,
 			search,
 			approve: (conversationId, user) => void approved.push(`${conversationId} ${user}`),
-			approvalAsked: () => {
-				const was = asking;
+			// As mcp.ts would record it: the run that's ending asked for approval.
+			answered: (conversationId, ts) => {
+				if (asking) approvals.ask(conversationId);
 				asking = false;
-				return was;
+				approvals.answered(conversationId, ts);
 			},
+			approvalAskedIn: (ts) => approvals.askedIn(ts),
 		});
 		approved = [];
 		asking = false;
+		approvals = new Approvals();
 	});
 
 	afterEach(async () => {
