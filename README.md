@@ -78,3 +78,7 @@ SCOUT_DOCKER_TESTS=1 npm test              # also the real container, clone, and
 npm run check                              # type-check
 npm run job -- "what to do"                # one task, no Slack
 ```
+
+## License
+
+BSD 3-Clause; see [LICENSE](LICENSE).
