@@ -200,7 +200,26 @@ harness.resume();
 await slack.start({
 	onMessage: (message) => bridge.onMessage(message),
 	onReaction: (reaction) => bridge.onReaction(reaction),
+	onEdit: (edit) => bridge.onEdit(edit),
+	onDelete: (deleted) => bridge.onDelete(deleted),
 });
+// What people said while Scout was down: Socket Mode doesn't replay it, so read it back and take it in, in order.
+// Each request is keyed by its message, so one Scout had already handled isn't handled twice.
+const alive = join(config.dataDir, "alive");
+const lastAlive = existsSync(alive) ? Number(readFileSync(alive, "utf8")) : NaN;
+if (Number.isFinite(lastAlive)) {
+	const since = Math.max(lastAlive - 2 * MINUTE, Date.now() - 6 * HOUR);
+	const active = threads.activeSince(Date.now() - 7 * 24 * HOUR).slice(0, 100);
+	void slack
+		.missed(since, active)
+		.then(async (missed) => {
+			if (missed.length > 0) console.log(`catching up on ${missed.length} message${missed.length === 1 ? "" : "s"} from while I was away`);
+			for (const message of missed) await bridge.onMessage(message);
+		})
+		.catch((error: unknown) => console.error("catching up on missed messages failed:", error));
+}
+const heartbeat = setInterval(() => writeFileSync(alive, String(Date.now())), MINUTE);
+writeFileSync(alive, String(Date.now()));
 // The catalog prices its models; a gateway's own models cost nothing unless the prices file says otherwise.
 for (const id of config.gateway?.models ?? []) {
 	if (!scout.pricing.has(`gateway/${id}`)) console.log(`no price for gateway/${id}: budgets count it as free; set SCOUT_PRICES_FILE`);
@@ -317,6 +336,8 @@ const ciWatcher = new CiWatcher({
 		},
 	},
 });
+// Runs that haven't moved on for a while say so; ones stuck far too long stop with a summary (render.ts).
+const watchdog = setInterval(() => void health.watch("watchdog", "watching for stuck runs failed", () => bridge.watch()), MINUTE);
 const ciTick = setInterval(() => void health.watch("ci", "watching CI failed", () => ciWatcher.poll()), MINUTE);
 
 // Scheduled work (schedules.ts): each schedule that's due starts a new thread in its channel, saying which one it is.
@@ -709,6 +730,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		clearInterval(tick);
 		clearTimeout(firstTick);
 		clearInterval(ciTick);
+		clearInterval(watchdog);
+		clearInterval(heartbeat);
 		clearInterval(inboxTick);
 		clearInterval(scheduleTick);
 		inbox.close();

@@ -10,6 +10,8 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
   - Anyone in the thread can redirect the work.
   - A stop sign (or "@Scout stop") stops it.
   - A change made through a tool that needs approval waits for "approve", or a 👍 on Scout's request.
+  - 🔁 on its answer tries again; editing a request steers the work.
+  - Nothing said while Scout restarts is lost, and its progress message says what it's waiting on.
 - **Its own sandbox.** Each thread gets its own clone, in its channel's repository, and its own Docker container.
   Credentials never enter it.
 - **Reviewed before you review it.** Scout reviews its own diff before opening a pull request, and keeps pull

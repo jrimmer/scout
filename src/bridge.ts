@@ -79,6 +79,16 @@ const REFUSAL_QUIET_MS = 60 * 60 * 1000;
 /** Reactions that stop Scout's work in a thread, on the thread's first message or on Scout's progress message. */
 export const STOP_REACTIONS = new Set(["octagonal_sign", "no_entry", "no_entry_sign"]);
 /** Reactions that approve, on the answer where Scout asked for approval. */
+/** 🔁 on Scout's latest answer asks it to try again. */
+export const RETRY_REACTIONS = new Set(["repeat", "arrows_counterclockwise"]);
+/** How long after a model call had to retry Scout warns that it may be slow. */
+const BEHIND_MS = 10 * 60 * 1000;
+
+function ordinal(n: number): string {
+	const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : (["th", "st", "nd", "rd"][n % 10] ?? "th");
+	return `${n}${suffix}`;
+}
+
 export const APPROVE_REACTIONS = new Set(["+1", "thumbsup", "white_check_mark", "heavy_check_mark"]);
 
 const STOP_WORDS = /^\s*(stop|cancel|halt)\b/i;
@@ -96,6 +106,8 @@ export const DECLINE_PRIVATE =
 export class Bridge {
 	readonly #options: BridgeOptions;
 	readonly #views = new Map<number, ThreadView>();
+	/** When a model call last had to wait and retry, in any thread: lately, new runs warn they may be slow. */
+	#slowAt = 0;
 	readonly #locks = new Map<string, Promise<unknown>>();
 	readonly #refused = new Map<string, number>();
 	#draining = false;
@@ -176,6 +188,16 @@ export class Bridge {
 			await this.onMessage({ channel: reaction.channel, channelType: "channel", channelName, user: reaction.user, text: "approve", ts: reaction.eventTs, threadTs: thread.threadTs });
 			return;
 		}
+		if (RETRY_REACTIONS.has(reaction.name)) {
+			// 🔁 on Scout's latest answer: try that again, as if they'd asked in the thread (so it's admitted and audited).
+			const thread = this.#options.threads.byAnswer(reaction.channel, reaction.ts);
+			if (thread === undefined) return;
+			const { harness, context } = this.#options;
+			const channelName = (await harness.snapshot(ThreadDoc, thread.conversationId as ConversationId, context))?.channelName ?? "";
+			const text = `<@${this.#options.botUserId}> 🔁 please try that again, picking up where it stopped.`;
+			await this.onMessage({ channel: reaction.channel, channelType: "channel", channelName, user: reaction.user, text, ts: reaction.eventTs, threadTs: thread.threadTs });
+			return;
+		}
 		if (!STOP_REACTIONS.has(reaction.name)) return;
 		let thread = this.#options.threads.get(threadKey(reaction.channel, reaction.ts));
 		if (thread === undefined) {
@@ -184,6 +206,46 @@ export class Bridge {
 			}
 		}
 		if (thread !== undefined && thread.channel === reaction.channel) await this.#stop(thread, reaction.user);
+	}
+
+	/**
+	 * Someone edited a message. A request still waiting its turn is replaced; one Scout is working on steers the run
+	 * ("ann edited her request: …"). An edit after Scout has answered is left alone: they can ask again.
+	 */
+	async onEdit(edit: { channel: string; ts: string; threadTs?: string; user: string; text: string }): Promise<void> {
+		const { threads, harness, context } = this.#options;
+		const waiting = threads.queued().find((q) => (q.message as IncomingMessage).ts === edit.ts && (q.message as IncomingMessage).channel === edit.channel);
+		if (waiting !== undefined) {
+			threads.requeue(waiting.id, { ...(waiting.message as IncomingMessage), text: edit.text });
+			return;
+		}
+		const thread = threads.get(threadKey(edit.channel, edit.threadTs ?? edit.ts));
+		if (thread === undefined || thread.lastAsker !== edit.user) return;
+		const view = this.#views.get(thread.conversationId);
+		if (view?.busy !== true) return;
+		const name = await this.#options.nameOf(edit.user);
+		const text = edit.text.replaceAll(`<@${this.#options.botUserId}>`, "@Scout").trim();
+		const conversation = await harness.conversation(thread.conversationId as ConversationId, context);
+		await conversation?.submit({ type: "input", content: `${name} edited their request: ${text}`, whenBusy: "steer", requestId: `slack-edit:${edit.channel}:${edit.ts}:${text.length}` }, context);
+		view.tookIn(name);
+	}
+
+	/** Someone deleted a message: a request still waiting its turn is dropped. */
+	onDelete(deleted: { channel: string; ts: string }): void {
+		const { threads } = this.#options;
+		const waiting = threads.queued().find((q) => (q.message as IncomingMessage).ts === deleted.ts && (q.message as IncomingMessage).channel === deleted.channel);
+		if (waiting !== undefined) threads.requeue(waiting.id, undefined);
+	}
+
+	/** The watchdog: runs that haven't moved on for a while say so, and ones stuck far too long stop with a summary. */
+	async watch(now = Date.now()): Promise<void> {
+		const { harness, context } = this.#options;
+		for (const [conversationId, view] of this.#views) {
+			if (!view.check(now)) continue;
+			this.#options.audit?.record("stop", { actor: "scout", conversationId, detail: { why: "no progress" } });
+			const conversation = await harness.conversation(conversationId as ConversationId, context);
+			await conversation?.abort(context);
+		}
 	}
 
 	async #stop(thread: ThreadRow, user: string): Promise<void> {
@@ -261,7 +323,10 @@ export class Bridge {
 				if (admission.wait === true && starting) {
 					if (!queued) {
 						threads.enqueue(key, message);
-						await this.#refuse(message, threadTs, admission.reason, thread.conversationId);
+						// The message this run will use once it starts says it's waiting, and where it is in line.
+						const place = threads.queued().length;
+						view.queued(`⏳ ${admission.reason}${place > 1 ? ` You're ${ordinal(place)} in line.` : ""}`);
+						this.#options.audit?.record("refused", { actor: message.user, conversationId: thread.conversationId, channel: message.channelName, detail: { reason: admission.reason, ts: message.ts, queued: true } });
 					}
 					return "waiting";
 				}
@@ -463,9 +528,12 @@ export class Bridge {
 			threadTs: thread.threadTs,
 			...(thread.runTs === undefined ? {} : { resumeTs: thread.runTs }),
 			onRunMessage: (ts) => threads.runMessage(thread.key, ts),
+			onSlow: () => (this.#slowAt = Date.now()),
+			behind: () => Date.now() - this.#slowAt < BEHIND_MS,
 			...(this.#options.costNote === undefined ? {} : { cost: (since: number) => this.#options.costNote?.(thread.conversationId, since) }),
 			onRunEnd: (answer, ts) => {
 				this.#options.answered?.(thread.conversationId, ts, answer);
+				if (ts !== undefined) threads.answered(thread.key, ts);
 				threads.spoke(thread.key, "scout");
 				threads.ranOnce(thread.conversationId);
 				void this.drain().catch((error: unknown) => console.error("starting queued requests failed:", error));

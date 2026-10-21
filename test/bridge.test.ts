@@ -431,12 +431,42 @@ describe("bridge", () => {
 		full = true;
 		await gated.onMessage(message({ text: `<@${BOT}> and then?`, ts: "600.3", threadTs: "600.1" }));
 		assert.equal(threads.queued().length, 1);
-		assert.match(surface.sent.at(-1)?.message.text ?? "", /as soon as I can/);
+		await gated.view(thread.conversationId)?.settled();
+		const placeholder = surface.sent.at(-1)!;
+		assert.equal(placeholder.op, "post");
+		assert.match(placeholder.message.text, /^⏳ I'll start on this as soon as I can\./, "a message that says it's waiting its turn");
+
+		// She edits it while it waits: the edited request is what runs, in the message that said it was waiting.
+		await gated.onEdit({ channel: "C1", ts: "600.3", threadTs: "600.1", user: "UANN", text: `<@${BOT}> and then, in one line?` });
+		assert.match(JSON.stringify(threads.queued()[0]!.message), /in one line/);
 		full = false;
 		await gated.drain();
 		await settleGated(thread.conversationId);
 		assert.equal(threads.queued().length, 0);
+		assert.equal(surface.sent.at(-1)?.ref, placeholder.ts, "the waiting message became the answer");
 		assert.match(surface.sent.at(-1)?.message.text ?? "", /saw bob/);
+
+		// A deleted request that's waiting is dropped.
+		full = true;
+		await gated.onMessage(message({ text: `<@${BOT}> one more`, ts: "600.4", threadTs: "600.1" }));
+		assert.equal(threads.queued().length, 1);
+		gated.onDelete({ channel: "C1", ts: "600.4" });
+		assert.equal(threads.queued().length, 0);
+	});
+
+	it("tries again on a 🔁 to its latest answer, and only that one", async () => {
+		faux.setResponses([fauxAssistantMessage("I ran into a problem."), (t) => fauxAssistantMessage(JSON.stringify(t).includes("try that again") ? "Second time lucky." : "?")]);
+		await bridge.onMessage(message({}));
+		const thread = threads.get(threadKey("C1", "100.1"))!;
+		await settle(thread.conversationId);
+		const answer = threads.get(thread.key)!;
+		assert.ok(answer !== undefined);
+		const answerTs = surface.sent.filter((s) => s.op === "post" && s.ref === "100.1").at(-1)!.ts!;
+		await bridge.onReaction({ channel: "C1", ts: "100.1", name: "repeat", user: "UANN", eventTs: "700.1" });
+		assert.equal(faux.state.callCount, 1, "not on the request itself");
+		await bridge.onReaction({ channel: "C1", ts: answerTs, name: "repeat", user: "UANN", eventTs: "700.2" });
+		await settle(thread.conversationId);
+		assert.match(surface.texts().at(-1) ?? "", /Second time lucky\./);
 	});
 
 	it("handles a redelivered Slack event once", async () => {

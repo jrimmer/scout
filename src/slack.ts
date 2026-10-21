@@ -10,6 +10,9 @@ const CREATE_CHANNEL_ACTION = "scout_create_channel";
 export type SlackHandlers = {
 	onMessage: (message: IncomingMessage) => Promise<void>;
 	onReaction: (reaction: { channel: string; ts: string; name: string; user: string; eventTs: string }) => Promise<void>;
+	/** Someone edited a message (its new text) or deleted one. */
+	onEdit?: (edit: { channel: string; ts: string; threadTs?: string; user: string; text: string }) => Promise<void>;
+	onDelete?: (deleted: { channel: string; ts: string }) => void;
 };
 
 /**
@@ -43,6 +46,10 @@ export class Slack {
 			update: async (channel, ts, original) => {
 				const message = await this.#withMentions(original);
 				await client.chat.update({ channel, ts, text: message.text, blocks: message.blocks as never });
+			},
+			// Needs the files:write scope; without it this fails, and the answer follows in messages instead.
+			attach: async (channel, threadTs, file) => {
+				await client.filesUploadV2({ channel_id: channel, thread_ts: threadTs, filename: file.name, title: file.title, content: file.content });
 			},
 		};
 	}
@@ -89,6 +96,56 @@ export class Slack {
 		return handles;
 	}
 
+	/**
+	 * What people said while Scout wasn't listening (a restart, a dropped connection), oldest first: top-level messages
+	 * in the public channels it's in, and replies in `threads`, after `since` (ms). Socket Mode doesn't replay them.
+	 */
+	async missed(since: number, threads: readonly { channel: string; threadTs: string }[]): Promise<IncomingMessage[]> {
+		const oldest = (since / 1000).toFixed(6);
+		const client = this.app.client;
+		const found = new Map<string, IncomingMessage>();
+		const take = async (channel: string, m: Record<string, unknown>) => {
+			if (!SPOKEN_SUBTYPES.has(m.subtype as string | undefined) || m.bot_id !== undefined) return;
+			if (typeof m.user !== "string" || typeof m.ts !== "string" || Number(m.ts) <= Number(oldest)) return;
+			found.set(`${channel}:${m.ts}`, {
+				channel,
+				channelType: "channel",
+				channelName: await this.channelName(channel),
+				user: m.user,
+				text: typeof m.text === "string" ? m.text : "",
+				ts: m.ts,
+				...(typeof m.thread_ts === "string" && m.thread_ts !== m.ts ? { threadTs: m.thread_ts } : {}),
+				...(Array.isArray(m.files) ? { files: sharedFiles(m.files) } : {}),
+			});
+		};
+		const mine = await client.users.conversations({ types: "public_channel", limit: 200, exclude_archived: true });
+		for (const channel of mine.channels ?? []) {
+			if (channel.id === undefined) continue;
+			const history = await client.conversations.history({ channel: channel.id, oldest, limit: 200 });
+			for (const m of history.messages ?? []) await take(channel.id, m as Record<string, unknown>);
+		}
+		for (const t of threads) {
+			const replies = await client.conversations.replies({ channel: t.channel, ts: t.threadTs, oldest, limit: 200 }).catch(() => undefined);
+			for (const m of replies?.messages ?? []) await take(t.channel, m as Record<string, unknown>);
+		}
+		return [...found.values()].sort((a, b) => Number(a.ts) - Number(b.ts));
+	}
+
+	/** An edited or deleted message, from a person (not a bot, and not just Slack adding a link preview). */
+	async #changed(e: Record<string, unknown>, handlers: SlackHandlers): Promise<void> {
+		const channel = typeof e.channel === "string" ? e.channel : undefined;
+		if (channel === undefined) return;
+		if (e.subtype === "message_deleted") {
+			if (typeof e.deleted_ts === "string") handlers.onDelete?.({ channel, ts: e.deleted_ts });
+			return;
+		}
+		const now = e.message as Record<string, unknown> | undefined;
+		const before = e.previous_message as Record<string, unknown> | undefined;
+		if (now === undefined || now.bot_id !== undefined || typeof now.user !== "string" || typeof now.ts !== "string" || typeof now.text !== "string") return;
+		if (before?.text === now.text) return;
+		await handlers.onEdit?.({ channel, ts: now.ts, user: now.user, text: now.text, ...(typeof now.thread_ts === "string" ? { threadTs: now.thread_ts } : {}) });
+	}
+
 	/** Scout's own Slack user ID, which mentions of it carry. */
 	async identify(): Promise<string> {
 		const auth = await this.app.client.auth.test();
@@ -100,6 +157,10 @@ export class Slack {
 
 		this.app.event("message", async ({ event }) => {
 			const e = event as unknown as Record<string, unknown>;
+			if (e.subtype === "message_changed" || e.subtype === "message_deleted") {
+				await this.#changed(e, handlers).catch((error: unknown) => console.error(`edit in ${String(e.channel)} failed:`, error));
+				return;
+			}
 			if (!SPOKEN_SUBTYPES.has(e.subtype as string | undefined) || e.bot_id !== undefined) return;
 			if (typeof e.user !== "string" || typeof e.channel !== "string" || typeof e.ts !== "string") return;
 			const channelType = e.channel_type as IncomingMessage["channelType"];

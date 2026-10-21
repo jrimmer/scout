@@ -64,6 +64,26 @@ export class Threads {
 				threads TEXT NOT NULL
 			);
 		`);
+		// Added later: the message of the thread's latest answer, where a 🔁 asks Scout to try again.
+		const columns = this.#db.prepare("PRAGMA table_info(threads)").all().map((c) => String(c.name));
+		if (!columns.includes("answer_ts")) this.#db.exec("ALTER TABLE threads ADD COLUMN answer_ts TEXT");
+	}
+
+	/** The thread's latest answer is in message `ts`. */
+	answered(key: string, ts: string): void {
+		this.#db.prepare("UPDATE threads SET answer_ts = ? WHERE key = ?").run(ts, key);
+	}
+
+	/** The thread whose latest answer is message `ts` in `channel`. */
+	byAnswer(channel: string, ts: string): ThreadRow | undefined {
+		const row = this.#db.prepare("SELECT * FROM threads WHERE channel = ? AND answer_ts = ?").get(channel, ts);
+		return row === undefined ? undefined : toThread(row);
+	}
+
+	/** Replace a waiting request (an edited message), or drop it (a deleted one); false if it isn't waiting. */
+	requeue(id: number, message: unknown | undefined): void {
+		if (message === undefined) this.#db.prepare("DELETE FROM queue WHERE id = ?").run(id);
+		else this.#db.prepare("UPDATE queue SET message = ? WHERE id = ?").run(JSON.stringify(message), id);
 	}
 
 	get(key: string): ThreadRow | undefined {

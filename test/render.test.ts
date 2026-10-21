@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { delivery } from "../src/etiquette.ts";
 import { frontmatter } from "../src/profile.ts";
-import { type ChatMessage, describeStep, finalMessage, progressMessage, ThreadView } from "../src/render.ts";
+import { type ChatMessage, describeStep, finalMessage, progressMessage, SAYINGS, ThreadView } from "../src/render.ts";
 import { mentionNames, slackChannelName } from "../src/slack.ts";
 
 describe("render", () => {
@@ -123,6 +123,95 @@ describe("thread view", () => {
 		view.handle([{ type: "run_start", inputs: [] }]);
 		await view.settled();
 		assert.deepEqual(calls, ["update old", "update old", "post"]);
-		assert.deepEqual(remembered, [undefined, "new"]);
+		assert.deepEqual(remembered, ["old", undefined, "new"]);
+	});
+});
+
+describe("answers that always arrive", () => {
+	const said = (text: string) => ({ type: "message_end", entry: { model: [{ role: "assistant", content: [{ type: "text", text }], stopReason: "stop" }] } }) as never;
+	function surface(options: { failUpdate?: boolean; attach?: "ok" | "fail" } = {}) {
+		const calls: string[] = [];
+		let n = 0;
+		return {
+			calls,
+			post: async (_c: string, _t: string | undefined, m: ChatMessage) => {
+				calls.push(`post ${(m.blocks[0] as { text: string }).text.slice(0, 40)}`);
+				return `p${++n}`;
+			},
+			update: async (_c: string, ts: string, m: ChatMessage) => {
+				if (options.failUpdate) throw new Error("message_not_found");
+				calls.push(`update ${ts} ${(m.blocks[0] as { text: string }).text.slice(0, 40)}`);
+			},
+			...(options.attach === undefined
+				? {}
+				: {
+						attach: async (_c: string, _t: string, file: { name: string; content: string }) => {
+							if (options.attach === "fail") throw new Error("missing_scope");
+							calls.push(`attach ${file.name} ${file.content.length}`);
+						},
+					}),
+		};
+	}
+
+	it("posts the answer anew when its message can't be edited", async () => {
+		const s = surface({ failUpdate: true });
+		const ends: (string | undefined)[] = [];
+		const view = new ThreadView({ surface: s, channel: "C", threadTs: "1", onRunEnd: (_a, ts) => ends.push(ts) });
+		view.handle([{ type: "run_start", inputs: [] }, said("All done."), { type: "run_end", inputs: [] }] as never);
+		await view.settled();
+		assert.deepEqual(s.calls.map((c) => c.split("\n")[0]), ["post _Working… 0s_", "post All done."]);
+		assert.deepEqual(ends, ["p2"], "the answer's own message, for approvals and 🔁");
+	});
+
+	it("shows a long answer's opening and attaches the whole of it, or posts it in parts without attachments", async () => {
+		const long = `The short version: it works.\n\n${"Details. ".repeat(1500)}`;
+		const withFiles = surface({ attach: "ok" });
+		let view = new ThreadView({ surface: withFiles, channel: "C", threadTs: "1" });
+		view.handle([{ type: "run_start", inputs: [] }, said(long), { type: "run_end", inputs: [] }] as never);
+		await view.settled();
+		assert.equal(withFiles.calls[1], `attach answer.md ${long.trim().length}`);
+		assert.match(withFiles.calls[2]!, /^update p1 The short version: it works\./);
+
+		const without = surface({ attach: "fail" });
+		view = new ThreadView({ surface: without, channel: "C", threadTs: "1" });
+		view.handle([{ type: "run_start", inputs: [] }, said(long), { type: "run_end", inputs: [] }] as never);
+		await view.settled();
+		assert.match(without.calls[1]!, /^update p1 The short version/, "the message is the answer's first part, not a promise of a file");
+		assert.equal(without.calls.filter((c) => c.startsWith("post")).length, 3, "the progress message, then the rest of the answer");
+	});
+
+	it("finishes a message still saying Working… after a restart, with the answer given meanwhile", async () => {
+		const s = surface();
+		const remembered: (string | undefined)[] = [];
+		const view = new ThreadView({ surface: s, channel: "C", threadTs: "1", resumeTs: "old", onRunMessage: (ts) => remembered.push(ts) });
+		view.handle([{ type: "snapshot", entries: [{ model: [{ role: "user", content: "fix it" }] }, { model: [{ role: "assistant", content: [{ type: "text", text: "Fixed in #12." }] }] }] } as never]);
+		await view.settled();
+		assert.deepEqual(s.calls, ["update old Fixed in #12."]);
+		assert.deepEqual(remembered, [undefined]);
+	});
+
+	it("says it's taking longer, in its own words, and gives up on a run going nowhere", async () => {
+		let now = 0;
+		const s = surface();
+		let slow = 0;
+		const view = new ThreadView({ surface: s, channel: "C", threadTs: "1", now: () => now, onSlow: () => slow++, behind: () => true });
+		view.handle([{ type: "run_start", inputs: [] }] as never);
+		await view.settled();
+		assert.ok(SAYINGS.behind.some((line) => s.calls[0]!.includes(line.slice(0, 20))), "warned it's slow today");
+		view.handle([{ type: "auto_retry_start", attempt: 1, at: 0, errorMessage: "x" }] as never);
+		assert.equal(slow, 1);
+		assert.match((progressMessage({ startedAt: 0, steps: [], status: SAYINGS.slow[0] }, 1000).blocks[0] as { text: string }).text, /_Taking a little longer/);
+		view.handle([{ type: "tool_execution_start", toolName: "bash", args: { command: "mix test" } }] as never);
+		now = 11 * 60_000;
+		assert.equal(view.check(now), false);
+		now = 90 * 60_000;
+		assert.equal(view.check(now), false, "a command still running is work, however long");
+		await view.settled();
+		view.handle([{ type: "tool_execution_end", toolName: "bash" }] as never);
+		now = 140 * 60_000;
+		assert.equal(view.check(now), true, "45 minutes with nothing running: stop");
+		view.handle([{ type: "run_end", inputs: [] }] as never);
+		await view.settled();
+		assert.match(s.calls.at(-1)!, /^update p1 I stopped: I hadn't got anywhere in 50 m/, "counted from when the command finished");
 	});
 });

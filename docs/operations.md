@@ -57,6 +57,30 @@ dependencies, a first build). On spoond, Scout builds an image from it, `scout/<
 Scout's CI runner will start jobs from the same image (`runs-on: scout-<repo>`) once spoond's runner can start jobs
 from a named snapshot (#24).
 
+## In Slack: nothing lost, and always saying where things stand
+
+- **Missed messages.** Socket Mode doesn't replay what was said while Scout was down. Scout records a heartbeat
+  every minute; on start it reads back, since the last one (at most 6 hours), the top-level messages in the public
+  channels it's in and the replies in its threads active in the last week, and takes them in order. A message it
+  had already handled isn't handled twice: each request is keyed by its message.
+- **Answers always arrive.** If the run's message can't be edited, the answer is posted anew. A message still saying
+  "Working…" after a restart, whose run finished meanwhile, gets that answer ("Finished while I was restarting.").
+- **Long answers.** Over 6,000 characters, the message shows the answer's first paragraph and the whole answer is
+  attached as `answer.md` (needs the `files:write` scope); without it, the answer follows in several messages.
+- **Saying where things stand.** The progress message has a status line, in Scout's own words: waiting its turn
+  (and where in line), taking longer than usual (the model is being retried), or a step that's run for a while
+  ("Still on `mix test`, 23 minutes in"). A run that starts soon after another had to wait on the model warns that
+  Scout is slow today. Model calls are retried up to six times, backing off from 5 s to a minute, about three
+  minutes in all.
+- **Stuck runs.** After 10 minutes without a new step the status line says what Scout is still doing. After 45
+  minutes with nothing running (no command in progress, no answer), the run stops with where it got to. A long
+  command is never stopped this way; it has its own timeout.
+- **Edits and deletions.** Editing a request that's waiting its turn replaces it; editing it while Scout works on it
+  steers the run ("ann edited her request: …"). Deleting a waiting request drops it. Edits after Scout has answered
+  are left alone: ask again.
+- **🔁 to try again.** A 🔁 (`:repeat:`) on Scout's latest answer in a thread asks it to try again, as if the person
+  had asked in the thread (so it's admitted and audited like any request).
+
 ## Model gateway
 
 `SCOUT_GATEWAY_URL` sends model calls to a gateway (Bifrost, LiteLLM, Cloudflare AI Gateway) instead of the provider,

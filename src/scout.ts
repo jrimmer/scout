@@ -333,6 +333,12 @@ export async function openScout(options: ScoutOptions) {
 				(await reviewEnv(target, ctx, (id) => workspaces.env(id))) ??
 				workspaces.env(target.conversationId),
 			onReport: (report) => console.error("harness:", report),
+			settings: {
+				// A busy gateway can queue requests for minutes ("scheduler admission timeout"): Pi's default three
+				// retries over about 14 seconds gave up too soon. Six, from 5 s and doubling up to a minute, wait it out
+				// for about three minutes. The thread says it's taking longer meanwhile (render.ts).
+				retry: { enabled: true, maxRetries: 6, baseDelayMs: 5_000, maxAgentDelayMs: 60_000 },
+			},
 		},
 		context,
 	);
