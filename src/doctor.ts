@@ -158,6 +158,9 @@ export async function doctor(
 	return checks;
 }
 
+/** The doctor can't ask the running Scout as configured (no dashboard, or no token for it): a warning, not Scout down. */
+export class CantAsk extends Error {}
+
 /** What a running Scout reports about itself: the dashboard's snapshot (dash/collect.ts), or the part of it these checks read. */
 export type Running = Pick<Snapshot, "now" | "startedAt" | "alerts" | "working" | "capacity">;
 
@@ -169,6 +172,7 @@ const HOUR = 60 * MINUTE;
  * lasted an hour. Slowness is a warning, with where it comes from. So a scheduled `npm run doctor` is a monitor.
  */
 export function checkRunning(running: Running | Error): Check[] {
+	if (running instanceof CantAsk) return [{ name: "Running", status: "warn", detail: `can't ask the running Scout: ${running.message}`, fix: "See docs/operations.md, Monitoring." }];
 	if (running instanceof Error) {
 		return [{ name: "Running", status: "fail", detail: `Scout isn't answering: ${firstLine(running)}`, fix: "Before the first start, that's expected. Otherwise: is the service running? Check its status and its log (systemctl status scout; journalctl -u scout)." }];
 	}
@@ -220,8 +224,8 @@ function duration(ms: number): string {
 
 /** The running Scout's snapshot from its dashboard (`/status.json`), with the metrics token. */
 export async function fetchRunning(dash: Config["dash"], token: string | undefined, doFetch: typeof fetch = fetch): Promise<Running> {
-	if (dash === undefined) throw new Error("its dashboard is off (SCOUT_DASH_ADDR), so there's nothing to ask");
-	if (token === undefined && dash.auth !== undefined) throw new Error("set SCOUT_METRICS_TOKEN, so the doctor and monitors can read /status.json behind the dashboard's login");
+	if (dash === undefined) throw new CantAsk("its dashboard is off (SCOUT_DASH_ADDR), so there's nothing to ask");
+	if (token === undefined && dash.auth !== undefined) throw new CantAsk("set SCOUT_METRICS_TOKEN, so the doctor and monitors can read /status.json behind the dashboard's login");
 	const { host, port } = /^(?<host>.*):(?<port>\d+)$/.exec(dash.addr)?.groups ?? { host: "127.0.0.1", port: "8893" };
 	const reach = host === "0.0.0.0" || host === "" || host === "::" || host === "[::]" ? "127.0.0.1" : host;
 	const response = await doFetch(`http://${reach}:${port}/status.json`, {

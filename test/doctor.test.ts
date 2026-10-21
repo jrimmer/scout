@@ -106,5 +106,7 @@ describe("doctor", () => {
 		assert.deepEqual(asked, { url: "http://127.0.0.1:8893/status.json", auth: "Bearer tok" });
 		await assert.rejects(fetchRunning(undefined, "tok", doFetch), /dashboard is off/);
 		await assert.rejects(fetchRunning({ addr: "0.0.0.0:8893", auth: { user: "ops", passwordHash: "x" } }, undefined, doFetch), /SCOUT_METRICS_TOKEN/);
+		const unasked = checkRunning(await fetchRunning(undefined, undefined, doFetch).catch((error: Error) => error));
+		assert.deepEqual([unasked[0]!.status, unasked[0]!.detail], ["warn", "can't ask the running Scout: its dashboard is off (SCOUT_DASH_ADDR), so there's nothing to ask"], "a setup without a dashboard isn't Scout down");
 	});
 });
