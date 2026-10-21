@@ -45,7 +45,18 @@ export type Side = "candidate" | "baseline";
  * Where a run's time went: waiting on the model, in tools (the first call apart, since it makes the sandbox and the
  * clone), retrying the model, and checking afterwards (not part of `ms`).
  */
-export type Timing = { model: number; tools: number; firstTool: number; retries: number; check: number };
+export type Timing = {
+	/** From starting a model turn to its answer starting to arrive: queueing in the gateway and the model starting up. */
+	firstToken: number;
+	/** The answer arriving, start to end. */
+	model: number;
+	tools: number;
+	firstTool: number;
+	retries: number;
+	check: number;
+	/** Tool time by tool name (the first call included). */
+	byTool: Record<string, { calls: number; ms: number }>;
+};
 
 export type RunResult = { task: string; side: Side; pass: boolean; why: string; cost: number; ms: number; steps: number; timing?: Timing };
 
@@ -155,15 +166,25 @@ export function report(results: readonly RunResult[], sides: readonly Side[]): s
 	if (timed.length > 0) {
 		const part = (f: (t: Timing) => number) => avg(timed, (r) => f(r.timing!));
 		const total = avg(timed, (r) => r.ms);
+		const firstToken = part((t) => t.firstToken);
 		const model = part((t) => t.model);
 		const first = part((t) => t.firstTool);
 		const tools = part((t) => t.tools);
 		const retries = part((t) => t.retries);
-		const other = Math.max(0, total - model - first - tools - retries);
+		const other = Math.max(0, total - firstToken - model - first - tools - retries);
+		const byTool = new Map<string, { calls: number; ms: number }>();
+		for (const r of timed) for (const [name, t] of Object.entries(r.timing!.byTool)) {
+			const sum = byTool.get(name) ?? { calls: 0, ms: 0 };
+			sum.calls += t.calls;
+			sum.ms += t.ms;
+			byTool.set(name, sum);
+		}
+		const toolLine = [...byTool].sort((a, b) => b[1].ms - a[1].ms).map(([name, t]) => `${name} ${t.calls}× ${time(t.ms / t.calls)} each`).join(", ");
 		const share = (ms: number) => (total === 0 ? "" : ` (${Math.round((ms / total) * 100)}%)`);
 		lines.push(
 			"",
-			`Where a run's ${time(total)} went, on average: the model ${time(model)}${share(model)}, the first tool call (making the sandbox and the clone) ${time(first)}${share(first)}, other tools ${time(tools)}${share(tools)}, retrying the model ${time(retries)}${share(retries)}, the rest ${time(other)}${share(other)}. Checking afterwards took ${time(part((t) => t.check))} more. ${Math.round(avg(timed, (r) => r.steps))} steps on average.`,
+			`Where a run's ${time(total)} went, on average: waiting for the model's first token ${time(firstToken)}${share(firstToken)}, the model answering ${time(model)}${share(model)}, the first tool call (making the sandbox and the clone) ${time(first)}${share(first)}, other tools ${time(tools)}${share(tools)}, retrying the model ${time(retries)}${share(retries)}, the rest ${time(other)}${share(other)}. Checking afterwards took ${time(part((t) => t.check))} more. ${Math.round(avg(timed, (r) => r.steps))} steps on average.`,
+			...(toolLine === "" ? [] : ["", `Tools: ${toolLine}.`]),
 		);
 	}
 	const failures = results.filter((r) => !r.pass);
@@ -264,14 +285,20 @@ export async function runTask(scout: Scout, task: EvalTask, repoName: string, si
 	const events = await watchEvents(scout.harness, conversation.id as ConversationId, context);
 	let answer = "";
 	let steps = 0;
-	const timing: Timing = { model: 0, tools: 0, firstTool: 0, retries: 0, check: 0 };
+	const timing: Timing = { firstToken: 0, model: 0, tools: 0, firstTool: 0, retries: 0, check: 0, byTool: {} };
 	let modelFrom: number | undefined;
+	let turnFrom: number | undefined;
 	let retryFrom: number | undefined;
-	const toolFrom = new Map<string, { at: number; first: boolean }>();
+	const toolFrom = new Map<string, { at: number; first: boolean; name: string }>();
 	events.start(async (batch) => {
 		const now = Date.now();
 		for (const event of batch) {
 			// Times are when the events arrive, which is close enough to see where minutes go.
+			if (event.type === "turn_start") turnFrom = now;
+			if (event.type === "message_start" && turnFrom !== undefined) {
+				timing.firstToken += now - turnFrom;
+				turnFrom = undefined;
+			}
 			if (event.type === "message_start") modelFrom ??= now;
 			if (event.type === "message_end" && modelFrom !== undefined) {
 				timing.model += now - modelFrom;
@@ -282,10 +309,13 @@ export async function runTask(scout: Scout, task: EvalTask, repoName: string, si
 				timing.retries += now - retryFrom;
 				retryFrom = undefined;
 			}
-			if (event.type === "tool_execution_start" && event.parentToolCallId === undefined) toolFrom.set(event.toolCallId, { at: now, first: steps === 0 });
+			if (event.type === "tool_execution_start" && event.parentToolCallId === undefined) toolFrom.set(event.toolCallId, { at: now, first: steps === 0, name: event.toolName });
 			if (event.type === "tool_execution_end" && event.parentToolCallId === undefined) {
 				const from = toolFrom.get(event.toolCallId);
 				if (from !== undefined) {
+					const t = (timing.byTool[from.name] ??= { calls: 0, ms: 0 });
+					t.calls++;
+					t.ms += now - from.at;
 					if (from.first) timing.firstTool += now - from.at;
 					else timing.tools += now - from.at;
 					toolFrom.delete(event.toolCallId);

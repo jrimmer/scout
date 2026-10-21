@@ -98,7 +98,7 @@ if (import.meta.main) {
 					for (let n = 1; n <= tries; n++) {
 						const result = await runTask(scout, task, nameOf(task), side, BACKGROUND_CONTEXT);
 						const t = result.timing;
-						const parts = t === undefined ? "" : ` (model ${Math.round(t.model / 1000)}s, first tool ${Math.round(t.firstTool / 1000)}s, tools ${Math.round(t.tools / 1000)}s, retries ${Math.round(t.retries / 1000)}s, ${result.steps} steps)`;
+						const parts = t === undefined ? "" : ` (first token ${Math.round(t.firstToken / 1000)}s, model ${Math.round(t.model / 1000)}s, first tool ${Math.round(t.firstTool / 1000)}s, tools ${Math.round(t.tools / 1000)}s, retries ${Math.round(t.retries / 1000)}s, ${result.steps} steps)`;
 						console.error(`${side} ${task.name} #${n}: ${result.pass ? "pass" : `fail (${result.why})`}, $${result.cost.toFixed(2)}, ${Math.round(result.ms / 1000)}s${parts}`);
 						results.push(result);
 					}
