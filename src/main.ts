@@ -10,7 +10,7 @@ import { hostname } from "node:os";
 import { Bridge } from "./bridge.ts";
 import { Collector } from "./dash/collect.ts";
 import { type Ask, forgeFor, Inbox } from "./forge.ts";
-import { MAX_TRIES as UPKEEP_TRIES, PullUpkeep } from "./upkeep.ts";
+import { MAX_TRIES as UPKEEP_TRIES, PullUpkeep, ReviewNudges } from "./upkeep.ts";
 import { channelWeeks, WeeklySummaries } from "./weekly.ts";
 import { startDashboard } from "./dash/server.ts";
 import { ThreadDoc } from "./docs.ts";
@@ -90,9 +90,16 @@ const scout = await openScout({
 	pullOpened: (id, pull) => {
 		const thread = scout.threads.byConversation(id);
 		if (thread === undefined) return;
-		slack
-			.broadcast(thread.channel, thread.threadTs, `Opened <${pull.url}|${pull.slug}#${pull.number}>: ${pull.title.replace(/[&<>]/g, (c) => `&${{ "&": "amp", "<": "lt", ">": "gt" }[c]};`)}`)
-			.catch((error: unknown) => console.error("pull request notice failed:", error));
+		void (async () => {
+			// Reviews from whoever owns what it touches, and whoever asked for it, so it doesn't wait to be noticed.
+			const asked = await askForReviews(pull, thread.lastAsker).catch((error: unknown) => {
+				console.error(`requesting reviews on ${pull.url} failed:`, error);
+				return [];
+			});
+			const title = pull.title.replace(/[&<>]/g, (c) => `&${{ "&": "amp", "<": "lt", ">": "gt" }[c]};`);
+			const reviewers = asked.length === 0 ? "" : ` · review requested from ${asked.join(", ")}`;
+			await slack.broadcast(thread.channel, thread.threadTs, `Opened <${pull.url}|${pull.slug}#${pull.number}>: ${title}${reviewers}`);
+		})().catch((error: unknown) => console.error("pull request notice failed:", error));
 	},
 	groupMembers: (group) => slack.groupMembers(group),
 	emailOf: (user) => slack.emailOf(user),
@@ -501,6 +508,50 @@ async function postChannelWeeks(): Promise<void> {
 	}
 }
 
+/** A decided pull request's branch, if it's one of Scout's and nothing else still comes from it. */
+async function deleteBranchOf(pull: { slug: string; number: number; conversationId: number; url: string }): Promise<void> {
+	const status = await forge.pullStatus(pull.slug, pull.number);
+	if (!status.headRef.startsWith("scout/") || status.open) return;
+	if (pulls.forConversation(pull.conversationId).some((p) => p.state === "open" && p.url !== pull.url)) return;
+	await forge.deleteBranch(pull.slug, status.headRef);
+}
+
+/** Ask the files' owners (CODEOWNERS, or who changed them lately) and whoever asked to review a new pull request; returns who. */
+async function askForReviews(pull: { slug: string; number: number }, asker: string | undefined): Promise<string[]> {
+	const repo = config.repos.find((r) => r.slug.toLowerCase() === pull.slug.toLowerCase());
+	if (repo === undefined) return [];
+	const me = await forge.me();
+	const askerLogin = asker === undefined || asker === "scout" ? undefined : await scout.loginOf(asker);
+	const files = await forge.pullFiles(pull.slug, pull.number);
+	const owners = await scout.reviewersFor(repo.name, files, [me]);
+	const users = [...new Set([...(askerLogin === undefined ? [] : [askerLogin]), ...owners.users])].filter((u) => u.toLowerCase() !== me.toLowerCase()).slice(0, 3);
+	await forge.requestReviewers(pull.slug, pull.number, { users, teams: owners.teams });
+	return [...users, ...owners.teams].map((who) => `@${who}`);
+}
+
+// Pull requests waiting on review in each channel's repositories, anyone's: one gentle reminder a working day.
+const reviewNudges = new ReviewNudges({ path: join(config.dataDir, "scout.sqlite"), forge, waitMs: config.reviewNudgeDays * DAY });
+async function nudgeReviews(): Promise<void> {
+	const repos = config.repos.flatMap((r) => {
+		const channel = scout.channelOf(r.name)?.name;
+		return channel === undefined ? [] : [{ slug: r.slug, channel }];
+	});
+	const now = Date.now();
+	for (const [channel, waiting] of await reviewNudges.waiting(repos, localDay(new Date(now)), now)) {
+		const id = await slack.channelId(channel);
+		if (id === undefined) continue;
+		const who = (login: string) => {
+			const user = scout.slackUserOf(login);
+			return user === undefined ? `@${login}` : `<@${user}>`;
+		};
+		const lines = waiting.map(
+			(p) => `• <${p.url}|${p.slug}#${p.number}> ${p.title}${p.author === "" ? "" : ` by ${p.author}`}: waiting on ${[...p.reviewers.map(who), ...p.teams.map((t) => `@${t}`)].join(", ")} for ${Math.floor((now - p.createdAt) / DAY)} days`,
+		);
+		const text = [`A few pull requests have been waiting on review for a while:`, ...lines].join("\n");
+		await slack.surface.post(id, undefined, { text, blocks: [{ type: "markdown", text }] });
+	}
+}
+
 const inboxTick = setInterval(() => void health.watch("code host", "reading the code host's notifications failed", () => inbox.poll()), MINUTE);
 
 /** Housekeeping every few minutes; also soon after a start, so a restart doesn't hold up reviews and retries. */
@@ -519,6 +570,10 @@ const housekeeping = () => {
 	if (new Date(now).getHours() >= config.reflect.hour) void reflect(localDay(new Date(now)));
 	void health.watch("reviews", "reviewing pull requests failed", () => pullReviewer.poll());
 	void health.watch("upkeep", "looking after Scout's pull requests failed", () => upkeep.poll(pulls.open("work")));
+	const today = new Date(now);
+	if (today.getDay() >= 1 && today.getDay() <= 5 && today.getHours() >= 9 && today.getHours() < 17) {
+		void health.watch("review nudges", "reminding reviewers failed", nudgeReviews);
+	}
 	void health.watch("images", "building repository images failed", async () => {
 		for (const line of await scout.refreshImages()) console.log(line);
 	});
@@ -526,6 +581,7 @@ const housekeeping = () => {
 		// A reflection's proposal was decided: merged retires the notes it covered; rejected keeps them.
 		for (const pull of decided) {
 			audit.record("pull_decided", { actor: "code host", conversationId: pull.conversationId, detail: { url: pull.url, state: pull.state } });
+			await deleteBranchOf(pull).catch((error: unknown) => console.error(`deleting ${pull.url}'s branch failed:`, error));
 			const day = pull.kind === "profile" ? threads.reflectionDay(pull.conversationId) : undefined;
 			if (day !== undefined) memory.proposalDecided(day, pull.state === "merged");
 		}
@@ -622,6 +678,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		inbox.close();
 		upkeep.close();
 		weekly.close();
+		reviewNudges.close();
 		if (alertTick !== undefined) clearInterval(alertTick);
 		alertLog.close();
 		await slack.stop().catch(() => {});

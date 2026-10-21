@@ -8,7 +8,7 @@ const DAY = 24 * 60 * 60 * 1000;
 const T0 = Date.parse("2026-10-01T12:00:00Z");
 
 function setUp(options: { pingDays?: number; closeDays?: number } = {}) {
-	let status: PullStatus = { open: true, mergeable: true, updatedAt: T0, head: "h1", base: "b1", baseRef: "main" };
+	let status: PullStatus = { open: true, mergeable: true, updatedAt: T0, head: "h1", headRef: "scout/t-3", base: "b1", baseRef: "main" };
 	let threadActivity: number | undefined;
 	const events: string[] = [];
 	const forge = { pullStatus: async () => status } as unknown as Forge;

@@ -307,6 +307,23 @@ export class Workspaces {
 		await env.remove(inside, { force: true }, BACKGROUND_CONTEXT);
 	}
 
+	/** A file on the repository's base branch, from the mirror, if it's there. */
+	async readBase(repoName: string, path: string): Promise<string | undefined> {
+		const repo = this.repo(repoName);
+		return run("git", ["-C", this.mirrorFor(repo.name).path, "show", `refs/heads/${repo.base}:${path}`]).then(
+			(r) => r.stdout,
+			() => undefined,
+		);
+	}
+
+	/** Who committed to these files on the base branch lately, newest first (author emails, one per commit). */
+	async recentAuthors(repoName: string, files: readonly string[], commits = 30): Promise<string[]> {
+		if (files.length === 0) return [];
+		const repo = this.repo(repoName);
+		const { stdout } = await run("git", ["-C", this.mirrorFor(repo.name).path, "log", `-n${commits}`, "--format=%ae", `refs/heads/${repo.base}`, "--", ...files]);
+		return stdout.split("\n").filter(Boolean);
+	}
+
 	/** The repository's `.scout/setup.sh` on its base branch (the script's git blob, and the base commit), if it has one. */
 	async setupScript(repoName: string): Promise<{ script: string; base: string } | undefined> {
 		const repo = this.repo(repoName);

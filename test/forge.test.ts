@@ -20,6 +20,8 @@ function fakeHost(kind: "forgejo" | "github") {
 		/** Comments on lines, by pull request, with the review each belongs to. */
 		lines: new Map<string, Record<string, unknown>[]>(),
 		reactions: [] as string[],
+		deleted: [] as string[],
+		requested: [] as string[],
 		publicRepos: new Set<string>(),
 	};
 	const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -44,6 +46,14 @@ function fakeHost(kind: "forgejo" | "github") {
 			state.read.push(read[1]!);
 			state.notices = state.notices.filter((n) => String(n.id) !== read[1]);
 			return new Response(null, { status: 205 });
+		}
+		if (method === "DELETE") {
+			state.deleted.push(path);
+			return new Response(null, { status: 204 });
+		}
+		if (/\/requested_reviewers$/.test(path) && method === "POST") {
+			state.requested.push(String(init?.body));
+			return Response.json({}, { status: 201 });
 		}
 		const reaction = /^\/repos\/([^/]+\/[^/]+)\/issues\/(?:comments\/(\d+)|(\d+))\/reactions$/.exec(path);
 		if (reaction && method === "POST") {
@@ -184,6 +194,18 @@ describe("work from the code host", () => {
 		await host.forge.acknowledge("o/r", 3);
 		await host.forge.acknowledge("o/r", 8, "review:11");
 		assert.deepEqual(host.state.reactions, ["o/r comment 2 eyes", "o/r issue 3 eyes"]);
+	});
+
+	it("deletes a branch and asks for reviews the way each code host wants", async () => {
+		const forgejo = fakeHost("forgejo");
+		await forgejo.forge.deleteBranch("o/r", "scout/t-1");
+		await forgejo.forge.requestReviewers("o/r", 8, { users: ["ann"], teams: ["platform/api"] });
+		await forgejo.forge.requestReviewers("o/r", 8, { users: [], teams: [] });
+		assert.deepEqual(forgejo.state.deleted, ["/repos/o/r/branches/scout%2Ft-1"]);
+		assert.deepEqual(forgejo.state.requested, ['{"reviewers":["ann"],"team_reviewers":["platform/api"]}'], "nobody to ask, no request");
+		const github = fakeHost("github");
+		await github.forge.deleteBranch("o/r", "scout/t-1");
+		assert.deepEqual(github.state.deleted, ["/repos/o/r/git/refs/heads/scout/t-1"]);
 	});
 
 	it("finds a pull request's own branch, but not a fork's", async () => {

@@ -32,7 +32,10 @@ export type Issue = {
 export type Remark = { id: string; author: string; body: string; at: number; url?: string; review?: string; path?: string; line?: number };
 
 /** Where a pull request stands: open or not, whether it merges cleanly (unknown while the host works it out), its last activity, and the commits at its two ends. */
-export type PullStatus = { open: boolean; mergeable?: boolean; updatedAt: number; head: string; base: string; baseRef: string };
+export type PullStatus = { open: boolean; mergeable?: boolean; updatedAt: number; head: string; headRef: string; base: string; baseRef: string };
+
+/** An open pull request, as a list of them shows it: who's been asked to review it and hasn't yet. */
+export type OpenPull = { number: number; title: string; url: string; author: string; draft: boolean; createdAt: number; reviewers: string[]; teams: string[] };
 
 /** An unread notification: which issue or pull request something happened on. */
 export type Notice = { id: string; slug: string; number: number };
@@ -56,6 +59,12 @@ export interface Forge {
 	isPublic(slug: string): Promise<boolean>;
 	pullStatus(slug: string, number: number): Promise<PullStatus>;
 	closePull(slug: string, number: number): Promise<void>;
+	/** The files a pull request changes. */
+	pullFiles(slug: string, number: number): Promise<string[]>;
+	/** Ask people (logins) and teams (`org/team`, or the team's name) to review a pull request. */
+	requestReviewers(slug: string, number: number, who: { users: string[]; teams: string[] }): Promise<void>;
+	openPulls(slug: string): Promise<OpenPull[]>;
+	deleteBranch(slug: string, branch: string): Promise<void>;
 }
 
 /** Where Forgejo and GitHub differ. */
@@ -64,6 +73,8 @@ type Dialect = {
 	headers(token: string): Record<string, string>;
 	unreadPath: string;
 	isIssue(subjectType: string): boolean;
+	/** The path that deletes a branch. */
+	branchPath(slug: string, branch: string): string;
 	/** Comments on lines of a pull request, with their review's id. */
 	lineComments(api: (path: string) => Promise<unknown>, slug: string, number: number, reviews: ApiReview[]): Promise<(ApiLineComment & { reviewId?: number })[]>;
 };
@@ -76,6 +87,7 @@ const DIALECTS: Record<CodeHost["kind"], Dialect> = {
 		headers: (token) => ({ accept: "application/json", authorization: `token ${token}` }),
 		unreadPath: "/notifications?status-types=unread&limit=50",
 		isIssue: (type) => type === "Issue" || type === "Pull",
+		branchPath: (slug, branch) => `/repos/${slug}/branches/${encodeURIComponent(branch)}`,
 		// Forgejo keeps them under each review, with the new file's line as `position`.
 		lineComments: async (api, slug, number, reviews) => {
 			const all = [];
@@ -92,6 +104,7 @@ const DIALECTS: Record<CodeHost["kind"], Dialect> = {
 		headers: (token) => ({ accept: "application/vnd.github+json", authorization: `Bearer ${token}` }),
 		unreadPath: "/notifications?per_page=50",
 		isIssue: (type) => type === "Issue" || type === "PullRequest",
+		branchPath: (slug, branch) => `/repos/${slug}/git/refs/heads/${branch.split("/").map(encodeURIComponent).join("/")}`,
 		lineComments: async (api, slug, number) =>
 			((await api(`/repos/${slug}/pulls/${number}/comments?per_page=100`)) as ApiLineComment[]).map((c) => ({
 				...c,
@@ -235,7 +248,7 @@ class RestForge implements Forge {
 			state: string;
 			mergeable?: boolean | null;
 			updated_at: string;
-			head: { sha: string };
+			head: { sha: string; ref: string };
 			base: { sha: string; ref: string };
 		};
 		return {
@@ -243,6 +256,7 @@ class RestForge implements Forge {
 			...(typeof p.mergeable === "boolean" ? { mergeable: p.mergeable } : {}),
 			updatedAt: Date.parse(p.updated_at),
 			head: p.head.sha,
+			headRef: p.head.ref,
 			base: p.base.sha,
 			baseRef: p.base.ref,
 		};
@@ -250,6 +264,43 @@ class RestForge implements Forge {
 
 	async closePull(slug: string, number: number): Promise<void> {
 		await this.#api("PATCH", `/repos/${slug}/pulls/${number}`, { state: "closed" });
+	}
+
+	async pullFiles(slug: string, number: number): Promise<string[]> {
+		const files = (await this.#api("GET", `/repos/${slug}/pulls/${number}/files?limit=100&per_page=100`)) as { filename: string }[];
+		return files.map((f) => f.filename);
+	}
+
+	async requestReviewers(slug: string, number: number, who: { users: string[]; teams: string[] }): Promise<void> {
+		if (who.users.length + who.teams.length === 0) return;
+		await this.#api("POST", `/repos/${slug}/pulls/${number}/requested_reviewers`, { reviewers: who.users, team_reviewers: who.teams });
+	}
+
+	async openPulls(slug: string): Promise<OpenPull[]> {
+		const pulls = (await this.#api("GET", `/repos/${slug}/pulls?state=open&limit=50&per_page=50`)) as {
+			number: number;
+			title: string;
+			html_url: string;
+			user?: User;
+			draft?: boolean;
+			created_at: string;
+			requested_reviewers?: User[] | null;
+			requested_teams?: { name?: string; slug?: string }[] | null;
+		}[];
+		return pulls.map((p) => ({
+			number: p.number,
+			title: p.title,
+			url: p.html_url,
+			author: p.user?.login ?? "",
+			draft: p.draft === true,
+			createdAt: Date.parse(p.created_at),
+			reviewers: (p.requested_reviewers ?? []).flatMap((r) => (r.login === undefined ? [] : [r.login])),
+			teams: (p.requested_teams ?? []).flatMap((t) => (t.slug ?? t.name ?? "") || []),
+		}));
+	}
+
+	async deleteBranch(slug: string, branch: string): Promise<void> {
+		await this.#api("DELETE", this.#dialect.branchPath(slug, branch));
 	}
 
 	async isPublic(slug: string): Promise<boolean> {

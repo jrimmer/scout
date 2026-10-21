@@ -15,6 +15,7 @@ import { Pricing } from "./pricing.ts";
 import { Counters, Tracer } from "./telemetry.ts";
 import { AutheliaFile, approversOf, loadRoles, requestersOf } from "./directory.ts";
 import { Images } from "./images.ts";
+import { CODEOWNERS_PATHS, type Owners, ownersOf, parseCodeOwners, recentOwners } from "./owners.ts";
 import { Schedules, schedulesExtension } from "./schedules.ts";
 import { Approvals, closeMcp, connectMcp, loadMcpConfig, type McpConnection, mcpExtension } from "./mcp.ts";
 import { ThreadDoc } from "./docs.ts";
@@ -173,6 +174,22 @@ export async function openScout(options: ScoutOptions) {
 		if (person.groups.some((g) => groups.includes(g))) return { ok: true };
 		return { ok: false, reason: `I can only take work in ${repo.name} from people in ${groups.join(" or ")}. Ask an admin to add you.` };
 	};
+	/** Who should review a change to these files: their CODEOWNERS, or else who changed them lately (owners.ts). */
+	const reviewersFor = async (repoName: string, files: readonly string[], exclude: readonly string[]): Promise<Owners> => {
+		const skip = new Set(exclude.map((e) => e.toLowerCase()));
+		for (const path of CODEOWNERS_PATHS) {
+			const text = await workspaces.readBase(repoName, path);
+			if (text === undefined) continue;
+			const owners = ownersOf(parseCodeOwners(text), files);
+			return { users: owners.users.filter((u) => !skip.has(u.toLowerCase())), teams: owners.teams };
+		}
+		const emails = await workspaces.recentAuthors(repoName, files).catch(() => []);
+		const logins = await Promise.all(emails.map(async (email) => (directory === undefined ? undefined : (await directory.byEmail(email).catch(() => undefined))?.username)));
+		return { users: recentOwners(logins, exclude), teams: [] };
+	};
+	/** A Slack user's code host login, and the reverse, from the people file and the directory. */
+	const loginOf = async (user: string): Promise<string | undefined> => (await personOf(user).catch(() => undefined))?.username;
+	const slackUserOf = (login: string): string | undefined => Object.entries(people).find(([, l]) => l.toLowerCase() === login.toLowerCase())?.[0];
 	const permissions = new Permissions({
 		loginOf: async (user) => (await personOf(user))?.username,
 		config: {
@@ -417,6 +434,9 @@ export async function openScout(options: ScoutOptions) {
 		repoFor,
 		channelOf,
 		mayAsk,
+		reviewersFor,
+		loginOf,
+		slackUserOf,
 		approvals,
 		schedules,
 		images,

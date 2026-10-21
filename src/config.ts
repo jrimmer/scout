@@ -94,6 +94,8 @@ export type Config = {
 	pullUpkeep: { staleDays: number; closeDays: number };
 	/** Each channel's weekly summary, Mondays (weekly.ts). */
 	weeklySummary: boolean;
+	/** Remind reviewers of pull requests waiting on them this many days, once a working day per channel; 0 never. */
+	reviewNudgeDays: number;
 	/** Largest change, in lines added plus removed, Scout puts in one pull request. */
 	maxPullLines: number;
 	/** Scout's commit identity, and the SSH key the host pushes and pulls with: Scout's own, not a person's. */
@@ -210,6 +212,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			closeDays: Number(env.SCOUT_PR_CLOSE_DAYS ?? Number(env.SCOUT_PR_STALE_DAYS ?? 14) / 2),
 		},
 		weeklySummary: env.SCOUT_WEEKLY_SUMMARY !== "off",
+		reviewNudgeDays: Number(env.SCOUT_REVIEW_NUDGE_DAYS ?? 3),
 		...(env.SCOUT_MCP_FILE ? { mcpFile: resolve(env.SCOUT_MCP_FILE) } : {}),
 		governance: {
 			...(env.SCOUT_PRICES_FILE ? { pricesFile: resolve(env.SCOUT_PRICES_FILE) } : {}),

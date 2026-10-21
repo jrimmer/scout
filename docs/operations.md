@@ -148,6 +148,20 @@ Every few minutes Scout looks at its own open pull requests on the code host (`s
   `SCOUT_PR_CLOSE_DAYS` more (default half that) still quiet, it closes it with a note; it can be reopened any time.
   Any activity starts the clock over. `SCOUT_PR_STALE_DAYS=0` turns this off.
 
+## Reviewers, reminders and branches
+
+- **Asking for reviews.** When Scout opens a pull request it asks for reviews from the people (and teams) its
+  repository's CODEOWNERS names for the files it touches (`.forgejo/`, `.gitea/`, `.github/`, the root or `docs/`;
+  the last matching rule wins), or, without one, the two people who changed those files most lately (commit emails
+  looked up in the directory), plus whoever asked for the change; never itself, and at most three people. The
+  "Opened" line in the thread says who (`src/owners.ts`).
+- **Reminding reviewers.** On working days between 9:00 and 17:00, each channel gets at most one message listing
+  pull requests in its repositories, anyone's, that have waited on a requested review for `SCOUT_REVIEW_NUDGE_DAYS`
+  (default 3; 0 turns it off). Reviewers are mentioned in Slack where the people file links their login, by login
+  otherwise. Drafts and pull requests nobody's been asked to review aren't listed.
+- **Deleting its branches.** When one of Scout's pull requests is merged or closed, its `scout/…` branch is deleted,
+  unless another open pull request still comes from it. The code host keeps the pull request's commits.
+
 ## Each channel's week
 
 On Monday after the reflection hour, alongside the weekly report in the home channel, Scout posts a summary in every

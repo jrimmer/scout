@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { Forge, PullStatus } from "./forge.ts";
+import type { Forge, OpenPull, PullStatus } from "./forge.ts";
 import type { PullRow } from "./pulls.ts";
 
 /**
@@ -125,6 +125,50 @@ export class PullUpkeep {
 			...(row.nudged_at === null ? {} : { nudgedAt: row.nudged_at }),
 			...(row.quiet_since === null ? {} : { quietSince: row.quiet_since }),
 		};
+	}
+
+	close(): void {
+		this.#db.close();
+	}
+}
+
+/**
+ * Pull requests in a channel's repositories that have waited on a review for `waitMs` or more, any author's: a gentle
+ * reminder to the people asked to review them, once a day at most per channel, so nothing sits unnoticed. Drafts
+ * aren't waiting on anyone.
+ */
+export class ReviewNudges {
+	readonly #db: DatabaseSync;
+	readonly #forge: Forge;
+	readonly #waitMs: number;
+
+	constructor(options: { path: string; forge: Forge; waitMs: number }) {
+		if (options.path !== ":memory:") mkdirSync(dirname(options.path), { recursive: true });
+		this.#db = new DatabaseSync(options.path, { timeout: 5000 });
+		this.#forge = options.forge;
+		this.#waitMs = options.waitMs;
+		this.#db.exec(`
+			PRAGMA journal_mode = WAL;
+			CREATE TABLE IF NOT EXISTS review_nudges (channel TEXT NOT NULL, day TEXT NOT NULL, PRIMARY KEY (channel, day));
+		`);
+	}
+
+	/**
+	 * Each channel not yet reminded `day`, with what's waiting in its repositories. Claims the day for a channel only
+	 * when something is waiting, so a pull request that crosses the line later that day still gets mentioned tomorrow.
+	 */
+	async waiting(repos: readonly { slug: string; channel: string }[], day: string, now = Date.now()): Promise<Map<string, (OpenPull & { slug: string })[]>> {
+		const byChannel = new Map<string, (OpenPull & { slug: string })[]>();
+		if (this.#waitMs <= 0) return byChannel;
+		for (const { slug, channel } of repos) {
+			if (this.#db.prepare("SELECT 1 FROM review_nudges WHERE channel = ? AND day = ?").get(channel, day) !== undefined) continue;
+			for (const pull of await this.#forge.openPulls(slug)) {
+				if (pull.draft || pull.reviewers.length + pull.teams.length === 0 || now - pull.createdAt < this.#waitMs) continue;
+				byChannel.set(channel, [...(byChannel.get(channel) ?? []), { ...pull, slug }]);
+			}
+		}
+		for (const channel of byChannel.keys()) this.#db.prepare("INSERT OR IGNORE INTO review_nudges (channel, day) VALUES (?, ?)").run(channel, day);
+		return byChannel;
 	}
 
 	close(): void {
