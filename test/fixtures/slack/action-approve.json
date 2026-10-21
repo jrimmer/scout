@@ -1,0 +1,58 @@
+{
+	"envelope_id": "env-action-approve",
+	"type": "interactive",
+	"accepts_response_payload": true,
+	"payload": {
+		"type": "block_actions",
+		"user": {
+			"id": "U0ANN00001",
+			"username": "ann",
+			"name": "ann",
+			"team_id": "T0ACME0001"
+		},
+		"api_app_id": "A0SCOUTAPP",
+		"token": "verification-token-unused",
+		"container": {
+			"type": "message",
+			"message_ts": "1700000000.001100",
+			"channel_id": "C0TEAM0001",
+			"is_ephemeral": false
+		},
+		"trigger_id": "1.1700000009.trigger",
+		"team": {
+			"id": "T0ACME0001",
+			"domain": "acme"
+		},
+		"enterprise": null,
+		"is_enterprise_install": false,
+		"channel": {
+			"id": "C0TEAM0001",
+			"name": "team"
+		},
+		"message": {
+			"type": "message",
+			"user": "U0SCOUT001",
+			"ts": "1700000000.001100",
+			"bot_id": "B0SCOUT001",
+			"text": "Waiting for approval",
+			"team": "T0ACME0001"
+		},
+		"state": {
+			"values": {}
+		},
+		"response_url": "https://hooks.slack.com/actions/T0ACME0001/3/action-approve",
+		"actions": [
+			{
+				"action_id": "scout_approve",
+				"block_id": "decide",
+				"text": {
+					"type": "plain_text",
+					"text": "Go"
+				},
+				"value": "17",
+				"type": "button",
+				"action_ts": "1700000009.000100"
+			}
+		]
+	}
+}

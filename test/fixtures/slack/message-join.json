@@ -1,0 +1,38 @@
+{
+	"envelope_id": "env-message-join",
+	"type": "events_api",
+	"accepts_response_payload": false,
+	"retry_attempt": 0,
+	"retry_reason": "",
+	"payload": {
+		"token": "verification-token-unused",
+		"team_id": "T0ACME0001",
+		"context_team_id": "T0ACME0001",
+		"context_enterprise_id": null,
+		"api_app_id": "A0SCOUTAPP",
+		"event": {
+			"type": "message",
+			"subtype": "channel_join",
+			"text": "<@U0BOB00001> has joined the channel",
+			"user": "U0BOB00001",
+			"ts": "1700000000.000700",
+			"channel": "C0TEAM0001",
+			"event_ts": "1700000000.000700",
+			"channel_type": "channel"
+		},
+		"type": "event_callback",
+		"event_id": "Ev0000000008",
+		"event_time": 1700000000,
+		"authorizations": [
+			{
+				"enterprise_id": null,
+				"team_id": "T0ACME0001",
+				"user_id": "U0SCOUT001",
+				"is_bot": true,
+				"is_enterprise_install": false
+			}
+		],
+		"is_ext_shared_channel": false,
+		"event_context": "4-message-join"
+	}
+}

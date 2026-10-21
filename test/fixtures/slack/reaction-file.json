@@ -1,0 +1,39 @@
+{
+	"envelope_id": "env-reaction-file",
+	"type": "events_api",
+	"accepts_response_payload": false,
+	"retry_attempt": 0,
+	"retry_reason": "",
+	"payload": {
+		"token": "verification-token-unused",
+		"team_id": "T0ACME0001",
+		"context_team_id": "T0ACME0001",
+		"context_enterprise_id": null,
+		"api_app_id": "A0SCOUTAPP",
+		"event": {
+			"type": "reaction_added",
+			"user": "U0ANN00001",
+			"reaction": "+1",
+			"item": {
+				"type": "file",
+				"file": "F0LOG00001"
+			},
+			"item_user": "U0ANN00001",
+			"event_ts": "1700000003.000300"
+		},
+		"type": "event_callback",
+		"event_id": "Ev0000000014",
+		"event_time": 1700000000,
+		"authorizations": [
+			{
+				"enterprise_id": null,
+				"team_id": "T0ACME0001",
+				"user_id": "U0SCOUT001",
+				"is_bot": true,
+				"is_enterprise_install": false
+			}
+		],
+		"is_ext_shared_channel": false,
+		"event_context": "4-reaction-file"
+	}
+}

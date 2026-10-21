@@ -1,0 +1,64 @@
+{
+	"envelope_id": "env-message-file-share",
+	"type": "events_api",
+	"accepts_response_payload": false,
+	"retry_attempt": 0,
+	"retry_reason": "",
+	"payload": {
+		"token": "verification-token-unused",
+		"team_id": "T0ACME0001",
+		"context_team_id": "T0ACME0001",
+		"context_enterprise_id": null,
+		"api_app_id": "A0SCOUTAPP",
+		"event": {
+			"type": "message",
+			"subtype": "file_share",
+			"text": "<@U0SCOUT001> what's wrong in this log?",
+			"user": "U0ANN00001",
+			"ts": "1700000000.000300",
+			"upload": false,
+			"display_as_bot": false,
+			"files": [
+				{
+					"id": "F0LOG00001",
+					"created": 1700000000,
+					"timestamp": 1700000000,
+					"name": "build.log",
+					"title": "build.log",
+					"mimetype": "text/plain",
+					"filetype": "text",
+					"pretty_type": "Plain Text",
+					"user": "U0ANN00001",
+					"size": 2048,
+					"mode": "hosted",
+					"is_external": false,
+					"url_private": "https://files.slack.com/files-pri/T0ACME0001-F0LOG00001/build.log",
+					"url_private_download": "https://files.slack.com/files-pri/T0ACME0001-F0LOG00001/download/build.log",
+					"permalink": "https://acme.slack.com/files/U0ANN00001/F0LOG00001/build.log"
+				},
+				{
+					"id": "F0GONE0001",
+					"name": "deleted.txt",
+					"mode": "tombstone"
+				}
+			],
+			"channel": "C0TEAM0001",
+			"event_ts": "1700000000.000300",
+			"channel_type": "channel"
+		},
+		"type": "event_callback",
+		"event_id": "Ev0000000003",
+		"event_time": 1700000000,
+		"authorizations": [
+			{
+				"enterprise_id": null,
+				"team_id": "T0ACME0001",
+				"user_id": "U0SCOUT001",
+				"is_bot": true,
+				"is_enterprise_install": false
+			}
+		],
+		"is_ext_shared_channel": false,
+		"event_context": "4-message-file-share"
+	}
+}

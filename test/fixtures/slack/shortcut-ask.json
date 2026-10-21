@@ -1,0 +1,39 @@
+{
+	"envelope_id": "env-shortcut-ask",
+	"type": "interactive",
+	"accepts_response_payload": true,
+	"payload": {
+		"type": "message_action",
+		"token": "verification-token-unused",
+		"action_ts": "1700000007.000100",
+		"team": {
+			"id": "T0ACME0001",
+			"domain": "acme"
+		},
+		"user": {
+			"id": "U0ANN00001",
+			"username": "ann",
+			"name": "ann",
+			"team_id": "T0ACME0001"
+		},
+		"channel": {
+			"id": "C0TEAM0001",
+			"name": "team"
+		},
+		"is_enterprise_install": false,
+		"enterprise": null,
+		"callback_id": "scout_ask",
+		"trigger_id": "1.1700000007.trigger",
+		"response_url": "https://hooks.slack.com/app/T0ACME0001/2/shortcut",
+		"message_ts": "1700000000.000200",
+		"message": {
+			"client_msg_id": "6a1e0c6e-0000-4000-8000-000000000002",
+			"type": "message",
+			"text": "the deploy failed again\nsee the log",
+			"user": "U0BOB00001",
+			"ts": "1700000000.000200",
+			"thread_ts": "1700000000.000100",
+			"team": "T0ACME0001"
+		}
+	}
+}

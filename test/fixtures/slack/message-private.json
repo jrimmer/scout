@@ -1,0 +1,39 @@
+{
+	"envelope_id": "env-message-private",
+	"type": "events_api",
+	"accepts_response_payload": false,
+	"retry_attempt": 0,
+	"retry_reason": "",
+	"payload": {
+		"token": "verification-token-unused",
+		"team_id": "T0ACME0001",
+		"context_team_id": "T0ACME0001",
+		"context_enterprise_id": null,
+		"api_app_id": "A0SCOUTAPP",
+		"event": {
+			"client_msg_id": "6a1e0c6e-0000-4000-8000-000000000005",
+			"type": "message",
+			"text": "<@U0SCOUT001> can you fix the build?",
+			"user": "U0ANN00001",
+			"ts": "1700000000.000500",
+			"team": "T0ACME0001",
+			"channel": "C0SECRET01",
+			"event_ts": "1700000000.000500",
+			"channel_type": "group"
+		},
+		"type": "event_callback",
+		"event_id": "Ev0000000005",
+		"event_time": 1700000000,
+		"authorizations": [
+			{
+				"enterprise_id": null,
+				"team_id": "T0ACME0001",
+				"user_id": "U0SCOUT001",
+				"is_bot": true,
+				"is_enterprise_install": false
+			}
+		],
+		"is_ext_shared_channel": false,
+		"event_context": "4-message-private"
+	}
+}

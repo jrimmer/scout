@@ -1,0 +1,49 @@
+{
+	"envelope_id": "env-view-submission-ask",
+	"type": "interactive",
+	"accepts_response_payload": true,
+	"payload": {
+		"type": "view_submission",
+		"team": {
+			"id": "T0ACME0001",
+			"domain": "acme"
+		},
+		"user": {
+			"id": "U0ANN00001",
+			"username": "ann",
+			"name": "ann",
+			"team_id": "T0ACME0001"
+		},
+		"api_app_id": "A0SCOUTAPP",
+		"token": "verification-token-unused",
+		"trigger_id": "1.1700000008.trigger",
+		"view": {
+			"id": "V0ASK00001",
+			"team_id": "T0ACME0001",
+			"type": "modal",
+			"callback_id": "scout_ask_form",
+			"private_metadata": "{\"channel\":\"C0TEAM0001\",\"ts\":\"1700000000.000200\",\"threadTs\":\"1700000000.000100\",\"author\":\"U0BOB00001\",\"text\":\"the deploy failed again\"}",
+			"title": {
+				"type": "plain_text",
+				"text": "Ask Scout"
+			},
+			"blocks": [],
+			"state": {
+				"values": {
+					"request": {
+						"text": {
+							"type": "plain_text_input",
+							"value": "  why did it fail?  "
+						}
+					}
+				}
+			},
+			"hash": "1700000008.abc",
+			"app_id": "A0SCOUTAPP",
+			"bot_id": "B0SCOUT001"
+		},
+		"response_urls": [],
+		"is_enterprise_install": false,
+		"enterprise": null
+	}
+}

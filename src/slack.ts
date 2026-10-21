@@ -1,4 +1,4 @@
-import { App, LogLevel } from "@slack/bolt";
+import { App, LogLevel, type Receiver } from "@slack/bolt";
 import type { IncomingMessage, SharedFile } from "./bridge.ts";
 import type { ChatMessage, ChatSurface } from "./render.ts";
 
@@ -61,9 +61,15 @@ export class Slack {
 	readonly #channels = new Map<string, string>();
 	readonly #botToken: string;
 
-	constructor(tokens: { botToken: string; appToken: string }) {
+	/** `receiver` and `apiUrl` are for tests: Slack's events from somewhere other than Socket Mode, its Web API elsewhere. */
+	constructor(tokens: { botToken: string; appToken: string }, test: { receiver?: Receiver; apiUrl?: string } = {}) {
 		this.#botToken = tokens.botToken;
-		this.app = new App({ token: tokens.botToken, appToken: tokens.appToken, socketMode: true, logLevel: LogLevel.WARN });
+		this.app = new App({
+			token: tokens.botToken,
+			logLevel: LogLevel.WARN,
+			...(test.receiver === undefined ? { appToken: tokens.appToken, socketMode: true } : { receiver: test.receiver }),
+			...(test.apiUrl === undefined ? {} : { clientOptions: { slackApiUrl: test.apiUrl } }),
+		});
 		const client = this.app.client;
 		this.surface = {
 			post: async (channel, threadTs, original) => {

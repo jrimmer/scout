@@ -1,0 +1,20 @@
+{
+	"envelope_id": "env-slash-command",
+	"type": "slash_commands",
+	"accepts_response_payload": true,
+	"payload": {
+		"token": "verification-token-unused",
+		"team_id": "T0ACME0001",
+		"team_domain": "acme",
+		"channel_id": "C0TEAM0001",
+		"channel_name": "team",
+		"user_id": "U0ANN00001",
+		"user_name": "ann",
+		"command": "/scout",
+		"text": "status",
+		"api_app_id": "A0SCOUTAPP",
+		"is_enterprise_install": "false",
+		"response_url": "https://hooks.slack.com/commands/T0ACME0001/1/slash",
+		"trigger_id": "1.1700000006.trigger"
+	}
+}
