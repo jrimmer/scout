@@ -15,8 +15,15 @@ A change to any of these that needs people to act is a major version. Everything
 - **Sandboxes:**
   - While a command runs, Scout checks every minute that the sandbox still answers. After five minutes without an answer it stops waiting and says the sandbox has probably crashed. Until now, a thread could wait silently for up to a day.
   - Scout reads spoond's own report of a command that never started (spoond 3.12.1), as well as checking for itself.
-- **Continuous integration:** type checks and the full test suite on every push and pull request, on Scout's own runner (`.forgejo/workflows/ci.yml`).
+- **The canary:** `npm run canary` asks the running Scout for a small change in Slack, as a person would, checks that a pull request comes of it, and cleans up. It can report to a Gatus external endpoint.
+  - `.forgejo/workflows/canary.yml` runs it nightly once its secrets are set.
+  - The settings are in `.env.example`, and in `docs/operations.md` under "The canary".
+- **Continuous integration:** on every push and pull request, on Scout's own runner (`.forgejo/workflows/ci.yml`): type checks, the full test suite, and the Docker sandbox tests.
 - **Releases:** this changelog, and the release checklist in `docs/releasing.md`.
+- **Settings:** `.env.example` now lists every setting Scout reads, and a test keeps it so. `SCOUT_GATEWAY_OPENAI_API` was missing.
+
+### Fixed
+- **Docker sandboxes:** the sandbox's user couldn't write its own `/work`, so every Docker sandbox failed at its first file write. Docker gave the empty volume root's ownership each time a container mounted it. Found by the Docker tests' first run.
 
 ## 0.1.0 (2026-10-19 to 2026-10-21, before releases)
 
