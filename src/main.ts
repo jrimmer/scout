@@ -284,7 +284,8 @@ const ciWatcher = new CiWatcher({
 });
 const ciTick = setInterval(() => void health.watch("ci", "watching CI failed", () => ciWatcher.poll()), MINUTE);
 
-const tick = setInterval(() => {
+/** Housekeeping every few minutes; also soon after a start, so a restart doesn't hold up reviews and retries. */
+const housekeeping = () => {
 	const now = Date.now();
 	// Sandboxes are cattle: put to sleep the ones whose threads went quiet; the next tool call wakes them (a spoond lease
 	// in under a second), so sleeping early costs little and leaves room for other threads.
@@ -318,7 +319,9 @@ const tick = setInterval(() => {
 			applyRetention({ days: retentionDays, threads, workspaces, search: scout.search, memory, audit }),
 		);
 	}
-}, 5 * MINUTE);
+};
+const tick = setInterval(housekeeping, 5 * MINUTE);
+const firstTick = setTimeout(housekeeping, 30_000);
 
 // `kill -HUP <pid>` reads secrets again. The code host token, the gateway key and spoond's token apply at once; Slack
 // tokens and MCP servers' credentials need a restart.
@@ -387,6 +390,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		if (stopping) process.exit(1);
 		stopping = true;
 		clearInterval(tick);
+		clearTimeout(firstTick);
 		clearInterval(ciTick);
 		if (alertTick !== undefined) clearInterval(alertTick);
 		alertLog.close();
