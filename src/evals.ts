@@ -424,7 +424,10 @@ async function judge(scout: Scout, task: EvalTask, answer: string, diff: string,
 		`The change made (a diff):\n${diff.slice(0, 20_000) || "(no change)"}`,
 		"Reply with PASS or FAIL on the first line, then one line saying why.",
 	].join("\n\n");
-	const settled = await (await conversation.submit({ type: "input", content: prompt }, context)).wait(context);
+	// Pi asks for a workspace for every conversation that runs, so the judge gets a sandbox it doesn't use: it goes after.
+	const settled = await (await conversation.submit({ type: "input", content: prompt }, context))
+		.wait(context)
+		.finally(() => scout.workspaces.remove(conversation.id).catch(() => {}));
 	if (settled.status !== "done" || settled.type !== "input") return { pass: false, why: "the judge didn't answer" };
 	const entry = await conversation.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
 	const text = (entry?.model?.[0] as { content?: { type: string; text?: string }[] } | undefined)?.content?.flatMap((b) => (b.type === "text" && b.text !== undefined ? [b.text] : [])).join("\n").trim() ?? "";

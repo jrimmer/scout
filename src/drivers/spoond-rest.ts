@@ -40,6 +40,8 @@ export type SpoondRestOptions = {
 	cwd: string;
 	home: string;
 	shellEnv?: Record<string, string>;
+	/** How long a command runs before Scout checks it started (tests shorten it). */
+	startCheckMs?: number;
 };
 
 /** Seconds a finished job's record and output stay in spoond; Scout deletes them itself once read. */
@@ -55,6 +57,12 @@ const OUTPUT_LIMIT = 16 * 1024 * 1024;
 const READ_CHUNK = 1024 * 1024;
 /** What the start of every command prints, alone on stderr, when it can't start (no such directory or program). */
 const CANNOT_START = "scout:cannot-start";
+/**
+ * How long a command may be "running" before Scout checks that it really started. spoond can take a command and lose it
+ * on the way into the sandbox (a 502 from the substrate as it starts), and then keeps it "running" until its 24-hour
+ * cap, since there's no exit code to find. Every command's first act is to leave a marker, so a missing one says so.
+ */
+const START_CHECK_MS = 20_000;
 
 type Sh = { stdout: string; stderr: string; exit: number };
 type Job = { state: "running" | "exited" | "lost"; exit_code: number | null; reason?: string };
@@ -66,6 +74,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 	readonly #request: SpoondRequest;
 	readonly #home: string;
 	readonly #shellEnv: Record<string, string>;
+	readonly #startCheckMs: number;
 	readonly #running = new Set<string>();
 	/** Whether this spoond answers `Range` on file reads; older ones send the whole file. */
 	#ranges = true;
@@ -76,6 +85,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 		this.#request = options.request;
 		this.#home = options.home;
 		this.#shellEnv = options.shellEnv ?? {};
+		this.#startCheckMs = options.startCheckMs ?? START_CHECK_MS;
 	}
 
 	#resolve(path: string): string {
@@ -388,7 +398,9 @@ export class SpoondRestEnv implements ExecutionEnv {
 		const env = { ...(inheritEnv ? this.#shellEnv : {}), ...options?.env };
 		const cwd = options?.cwd ? this.#resolve(options.cwd) : this.cwd;
 		const cannotStart = `{ printf %s ${CANNOT_START} >&2; exit 127; }`;
-		let script = `cd -- ${q(cwd)} 2>/dev/null || ${cannotStart}\n`;
+		const marker = `${this.#home}/.scout-jobs/${randomUUID()}`;
+		let script = `mkdir -p ${q(posix.dirname(marker))} 2>/dev/null; : > ${q(marker)} 2>/dev/null\n`;
+		script += `cd -- ${q(cwd)} 2>/dev/null || ${cannotStart}\n`;
 		script +=
 			typeof command === "string"
 				? command
@@ -422,7 +434,9 @@ export class SpoondRestEnv implements ExecutionEnv {
 		}
 		this.#running.add(jobId);
 		const output = new JobOutput(this.#request, jobId, options, context);
-		const deadline = timeout === undefined ? undefined : Date.now() + timeout * 1000;
+		const startedAt = Date.now();
+		const deadline = timeout === undefined ? undefined : startedAt + timeout * 1000;
+		let started = false;
 		try {
 			for (let polls = 1; ; polls++) {
 				const remaining = deadline === undefined ? Number.POSITIVE_INFINITY : deadline - Date.now();
@@ -440,6 +454,15 @@ export class SpoondRestEnv implements ExecutionEnv {
 					throw error;
 				}
 				if (job.state === "lost") return err(new ExecutionError("unknown", "The sandbox restarted, and the command with it"));
+				if (job.state === "running" && !started && Date.now() - startedAt >= this.#startCheckMs) {
+					const seen = await this.#files("GET", marker, "?stat=1").catch(() => undefined);
+					await seen?.body?.cancel();
+					if (seen?.ok === true) started = true;
+					// Only a definite "no such file" counts: a sandbox slow to answer is asked again at the next poll.
+					else if (seen?.status === 404) {
+						return err(await this.#stop(jobId, new ExecutionError("unknown", "spoond took the command but it never started in the sandbox (it was lost on the way in). Run it again.")));
+					}
+				}
 				if (job.state !== "running") {
 					const exitCode = job.exit_code ?? 128;
 					if (output.cannotStart(exitCode)) return err(new ExecutionError("spawn_error", "No such directory or program"));
@@ -454,6 +477,7 @@ export class SpoondRestEnv implements ExecutionEnv {
 		} finally {
 			this.#running.delete(jobId);
 			void this.#request("DELETE", `/jobs/${jobId}`).then((r) => r.body?.cancel()).catch(() => {});
+			void this.#files("DELETE", marker).then((r) => r.body?.cancel()).catch(() => {});
 		}
 	}
 

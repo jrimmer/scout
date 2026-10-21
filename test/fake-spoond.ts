@@ -24,6 +24,8 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 	/** Named snapshots saved, by name: their versions, idempotency keys, and the lease each came from. */
 	const snapshots = new Map<string, { version: number; key?: string; from: string }[]>();
 	let next = 1;
+	/** Take the next background command and lose it on the way in, as spoond does when the substrate fails its start. */
+	const losing = { next: false };
 
 	/** A failed file route's answer, with spoond's code unless this fake plays an older spoond. */
 	const coded = (error: string, code: string) => (options.codes === false ? { error } : { error, code });
@@ -85,7 +87,11 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 				const ran = spawnSync("bash", ["-c", exec.cmd], { encoding: "utf8" });
 				return json(200, { stdout: ran.stdout, stderr: ran.stderr, exit: ran.status ?? 128 });
 			}
-			const child = spawn("bash", ["-c", exec.cmd], { env: { ...process.env, ...exec.env }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+			const lost = losing.next;
+			losing.next = false;
+			const child = lost
+				? spawn("sleep", ["3600"], { detached: true, stdio: ["ignore", "pipe", "pipe"] })
+				: spawn("bash", ["-c", exec.cmd], { env: { ...process.env, ...exec.env }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
 			const stream = (): Stream => ({ kept: Buffer.alloc(0), base: 0, dropped: { bytes: 0, newlines: 0, ends_with_newline: false } });
 			const job: FakeJob = { child, state: "running", exit: null, out: stream(), err: stream(), cap: exec.output_max_bytes ?? 0, exited: Promise.resolve() };
 			const append = (s: Stream, data: Buffer) => {
@@ -245,6 +251,7 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 		jobs,
 		calls,
 		snapshots,
+		losing,
 		close: () => {
 			for (const job of jobs.values()) if (job.state === "running") process.kill(-job.child.pid!, "SIGKILL");
 			server.closeAllConnections();

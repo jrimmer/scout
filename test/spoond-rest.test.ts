@@ -90,6 +90,15 @@ describe("spoond REST environment", () => {
 		assert.equal(spoond.jobs.size, 0, "the job is deleted once read");
 	});
 
+	it("stops waiting for a command spoond took but never started, and says to run it again", async () => {
+		const quick = (await new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest"), transport: "rest" }).open("t", spec)).connect!({ id: "sandbox:t", cwd: root, startCheckMs: 300 } as never);
+		spoond.losing.next = true;
+		const lost = await quick.exec("echo hi", {}, context);
+		assert.ok(!lost.ok && /never started in the sandbox.*Run it again/.test(lost.error.message), String(!lost.ok && lost.error.message));
+		const slow = await quick.exec("sleep 0.8; echo fine", {}, context);
+		assert.ok(slow.ok && slow.value.exitCode === 0, "a command that started is left to run past the check");
+	});
+
 	it("reports output spoond dropped under a window as skipped", async () => {
 		const window = { maxBytes: 10, maxLines: 2, minIntervalMs: 0, bytesPerSecond: 1e9 };
 		let skipped: { bytes: number; newlines: number; endsWithNewline: boolean } | undefined;
