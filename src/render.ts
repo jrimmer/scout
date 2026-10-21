@@ -4,11 +4,16 @@ import type { AgentEvent } from "@earendil-works/pi-durable";
 export interface ChatSurface {
 	post(channel: string, threadTs: string | undefined, message: ChatMessage): Promise<string>;
 	update(channel: string, ts: string, message: ChatMessage): Promise<void>;
+	/** React to a message (👀 on a request Scout picked up), or take its reaction back. Optional: needs reactions:write. */
+	react?(channel: string, ts: string, name: string, on: boolean): Promise<void>;
 	/** Share a text file in the thread (a long answer in full). Absent or failing, the text goes in messages instead. */
 	attach?(channel: string, threadTs: string, file: { name: string; content: string; title: string }): Promise<void>;
 }
 
 export type ChatMessage = { text: string; blocks: unknown[] };
+
+/** How a run ended: with an answer, stopped by someone, or after running into a problem. */
+export type RunOutcome = "answered" | "stopped" | "problem";
 
 /** Slack's markdown block takes standard Markdown, up to 12,000 characters. */
 const MARKDOWN_LIMIT = 11_500;
@@ -75,7 +80,7 @@ export class ThreadView {
 	readonly #surface: ChatSurface;
 	readonly #channel: string;
 	readonly #threadTs: string;
-	readonly #onRunEnd: (answer: string | undefined, ts: string | undefined) => void;
+	readonly #onRunEnd: (answer: string | undefined, ts: string | undefined, outcome: RunOutcome) => void;
 	readonly #now: () => number;
 	readonly #onRunMessage: (ts: string | undefined) => void;
 	readonly #cost: ((startedAt: number) => string | undefined) | undefined;
@@ -91,8 +96,8 @@ export class ThreadView {
 		channel: string;
 		threadTs: string;
 		/** After the run's final message is in Slack, with Scout's answer when it gave one. */
-		/** The run's answer (none when it was stopped), and the message it's in. */
-		onRunEnd?: (answer: string | undefined, ts: string | undefined) => void;
+		/** The run's answer (none when it was stopped), the message it's in, and how it ended. */
+		onRunEnd?: (answer: string | undefined, ts: string | undefined, outcome: RunOutcome) => void;
 		/** The Slack message of a run in progress before a restart, to keep editing instead of posting another. */
 		resumeTs?: string;
 		/** A run's message was posted (its ts), or the run ended (undefined): remember it across restarts. */
@@ -352,7 +357,8 @@ export class ThreadView {
 			const answer = (message.blocks[0] as { text: string }).text;
 			const ts = await this.#deliver(run.ts, answer, message);
 			this.#onRunMessage(undefined);
-			this.#onRunEnd(run.stoppedBy === undefined && run.gaveUp === undefined ? run.text : undefined, ts);
+			const outcome: RunOutcome = run.stoppedBy !== undefined ? "stopped" : run.gaveUp !== undefined || run.error !== undefined ? "problem" : "answered";
+			this.#onRunEnd(run.stoppedBy === undefined && run.gaveUp === undefined ? run.text : undefined, ts, outcome);
 		});
 	}
 

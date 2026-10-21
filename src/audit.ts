@@ -29,7 +29,8 @@ export type AuditKind =
 	| "schedule_added"
 	| "schedule_changed"
 	| "schedule_removed"
-	| "schedule_ran";
+	| "schedule_ran"
+	| "capabilities";
 
 export type AuditRecord = {
 	id: number;

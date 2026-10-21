@@ -12,8 +12,11 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
   - A change made through a tool that needs approval waits for "approve", or a 👍 on Scout's request.
   - 🔁 on its answer tries again; editing a request steers the work.
   - Nothing said while Scout restarts is lost, and its progress message says what it's waiting on.
-  - "Ask Scout about this" on any message starts a thread there; its Home tab shows what it's doing and what's
-    waiting on you.
+  - "Ask Scout about this" on any message, or 🔍, starts a thread there; `/scout` and its Home tab show what it's
+    doing and what's waiting on you.
+  - Requests get 👀, then ✅ or ⚠️; changes waiting for approval get Approve and Decline buttons.
+  - Each channel gets a canvas of what's open; a Slack List tracks all of Scout's work; links to the code host
+    preview with their state; Workflow Builder gets an Ask Scout step.
 - **Its own sandbox.** Each thread gets its own clone, in its channel's repository, and its own Docker container.
   Credentials never enter it.
 - **Reviewed before you review it.** Scout reviews its own diff before opening a pull request, and keeps pull

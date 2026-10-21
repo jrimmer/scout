@@ -32,7 +32,7 @@ export type Issue = {
 export type Remark = { id: string; author: string; body: string; at: number; url?: string; review?: string; path?: string; line?: number };
 
 /** Where a pull request stands: open or not, whether it merges cleanly (unknown while the host works it out), its last activity, and the commits at its two ends. */
-export type PullStatus = { open: boolean; mergeable?: boolean; updatedAt: number; head: string; headRef: string; base: string; baseRef: string };
+export type PullStatus = { open: boolean; merged: boolean; mergeable?: boolean; updatedAt: number; head: string; headRef: string; base: string; baseRef: string; reviewers: string[] };
 
 /** An open pull request, as a list of them shows it: who's been asked to review it and hasn't yet. */
 export type OpenPull = { number: number; title: string; url: string; author: string; draft: boolean; createdAt: number; reviewers: string[]; teams: string[] };
@@ -58,6 +58,8 @@ export interface Forge {
 	/** Whether anyone can read the repository. When the code host won't say, assume so. */
 	isPublic(slug: string): Promise<boolean>;
 	pullStatus(slug: string, number: number): Promise<PullStatus>;
+	/** CI's combined verdict on a commit; undefined when nothing reports CI for it. */
+	ciState(slug: string, sha: string): Promise<"passing" | "failing" | "pending" | undefined>;
 	closePull(slug: string, number: number): Promise<void>;
 	/** The files a pull request changes. */
 	pullFiles(slug: string, number: number): Promise<string[]>;
@@ -247,12 +249,16 @@ class RestForge implements Forge {
 		const p = (await this.#api("GET", `/repos/${slug}/pulls/${number}`)) as {
 			state: string;
 			mergeable?: boolean | null;
+			merged?: boolean;
+			requested_reviewers?: User[] | null;
 			updated_at: string;
 			head: { sha: string; ref: string };
 			base: { sha: string; ref: string };
 		};
 		return {
 			open: p.state === "open",
+			merged: p.merged === true,
+			reviewers: (p.requested_reviewers ?? []).flatMap((r) => (r.login === undefined ? [] : [r.login])),
 			...(typeof p.mergeable === "boolean" ? { mergeable: p.mergeable } : {}),
 			updatedAt: Date.parse(p.updated_at),
 			head: p.head.sha,
@@ -260,6 +266,12 @@ class RestForge implements Forge {
 			base: p.base.sha,
 			baseRef: p.base.ref,
 		};
+	}
+
+	async ciState(slug: string, sha: string): Promise<"passing" | "failing" | "pending" | undefined> {
+		const status = (await this.#api("GET", `/repos/${slug}/commits/${sha}/status`)) as { state?: string; total_count?: number };
+		if ((status.total_count ?? 0) === 0) return undefined;
+		return status.state === "success" ? "passing" : status.state === "pending" ? "pending" : "failing";
 	}
 
 	async closePull(slug: string, number: number): Promise<void> {

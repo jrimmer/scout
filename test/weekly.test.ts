@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { PullRow } from "../src/pulls.ts";
 import type { ThreadRow } from "../src/threads.ts";
-import { channelWeeks, WeeklySummaries } from "../src/weekly.ts";
+import { channelCanvas, channelWeeks, WeeklySummaries } from "../src/weekly.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.parse("2026-10-26T10:00:00Z");
@@ -57,5 +57,36 @@ describe("each channel's week", () => {
 		assert.equal(sent.claim("2026-W43", "web"), false);
 		assert.equal(sent.claim("2026-W43", "api"), true);
 		sent.close();
+	});
+
+	it("keeps the week's numbers in the post when the channel has a canvas, and the rest in the canvas", async () => {
+		const summaries = await channelWeeks(
+			{
+				threads: [thread(1)],
+				pulls: [pull(1, 10, "merged")],
+				stillOpen: [pull(1, 11, "open")],
+				notes: [],
+				channelOf: async () => "web",
+				spend: () => ({ cost: 1 }),
+				canvased: new Set(["web"]),
+			},
+			NOW,
+		);
+		assert.equal(summaries.get("web"), "*Last week here:* 1 thread, 1 pull request merged. Models cost $1.00.\nWhat's still open, who's waiting on whom, and what I noted are in this channel's canvas, kept up to date.");
+		const canvas = channelCanvas({
+			channel: "web",
+			open: [pull(1, 11, "open")],
+			waiting: [{ link: "https://slack/t2", since: NOW - 2 * DAY }],
+			schedules: [{ id: 3, when: "every Monday at 9:00", task: "check for dependency updates", createdBy: "UANN", paused: false }],
+			notes: [{ id: 7, channelName: "web", note: "Run pnpm, not npm.", createdAt: NOW }],
+			listUrl: "https://slack/lists/L1",
+			now: NOW,
+		});
+		assert.match(canvas, /^# Scout in #web\n_Updated /);
+		assert.match(canvas, /## Open pull requests\n- \[o\/r#11 Change 11\]\(https:\/\/host\/o\/r\/pulls\/11\), open 3 days/);
+		assert.match(canvas, /- \[A thread\]\(https:\/\/slack\/t2\), quiet for 2 days/);
+		assert.match(canvas, /Set up by !\[\]\(@UANN\)\./);
+		assert.match(canvas, /- \[7\] Run pnpm, not npm\.\n_If one of these is wrong/);
+		assert.match(canvas, /\[Scout's work\]\(https:\/\/slack\/lists\/L1\)/);
 	});
 });

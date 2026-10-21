@@ -18,6 +18,14 @@ features:
       type: message
       callback_id: scout_ask
       description: Start a Scout thread on this message
+  slash_commands:
+    - command: /scout
+      description: What Scout is doing, schedules, what's waiting on you, or ask it something
+      usage_hint: status | schedules | waiting | ask <request>
+      should_escape: false
+  # Link previews for pull requests and issues on the code host: your code host's domain(s).
+  unfurl_domains:
+    - code.lacy.casa
 oauth_config:
   scopes:
     bot:
@@ -25,7 +33,13 @@ oauth_config:
       - channels:read # channel names, for channel profiles
       - channels:manage # create a public channel when someone DMs Scout
       - chat:write
-      - commands # the "Ask Scout about this" message shortcut
+      - commands # the "Ask Scout about this" message shortcut, and /scout
+      - reactions:write # 👀/✅/⚠️ on requests
+      - links:read # see code host links pasted in channels
+      - links:write # and preview them
+      - canvases:write # each channel's Scout canvas
+      - lists:read
+      - lists:write # the list of Scout's work
       - files:read # screenshots and logs people share in threads
       - files:write # a long answer, attached in full
       - groups:history # see mentions in private channels, to decline them
@@ -35,7 +49,43 @@ oauth_config:
       - users:read # display names
       - users:read.email # who someone is in the identity provider (SCOUT_DIRECTORY), for permissions and roles
       - usergroups:read # only if SCOUT_ALLOWED_USERGROUP limits who may ask for work
+# The Ask Scout step in Workflow Builder (paid plans): starts a Scout thread in a channel with a request.
+functions:
+  ask_scout:
+    title: Ask Scout
+    description: Start a Scout thread in a public channel with a request
+    input_parameters:
+      properties:
+        channel_id:
+          type: slack#/types/channel_id
+          title: Channel
+          description: A public channel Scout is in
+        user_id:
+          type: slack#/types/user_id
+          title: Asked by
+          description: Who the request is from (usually "Person who used this workflow"); checked like any request
+        request:
+          type: string
+          title: Request
+          description: What Scout should do
+        about:
+          type: string
+          title: Context
+          description: Anything Scout should know (a form's answers, an alert)
+      required:
+        - channel_id
+        - user_id
+        - request
+    output_parameters:
+      properties:
+        thread_link:
+          type: string
+          title: Thread link
+          description: The Slack thread where Scout is working
+      required:
+        - thread_link
 settings:
+  function_runtime: remote
   event_subscriptions:
     bot_events:
       - message.channels
@@ -44,6 +94,7 @@ settings:
       - message.mpim
       - reaction_added
       - app_home_opened
+      - link_shared
   interactivity:
     is_enabled: true
   org_deploy_enabled: false

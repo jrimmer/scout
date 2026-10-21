@@ -59,9 +59,12 @@ from a named snapshot (#24).
 
 ## In Slack: nothing lost, and always saying where things stand
 
-The Home tab, the message shortcut and attached answers need the app updated from `slack-manifest.yaml` (the
-`commands` and `files:write` scopes, the Home tab, the shortcut and the `app_home_opened` event) and reinstalled.
-Until then each falls back quietly: no Home tab, no shortcut, and long answers in several messages.
+Slack doesn't tell an app its plan, so Scout finds out what the workspace allows (`src/capabilities.ts`): the scopes
+the app was granted (from Slack's answer at start), and for features a plan may not include (Lists, canvases) the
+first real call. At start it logs one line per feature, on or off and why ("needs the reactions:write scope: update
+the app from slack-manifest.yaml and reinstall", "this workspace doesn't allow it (paid_teams_only)"), and records
+the same in the audit trail. A feature the plan refused is tried again a day later. Everything else works the same
+either way.
 
 - **Missed messages.** Socket Mode doesn't replay what was said while Scout was down. Scout records a heartbeat
   every minute; on start it reads back, since the last one (at most 6 hours), the top-level messages in the public
@@ -89,6 +92,27 @@ Until then each falls back quietly: no Home tab, no shortcut, and long answers i
 - **"Ask Scout about this"**, from any message's ⋯ menu: a short form asks what to do, then Scout starts a thread on
   that message (an alert, a teammate's question) as a request from whoever asked. Only in public channels Scout is
   in; elsewhere the form says so.
+- **Reactions on requests.** 👀 when Scout picks a request up, then ✅ when it's answered or ⚠️ when it ran into a
+  problem (a stopped run just loses its 👀), so the channel shows each request's state without opening threads
+  (`reactions:write`). Scout ignores its own reactions.
+- **🔍 to ask for a look.** A 🔍 on any message in a public channel Scout is in starts a thread on it: "look into
+  this", as a request from whoever reacted.
+- **Approve and Decline buttons.** When Scout's answer asks for approval of a change, a message with Approve and
+  Decline follows (👍 on the answer still works). Pressing one goes through the same checks as replying "approve";
+  the buttons then give way to who decided, or why they couldn't.
+- **`/scout`**: `status`, `schedules`, `waiting` (what's waiting on you) answered just to you, and `ask …` to start a
+  thread without an @mention.
+- **Link previews.** A pull request or issue link to a repository Scout works in (on the domains in the manifest's
+  `unfurl_domains`) previews with its state, author, CI, requested reviewers, and Scout's thread if it has one.
+- **Each repository channel's canvas.** "Scout in #web": open pull requests, threads waiting on someone, schedules,
+  and the notes Scout kept, refreshed every six hours and on Mondays. Where a channel has one, its Monday summary
+  keeps to the week's numbers and points to the canvas (`canvases:write`).
+- **The list of Scout's work.** A Slack List with one row per thread: request, channel, who asked, state, pull
+  request, CI and cost, kept up to date as the work moves, shared read-only with the home channel (`lists:write`;
+  paid plans).
+- **The Ask Scout workflow step.** Workflow Builder (paid plans) gets a step that starts a Scout thread in a public
+  channel with a request, and outputs the thread's link. Its "Asked by" is required and checked like any request;
+  note that whoever builds the workflow chooses it, so the thread says the request came through a workflow.
 - **🔁 to try again.** A 🔁 (`:repeat:`) on Scout's latest answer in a thread asks it to try again, as if the person
   had asked in the thread (so it's admitted and audited like any request).
 

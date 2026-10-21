@@ -5,7 +5,7 @@ import { delivery } from "./etiquette.ts";
 import type { Admission } from "./limits.ts";
 import { ThreadDoc } from "./docs.ts";
 import type { ThreadSearch } from "./search.ts";
-import { type ChatMessage, type ChatSurface, ThreadView } from "./render.ts";
+import { type ChatMessage, type ChatSurface, type RunOutcome, ThreadView } from "./render.ts";
 import { threadKey, type ThreadRow, type Threads } from "./threads.ts";
 
 /** A Slack message as the bridge needs it; the Slack adapter decodes events into this. */
@@ -51,9 +51,13 @@ export type BridgeOptions = {
 	 * A run ended with `answer` (none when it was stopped) in message `ts`. If a change waited for approval, a 👍 there
 	 * approves (mcp.ts); if someone asked on the code host, the answer goes back there too (forge.ts).
 	 */
-	answered?: (conversationId: number, ts: string | undefined, answer: string | undefined) => void;
+	answered?: (conversationId: number, ts: string | undefined, answer: string | undefined, outcome: RunOutcome) => void;
+	/** A run started in this conversation (its progress message is up). */
+	runStarted?: (conversationId: number) => void;
 	/** The conversation whose answer in message `ts` asked for approval, if one did. */
 	approvalAskedIn?: (ts: string) => number | undefined;
+	/** Whether to mark requests with reactions (👀 picked up, ✅ answered, ⚠️ a problem): the reactions:write scope. */
+	reactionsOn?: () => boolean;
 	/** What a run in this conversation since `since` cost, for its reply's footer (limits.ts). */
 	costNote?: (conversationId: number, since: number) => string;
 	/** The repository a thread starts in, from its channel and its first message. */
@@ -106,6 +110,8 @@ export const DECLINE_PRIVATE =
 export class Bridge {
 	readonly #options: BridgeOptions;
 	readonly #views = new Map<number, ThreadView>();
+	/** The messages each conversation's current run took as requests, to mark when it ends. */
+	readonly #requests = new Map<number, { channel: string; ts: string }[]>();
 	/** When a model call last had to wait and retry, in any thread: lately, new runs warn they may be slow. */
 	#slowAt = 0;
 	readonly #locks = new Map<string, Promise<unknown>>();
@@ -228,6 +234,13 @@ export class Bridge {
 		const conversation = await harness.conversation(thread.conversationId as ConversationId, context);
 		await conversation?.submit({ type: "input", content: `${name} edited their request: ${text}`, whenBusy: "steer", requestId: `slack-edit:${edit.channel}:${edit.ts}:${text.length}` }, context);
 		view.tookIn(name);
+	}
+
+	async #react(channel: string, ts: string, name: string, on: boolean): Promise<void> {
+		const { surface } = this.#options;
+		if (surface.react === undefined || this.#options.reactionsOn?.() !== true) return;
+		// A request made by a reaction or a button has no message of its own to mark; that's fine.
+		await surface.react(channel, ts, name, on).catch(() => {});
 	}
 
 	/** Someone deleted a message: a request still waiting its turn is dropped. */
@@ -358,6 +371,9 @@ export class Bridge {
 			);
 			threads.asked(key, message.user);
 			if (how === "steer") this.view(thread.conversationId)?.tookIn(name);
+			// 👀 on the request: anyone scanning the channel sees it was picked up.
+			this.#requests.set(thread.conversationId, [...(this.#requests.get(thread.conversationId) ?? []), { channel: message.channel, ts: message.ts }]);
+			void this.#react(message.channel, message.ts, "eyes", true);
 		}
 		threads.spoke(key, message.user);
 		this.#options.audit?.record("request", {
@@ -527,12 +543,21 @@ export class Bridge {
 			channel: thread.channel,
 			threadTs: thread.threadTs,
 			...(thread.runTs === undefined ? {} : { resumeTs: thread.runTs }),
-			onRunMessage: (ts) => threads.runMessage(thread.key, ts),
+			onRunMessage: (ts) => {
+				threads.runMessage(thread.key, ts);
+				if (ts !== undefined) this.#options.runStarted?.(thread.conversationId);
+			},
 			onSlow: () => (this.#slowAt = Date.now()),
 			behind: () => Date.now() - this.#slowAt < BEHIND_MS,
 			...(this.#options.costNote === undefined ? {} : { cost: (since: number) => this.#options.costNote?.(thread.conversationId, since) }),
-			onRunEnd: (answer, ts) => {
-				this.#options.answered?.(thread.conversationId, ts, answer);
+			onRunEnd: (answer, ts, outcome) => {
+				// The requests this run took: 👀 gives way to ✅, or ⚠️ if it ran into a problem; stopped, just no 👀.
+				for (const request of this.#requests.get(thread.conversationId) ?? []) {
+					void this.#react(request.channel, request.ts, "eyes", false);
+					if (outcome !== "stopped") void this.#react(request.channel, request.ts, outcome === "answered" ? "white_check_mark" : "warning", true);
+				}
+				this.#requests.delete(thread.conversationId);
+				this.#options.answered?.(thread.conversationId, ts, answer, outcome);
 				if (ts !== undefined) threads.answered(thread.key, ts);
 				threads.spoke(thread.key, "scout");
 				threads.ranOnce(thread.conversationId);

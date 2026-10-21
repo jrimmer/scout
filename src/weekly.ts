@@ -24,6 +24,8 @@ export type WeekSources = {
 	channelOf: (conversationId: number) => Promise<string>;
 	/** What models cost in a channel in the week, and its weekly budget if it has one. */
 	spend: (channel: string) => { cost: number; budget?: number };
+	/** Channels with a Scout canvas: their summary keeps to the week's numbers and points there for the rest. */
+	canvased?: ReadonlySet<string>;
 };
 
 export async function channelWeeks(s: WeekSources, now: number): Promise<Map<string, string>> {
@@ -60,6 +62,12 @@ export async function channelWeeks(s: WeekSources, now: number): Promise<Map<str
 		];
 		const { cost, budget } = s.spend(channel);
 		const lines = [`*Last week here:* ${counts.join(", ")}. Models cost $${cost.toFixed(2)}${budget === undefined ? "" : ` of $${budget}`}.`];
+		if (s.canvased?.has(channel) === true) {
+			// The canvas keeps what's open, who's waiting and what Scout noted, always current: no need to repeat it here.
+			lines.push("What's still open, who's waiting on whom, and what I noted are in this channel's canvas, kept up to date.");
+			summaries.set(channel, lines.join("\n"));
+			continue;
+		}
 		if (w.open.length > 0) {
 			lines.push(
 				"*Still open:*",
@@ -103,6 +111,74 @@ export class WeeklySummaries {
 	/** Record that `channel` gets `week`'s summary; false if it already has. */
 	claim(week: string, channel: string, now = Date.now()): boolean {
 		return this.#db.prepare("INSERT OR IGNORE INTO weekly_summaries (week, channel, sent_at) VALUES (?, ?, ?)").run(week, channel, now).changes > 0;
+	}
+
+	close(): void {
+		this.#db.close();
+	}
+}
+
+/** What a channel's Scout canvas shows, always current. */
+export type CanvasData = {
+	channel: string;
+	open: PullRow[];
+	waiting: { link?: string; since: number }[];
+	schedules: { id: number; when: string; task: string; createdBy: string; paused: boolean }[];
+	notes: MemoryNote[];
+	/** The list of Scout's work, if there is one. */
+	listUrl?: string;
+	now: number;
+};
+
+/** The canvas, in the Markdown Slack canvases take: `![](@U123)` mentions a person. */
+export function channelCanvas(d: CanvasData): string {
+	const when = new Date(d.now).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+	const section = (title: string, lines: string[], empty: string) => [`## ${title}`, ...(lines.length === 0 ? [empty] : lines)];
+	const dayCount = (since: number) => {
+		const n = Math.max(0, Math.floor((d.now - since) / (24 * 60 * 60 * 1000)));
+		return n === 0 ? "today" : `${n} day${n === 1 ? "" : "s"}`;
+	};
+	return [
+		`# Scout in #${d.channel}`,
+		`_Updated ${when}. I keep this up to date; ask me in the channel to change anything here._`,
+		...section("Open pull requests", d.open.map((p) => `- [${p.slug}#${p.number} ${p.title}](${p.url}), open ${dayCount(p.openedAt)}`), "None right now."),
+		...section("Waiting on someone", d.waiting.map((t) => `- ${t.link === undefined ? "A thread" : `[A thread](${t.link})`}, quiet for ${dayCount(t.since)}`), "Nothing's waiting."),
+		...section(
+			"Schedules",
+			d.schedules.map((s) => `- #${s.id}: ${s.when}, ${s.task}${s.paused ? " (paused)" : ""}. Set up by ![](@${s.createdBy}).`),
+			"None. Ask me for recurring work (\"every Monday at 9, …\") and it shows up here.",
+		),
+		...section("Notes I kept", d.notes.map((n) => `- [${n.id}] ${n.note}`), "None yet."),
+		...(d.notes.length === 0 ? [] : ["_If one of these is wrong, tell me to forget it._"]),
+		...(d.listUrl === undefined ? [] : ["", `All of Scout's work, sortable and filterable: [Scout's work](${d.listUrl})`]),
+	].join("\n");
+}
+
+/** Which channel has which canvas, and when it was last refreshed. */
+export class ChannelCanvases {
+	readonly #db: DatabaseSync;
+
+	constructor(path: string) {
+		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+		this.#db = new DatabaseSync(path, { timeout: 5000 });
+		this.#db.exec(`
+			PRAGMA journal_mode = WAL;
+			CREATE TABLE IF NOT EXISTS channel_canvases (channel TEXT PRIMARY KEY, canvas_id TEXT NOT NULL, updated_at INTEGER NOT NULL);
+		`);
+	}
+
+	get(channel: string): { canvasId: string; updatedAt: number } | undefined {
+		const row = this.#db.prepare("SELECT canvas_id, updated_at FROM channel_canvases WHERE channel = ?").get(channel) as { canvas_id: string; updated_at: number } | undefined;
+		return row === undefined ? undefined : { canvasId: row.canvas_id, updatedAt: row.updated_at };
+	}
+
+	saved(channel: string, canvasId: string, now = Date.now()): void {
+		this.#db.prepare("INSERT OR REPLACE INTO channel_canvases (channel, canvas_id, updated_at) VALUES (?, ?, ?)").run(channel, canvasId, now);
+	}
+
+	/** Channels (by name) that have one. */
+	channels(): Set<string> {
+		return new Set(this.#db.prepare("SELECT channel FROM channel_canvases").all().map((r) => String(r.channel)));
 	}
 
 	close(): void {

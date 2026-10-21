@@ -9,6 +9,13 @@ const CREATE_CHANNEL_ACTION = "scout_create_channel";
 /** The "Ask Scout about this" message shortcut (slack-manifest.yaml), and the form it opens. */
 const ASK_SHORTCUT = "scout_ask";
 const ASK_FORM = "scout_ask_form";
+/** Buttons on the message that asks for approval of a change. */
+export const APPROVE_BUTTON = "scout_approve";
+export const DECLINE_BUTTON = "scout_decline";
+/** The Ask Scout step in Workflow Builder (slack-manifest.yaml `functions`). */
+const WORKFLOW_STEP = "ask_scout";
+/** 🔍 on any message: "Scout, look into this". */
+const LOOK_REACTIONS = new Set(["mag", "mag_right"]);
 
 export type SlackHandlers = {
 	onMessage: (message: IncomingMessage) => Promise<void>;
@@ -18,6 +25,16 @@ export type SlackHandlers = {
 	onDelete?: (deleted: { channel: string; ts: string }) => void;
 	/** Someone used "Ask Scout about this" on a message: what they asked, and the message it's about. */
 	onAsk?: (ask: { user: string; channel: string; channelName: string; ts: string; threadTs?: string; author?: string; text: string; request: string }) => Promise<void>;
+	/** 🔍 on a message: look into it, as if they'd used Ask Scout about this with "look into this". */
+	onLook?: (look: { user: string; channel: string; channelName: string; ts: string; threadTs?: string; author?: string; text: string }) => Promise<void>;
+	/** Someone pressed Approve or Decline on a change waiting for approval; returns what the message should now say. */
+	onDecision?: (decision: { user: string; channel: string; conversationId: number; approve: boolean }) => Promise<string>;
+	/** `/scout …`: what to answer, just to them; `ask` starts a thread. */
+	onCommand?: (command: { user: string; channel: string; channelName: string; text: string }) => Promise<string>;
+	/** Links to the code host pasted in a channel: previews (Block Kit blocks) for the ones Scout knows. */
+	onLinks?: (links: string[]) => Promise<Record<string, { blocks: unknown[] }>>;
+	/** The Ask Scout step ran in a workflow: start a thread; returns its link. */
+	onWorkflowAsk?: (ask: { channel: string; user: string; request: string; about?: string }) => Promise<string | undefined>;
 	/** Someone opened Scout's App Home tab: the view to show them. */
 	home?: (user: string) => Promise<{ type: "home"; blocks: unknown[] }>;
 };
@@ -53,6 +70,13 @@ export class Slack {
 			update: async (channel, ts, original) => {
 				const message = await this.#withMentions(original);
 				await client.chat.update({ channel, ts, text: message.text, blocks: message.blocks as never });
+			},
+			react: async (channel, ts, name, on) => {
+				const call = on ? client.reactions.add({ channel, timestamp: ts, name }) : client.reactions.remove({ channel, timestamp: ts, name });
+				await call.catch((error: { data?: { error?: string } }) => {
+					// Already there, or already gone: the same outcome.
+					if (!["already_reacted", "no_reaction"].includes(error.data?.error ?? "")) throw error;
+				});
 			},
 			// Needs the files:write scope; without it this fails, and the answer follows in messages instead.
 			attach: async (channel, threadTs, file) => {
@@ -153,11 +177,52 @@ export class Slack {
 		await handlers.onEdit?.({ channel, ts: now.ts, user: now.user, text: now.text, ...(typeof now.thread_ts === "string" ? { threadTs: now.thread_ts } : {}) });
 	}
 
-	/** Scout's own Slack user ID, which mentions of it carry. */
+	/** The scopes the app was granted, and the workspace's address and ID, from Slack's answer to `identify`. */
+	scopes: string[] = [];
+	teamUrl = "";
+	teamId = "";
+
+	/** Scout's own Slack user ID, which mentions of it carry; also learns the app's scopes. */
 	async identify(): Promise<string> {
 		const auth = await this.app.client.auth.test();
 		this.botUserId = auth.user_id ?? "";
+		this.scopes = auth.response_metadata?.scopes ?? [];
+		this.teamUrl = auth.url ?? "";
+		this.teamId = auth.team_id ?? "";
 		return this.botUserId;
+	}
+
+	/** A message's author, text and thread, to act on it (🔍). */
+	async messageAt(channel: string, ts: string): Promise<{ author?: string; text: string; threadTs?: string } | undefined> {
+		const page = await this.app.client.conversations.history({ channel, latest: ts, inclusive: true, limit: 1 }).catch(() => undefined);
+		let m = page?.messages?.[0] as Record<string, unknown> | undefined;
+		if (m === undefined || m.ts !== ts) {
+			// A reply: history only has top-level messages.
+			const replies = await this.app.client.conversations.replies({ channel, ts, latest: ts, inclusive: true, limit: 1 }).catch(() => undefined);
+			m = (replies?.messages ?? []).find((r) => (r as { ts?: string }).ts === ts) as Record<string, unknown> | undefined;
+		}
+		if (m === undefined) return undefined;
+		return {
+			...(typeof m.user === "string" ? { author: m.user } : {}),
+			text: typeof m.text === "string" ? m.text : "",
+			...(typeof m.thread_ts === "string" && m.thread_ts !== ts ? { threadTs: m.thread_ts } : {}),
+		};
+	}
+
+	/** Make or refresh a channel's canvas with Markdown; returns its ID. */
+	async channelCanvas(channel: string, canvasId: string | undefined, markdown: string): Promise<string> {
+		const content = { type: "markdown" as const, markdown };
+		if (canvasId !== undefined) {
+			await this.app.client.canvases.edit({ canvas_id: canvasId, changes: [{ operation: "replace", document_content: content }] });
+			return canvasId;
+		}
+		const made = await this.app.client.conversations.canvases.create({ channel_id: channel, document_content: content });
+		return made.canvas_id ?? "";
+	}
+
+	/** The Slack List API, as the list of Scout's work uses it. */
+	get lists() {
+		return this.app.client.slackLists;
 	}
 
 	async start(handlers: SlackHandlers): Promise<void> {
@@ -232,6 +297,66 @@ export class Slack {
 			}
 		});
 
+		// Approve or Decline on a change waiting for approval: the message then says who decided, without buttons.
+		for (const [action, approve] of [[APPROVE_BUTTON, true], [DECLINE_BUTTON, false]] as const) {
+			this.app.action(action, async ({ ack, body, respond }) => {
+				await ack();
+				const b = body as unknown as { user: { id: string }; channel?: { id: string }; actions: { value?: string }[] };
+				const conversationId = Number(b.actions[0]?.value);
+				if (handlers.onDecision === undefined || b.channel === undefined || !Number.isFinite(conversationId)) return;
+				try {
+					const said = await handlers.onDecision({ user: b.user.id, channel: b.channel.id, conversationId, approve });
+					await respond({ replace_original: true, text: said, blocks: [{ type: "context", elements: [{ type: "mrkdwn", text: said }] }] });
+				} catch (error) {
+					console.error(`${action} failed:`, error);
+				}
+			});
+		}
+
+		// /scout status | schedules | waiting | ask …: answered just to whoever asked (needs the commands scope).
+		this.app.command("/scout", async ({ command, ack, respond }) => {
+			await ack();
+			if (handlers.onCommand === undefined) return;
+			try {
+				const name = await this.channelName(command.channel_id).catch(() => "");
+				const text = await handlers.onCommand({ user: command.user_id, channel: command.channel_id, channelName: name, text: command.text });
+				await respond({ response_type: "ephemeral", text });
+			} catch (error) {
+				console.error("/scout failed:", error);
+				await respond({ response_type: "ephemeral", text: "Something went wrong on my side. Try again in a minute?" });
+			}
+		});
+
+		// Previews of code host links (needs links:read and links:write, and the domain in the manifest's unfurl_domains).
+		this.app.event("link_shared", async ({ event }) => {
+			if (handlers.onLinks === undefined) return;
+			try {
+				const unfurls = await handlers.onLinks(event.links.map((l) => l.url));
+				if (Object.keys(unfurls).length === 0) return;
+				await this.app.client.chat.unfurl({ channel: event.channel, ts: event.message_ts, unfurls: unfurls as never });
+			} catch (error) {
+				console.error("link preview failed:", error);
+			}
+		});
+
+		// The Ask Scout step in Workflow Builder (a custom step; needs a plan that allows them).
+		this.app.function(WORKFLOW_STEP, async ({ inputs, complete, fail }) => {
+			try {
+				const channel = String(inputs.channel_id ?? "");
+				const request = String(inputs.request ?? "").trim();
+				const user = typeof inputs.user_id === "string" ? inputs.user_id : "";
+				// A request is always someone's, checked like any other: never Scout's own, which would skip that check.
+				if (channel === "" || request === "" || user === "" || handlers.onWorkflowAsk === undefined) {
+					await fail({ error: "Ask Scout needs a channel, a request, and who's asking (usually “Person who used this workflow”)." });
+					return;
+				}
+				const link = await handlers.onWorkflowAsk({ channel, user, request, ...(typeof inputs.about === "string" && inputs.about !== "" ? { about: inputs.about } : {}) });
+				await complete({ outputs: { thread_link: link ?? "" } });
+			} catch (error) {
+				await fail({ error: error instanceof Error ? error.message : String(error) });
+			}
+		});
+
 		// Needs the Home tab enabled and the app_home_opened event (slack-manifest.yaml).
 		this.app.event("app_home_opened", async ({ event }) => {
 			if (event.tab !== "home" || handlers.home === undefined) return;
@@ -243,7 +368,15 @@ export class Slack {
 		});
 
 		this.app.event("reaction_added", async ({ event }) => {
-			if (event.item.type !== "message") return;
+			// Scout's own (👀, ✅ on requests) are status, never instructions.
+			if (event.item.type !== "message" || event.user === this.botUserId) return;
+			if (LOOK_REACTIONS.has(event.reaction) && handlers.onLook !== undefined) {
+				const found = await this.messageAt(event.item.channel, event.item.ts);
+				const info = await this.app.client.conversations.info({ channel: event.item.channel }).catch(() => undefined);
+				if (found === undefined || info?.channel?.is_channel !== true || info.channel.is_private === true) return;
+				await handlers.onLook({ user: event.user, channel: event.item.channel, channelName: info.channel.name ?? "", ts: event.item.ts, ...found }).catch((error: unknown) => console.error("🔍 failed:", error));
+				return;
+			}
 			try {
 				await handlers.onReaction({ channel: event.item.channel, ts: event.item.ts, name: event.reaction, user: event.user, eventTs: event.event_ts });
 			} catch (error) {

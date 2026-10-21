@@ -11,9 +11,12 @@ import { Bridge } from "./bridge.ts";
 import { Collector } from "./dash/collect.ts";
 import { type Ask, forgeFor, Inbox } from "./forge.ts";
 import { BranchCleanup, MAX_TRIES as UPKEEP_TRIES, PullUpkeep, ReviewNudges } from "./upkeep.ts";
-import { channelWeeks, WeeklySummaries } from "./weekly.ts";
-import { Recaps } from "./recaps.ts";
-import { type HomeThread, homeView } from "./home.ts";
+import { ChannelCanvases, channelCanvas, channelWeeks, WeeklySummaries } from "./weekly.ts";
+import { asksSomething, Recaps } from "./recaps.ts";
+import { type HomeData, type HomeThread, homeView } from "./home.ts";
+import { Capabilities } from "./capabilities.ts";
+import { parseCodeLink, previewBlocks } from "./previews.ts";
+import { type WorkRow, WorkList } from "./worklist.ts";
 import { startDashboard } from "./dash/server.ts";
 import { ThreadDoc } from "./docs.ts";
 import { Health } from "./health.ts";
@@ -25,7 +28,7 @@ import { pullProfile } from "./profile.ts";
 import { weekOf } from "./pulls.ts";
 import { localDay } from "./reflect.ts";
 import { openScout } from "./scout.ts";
-import { Slack } from "./slack.ts";
+import { APPROVE_BUTTON, DECLINE_BUTTON, Slack } from "./slack.ts";
 import { threadKey } from "./threads.ts";
 
 const MINUTE = 60 * 1000;
@@ -101,6 +104,7 @@ const scout = await openScout({
 			const title = pull.title.replace(/[&<>]/g, (c) => `&${{ "&": "amp", "<": "lt", ">": "gt" }[c]};`);
 			const reviewers = asked.length === 0 ? "" : ` · review requested from ${asked.join(", ")}`;
 			await slack.broadcast(thread.channel, thread.threadTs, `Opened <${pull.url}|${pull.slug}#${pull.number}>: ${title}${reviewers}`);
+			await track(id, { state: "Pull request open", pull: { url: pull.url, label: `${pull.slug}#${pull.number}` } });
 		})().catch((error: unknown) => console.error("pull request notice failed:", error));
 	},
 	groupMembers: (group) => slack.groupMembers(group),
@@ -167,6 +171,10 @@ const pullReviewer = new PullReviewer({
 	},
 });
 
+// What this Slack workspace lets Scout do (capabilities.ts): learned from the app's scopes now, and from the first
+// real call for features a plan may not include. Logged once at start, and whenever one turns out to be off.
+const capabilities = new Capabilities(join(config.dataDir, "scout.sqlite"));
+
 const bridge = new Bridge({
 	harness,
 	threads,
@@ -179,10 +187,16 @@ const bridge = new Bridge({
 	search: scout.search,
 	repoFor: scout.repoFor,
 	approve: (conversationId, user) => scout.approvals.grant(conversationId, user),
-	answered: (conversationId, ts, answer) => {
+	reactionsOn: () => capabilities.on("reactions"),
+	runStarted: (conversationId) => void track(conversationId, { state: "Working" }),
+	answered: (conversationId, ts, answer, outcome) => {
 		scout.approvals.answered(conversationId, ts);
 		recaps.answered(conversationId, answer);
 		const thread = threads.byConversation(conversationId);
+		// A change waiting for approval: Approve and Decline buttons, beside the 👍 that also works.
+		if (thread !== undefined && scout.approvals.waiting(conversationId)) void askForApproval(conversationId, thread.channel, thread.threadTs);
+		const state = outcome === "problem" ? "Ran into a problem" : answer !== undefined && asksSomething(answer) ? "Waiting on someone" : "Answered";
+		void track(conversationId, { state, cost: scout.spend.spentOn(conversationId, 0).cost });
 		void (thread === undefined ? Promise.resolve(undefined) : slack.permalink(thread.channel, thread.threadTs))
 			.then((link) => inbox.answered(conversationId, answer, link))
 			.catch((error: unknown) => console.error("answering on the code host failed:", error));
@@ -206,13 +220,134 @@ await slack.start({
 	home: (user) => homeFor(user),
 	// "Ask Scout about this": a thread on that message, started as if they'd asked there (admitted and audited).
 	onAsk: async (ask) => {
-		const threadTs = ask.threadTs ?? ask.ts;
-		const about = ask.text === "" ? "" : `\n\nAbout ${ask.author === undefined ? "this message" : `<@${ask.author}>'s message`}:\n${ask.text.split("\n").map((l) => `> ${l}`).join("\n")}`;
-		const said = `<@${ask.user}> asked me about this: ${ask.request}`;
-		const ts = await slack.surface.post(ask.channel, threadTs, { text: said, blocks: [{ type: "markdown", text: said }] });
-		await bridge.onMessage({ channel: ask.channel, channelType: "channel", channelName: ask.channelName, user: ask.user, text: `<@${slack.botUserId}> ${ask.request}${about}`, ts, threadTs });
+		await startOn({ ...ask, threadTs: ask.threadTs ?? ask.ts, intro: `<@${ask.user}> asked me about this: ${ask.request}` });
+	},
+	onLook: async (look) => {
+		await startOn({ ...look, threadTs: look.threadTs ?? look.ts, request: "Look into this.", intro: `<@${look.user}> asked me to look into this.` });
+	},
+	onDecision: (decision) => decide(decision),
+	onCommand: (command) => slashCommand(command),
+	onLinks: (links) => previews(links),
+	onWorkflowAsk: async (ask) => {
+		const info = await slack.app.client.conversations.info({ channel: ask.channel }).catch(() => undefined);
+		if (info?.channel?.is_channel !== true || info.channel.is_private === true || info.channel.is_member !== true) {
+			throw new Error("Ask Scout works in public channels Scout is in. Invite Scout to the channel first.");
+		}
+		const intro = `<@${ask.user}>, through a workflow, asked me: ${ask.request}`;
+		const threadTs = await startOn({ channel: ask.channel, channelName: info.channel.name ?? ask.channel, user: ask.user, request: ask.request, text: ask.about ?? "", intro });
+		return slack.permalink(ask.channel, threadTs);
 	},
 });
+capabilities.granted(slack.scopes);
+for (const line of capabilities.summary()) console.log(line);
+audit.record("capabilities", { actor: "scout", detail: { scopes: slack.scopes, off: Object.fromEntries((["attachments", "emails", "reactions", "shortcuts", "unfurls", "canvases", "lists", "workflowSteps"] as const).flatMap((f) => { const why = capabilities.off(f); return why === undefined ? [] : [[f, why]]; })) } });
+
+/**
+ * A thread started for someone from outside a conversation (a shortcut, 🔍, /scout ask, a workflow): a message saying
+ * who asked, then their request, as if they'd mentioned Scout there, so it's admitted and audited the same way.
+ * Returns the thread's timestamp.
+ */
+async function startOn(start: { channel: string; channelName: string; user: string; request: string; text: string; author?: string; threadTs?: string; intro: string }): Promise<string> {
+	const posted = await slack.surface.post(start.channel, start.threadTs, { text: start.intro, blocks: [{ type: "markdown", text: start.intro }] });
+	const threadTs = start.threadTs ?? posted;
+	const about =
+		start.text === "" ? "" : `\n\nAbout ${start.author === undefined ? "this" : `<@${start.author}>'s message`}:\n${start.text.split("\n").map((l) => `> ${l}`).join("\n")}`;
+	await bridge.onMessage({ channel: start.channel, channelType: "channel", channelName: start.channelName, user: start.user, text: `<@${slack.botUserId}> ${start.request}${about}`, ts: posted, threadTs });
+	return threadTs;
+}
+
+/** Approve and Decline buttons in the thread, for the change Scout just asked approval for. */
+async function askForApproval(conversationId: number, channel: string, threadTs: string): Promise<void> {
+	const text = "This change needs someone's approval before I make it.";
+	await slack.surface
+		.post(channel, threadTs, {
+			text,
+			blocks: [
+				{ type: "section", text: { type: "mrkdwn", text: `${text} (👍 on my answer works too.)` } },
+				{
+					type: "actions",
+					elements: [
+						{ type: "button", action_id: APPROVE_BUTTON, text: { type: "plain_text", text: "Approve" }, style: "primary", value: String(conversationId) },
+						{ type: "button", action_id: DECLINE_BUTTON, text: { type: "plain_text", text: "Decline" }, style: "danger", value: String(conversationId) },
+					],
+				},
+			],
+		})
+		.catch((error: unknown) => console.error("posting approval buttons failed:", error));
+}
+
+/** Someone pressed Approve or Decline: through the same checks as a reply, and the buttons give way to who decided. */
+async function decide(d: { user: string; channel: string; conversationId: number; approve: boolean }): Promise<string> {
+	const thread = threads.byConversation(d.conversationId);
+	if (thread === undefined) return "That thread is gone.";
+	if (!scout.approvals.waiting(d.conversationId)) return "Nothing's waiting for approval there any more.";
+	const channelName = await channelOf(d.conversationId);
+	const ts = (Date.now() / 1000).toFixed(6);
+	if (d.approve) {
+		await bridge.onMessage({ channel: thread.channel, channelType: "channel", channelName, user: d.user, text: "approve", ts, threadTs: thread.threadTs });
+		return scout.approvals.by(d.conversationId) === d.user ? `👍 Approved by <@${d.user}>.` : `<@${d.user}> can't approve this one; the thread says why.`;
+	}
+	scout.approvals.answered(d.conversationId, undefined);
+	await bridge.onMessage({ channel: thread.channel, channelType: "channel", channelName, user: d.user, text: `<@${slack.botUserId}> I'm declining that change: please don't make it.`, ts, threadTs: thread.threadTs });
+	return `✋ Declined by <@${d.user}>.`;
+}
+
+/** `/scout …`, answered just to whoever asked. */
+async function slashCommand(c: { user: string; channel: string; channelName: string; text: string }): Promise<string> {
+	const [word = "", ...rest] = c.text.trim().split(/\s+/);
+	switch (word.toLowerCase()) {
+		case "status":
+			return describeNow(c.channelName);
+		case "schedules": {
+			const here = scout.schedules.forChannel(c.channelName);
+			return here.length === 0 ? "No schedules in this channel. Ask me in a thread for recurring work." : here.map((s) => `#${s.id}: ${s.when}, ${s.task}${s.paused ? " (paused)" : ""}`).join("\n");
+		}
+		case "waiting": {
+			const home = await homeData(c.user);
+			return home.waitingOnYou.length === 0 ? "Nothing's waiting on you." : home.waitingOnYou.map((w) => `• ${w.link === undefined ? `#${w.channel}` : `<${w.link}|#${w.channel}>`}: ${w.what}`).join("\n");
+		}
+		case "ask": {
+			const request = rest.join(" ").trim();
+			if (request === "") return "What should I do? `/scout ask fix the flaky login test`";
+			const threadTs = await startOn({ channel: c.channel, channelName: c.channelName, user: c.user, request, text: "", intro: `<@${c.user}> asked me: ${request}` });
+			const link = await slack.permalink(c.channel, threadTs);
+			return `On it${link === undefined ? "." : `: <${link}|the thread>.`}`;
+		}
+		default:
+			return ["`/scout status`: what I'm doing right now", "`/scout schedules`: this channel's schedules", "`/scout waiting`: what's waiting on you", "`/scout ask …`: start a thread with a request"].join("\n");
+	}
+}
+
+/** Previews for pasted links to pull requests and issues in repositories Scout works in. */
+async function previews(links: string[]): Promise<Record<string, { blocks: unknown[] }>> {
+	const out: Record<string, { blocks: unknown[] }> = {};
+	if (!capabilities.on("unfurls")) return out;
+	for (const url of links.slice(0, 5)) {
+		const link = parseCodeLink(url);
+		if (link === undefined || !config.repos.some((r) => r.slug.toLowerCase() === link.slug.toLowerCase())) continue;
+		const issue = await forge.issue(link.slug, link.number).catch(() => undefined);
+		if (issue === undefined) continue;
+		const status = issue.pull ? await forge.pullStatus(link.slug, link.number).catch(() => undefined) : undefined;
+		const ci = status === undefined ? undefined : await forge.ciState(link.slug, status.head).catch(() => undefined);
+		const conversation = pulls.byNumber(link.slug, link.number)?.conversationId ?? inbox.threadOf(link.slug, link.number);
+		const thread = conversation === undefined ? undefined : await linkOf(conversation);
+		out[url] = {
+			blocks: previewBlocks({
+				url,
+				slug: link.slug,
+				number: link.number,
+				title: issue.title,
+				pull: issue.pull,
+				state: status?.merged === true ? "merged" : issue.state === "open" ? "open" : "closed",
+				author: issue.author,
+				...(ci === undefined ? {} : { ci }),
+				reviewers: status?.reviewers ?? [],
+				...(conversation === undefined ? {} : { scout: { ...(thread === undefined ? {} : { link: thread }), working: bridge.view(conversation)?.busy === true } }),
+			}),
+		};
+	}
+	return out;
+}
 // What people said while Scout was down: Socket Mode doesn't replay it, so read it back and take it in, in order.
 // Each request is keyed by its message, so one Scout had already handled isn't handled twice.
 const alive = join(config.dataDir, "alive");
@@ -329,8 +464,12 @@ const ciWatcher = new CiWatcher({
 	pulls,
 	host: config.codeHost,
 	handlers: {
-		passed: (pull, sha) => inThread(pull.conversationId, `✅ CI passed on <${pull.url}|${pull.title}> at \`${sha.slice(0, 7)}\`.`),
+		passed: async (pull, sha) => {
+			await inThread(pull.conversationId, `✅ CI passed on <${pull.url}|${pull.title}> at \`${sha.slice(0, 7)}\`.`);
+			await track(pull.conversationId, { ci: "Passing" });
+		},
 		failed: async (pull, sha, checks, attempt) => {
+			void track(pull.conversationId, { ci: "Failing" });
 			const prompt = [
 				`CI failed on your pull request ${pull.url} (${pull.slug} #${pull.number}) at ${sha.slice(0, 7)}:`,
 				checkList(checks),
@@ -517,6 +656,7 @@ const upkeep = new PullUpkeep({
 // Each channel's week, Mondays after the reflection hour (weekly.ts).
 const weekly = new WeeklySummaries(join(config.dataDir, "scout.sqlite"));
 async function postChannelWeeks(): Promise<void> {
+	await refreshCanvases(true).catch((error: unknown) => console.error("refreshing canvases failed:", error));
 	const to = weekStart(new Date());
 	const from = to - 7 * DAY;
 	const key = weekOf(new Date(from));
@@ -525,6 +665,7 @@ async function postChannelWeeks(): Promise<void> {
 			threads: threads.startedBetween(from, to),
 			pulls: pulls.touched(from, to),
 			stillOpen: pulls.open("work"),
+			canvased: canvases.channels(),
 			notes: memory.active().filter((n) => n.createdAt >= from && n.createdAt < to),
 			waiting: await Promise.all(
 				recaps.waiting((c) => threads.byConversation(c)).map(async (t) => {
@@ -578,7 +719,8 @@ async function workingNow() {
 		})),
 	);
 }
-scout.setStatus(async (channel) => {
+scout.setStatus((channel) => describeNow(channel));
+async function describeNow(channel: string): Promise<string> {
 	const working = await workingNow();
 	const waiting = recaps.waiting((c) => threads.byConversation(c)).length;
 	const here = scout.schedules.forChannel(channel);
@@ -590,8 +732,11 @@ scout.setStatus(async (channel) => {
 		here.length === 0 ? "No schedules in this channel." : `Schedules here: ${here.map((s) => `#${s.id} ${s.when}: ${s.task}${s.paused ? " (paused)" : ""}`).join("; ")}`,
 	];
 	return lines.join("\n");
-});
+}
 async function homeFor(user: string) {
+	return homeView(await homeData(user));
+}
+async function homeData(user: string): Promise<HomeData> {
 	const threadOf = (c: number) => threads.byConversation(c);
 	const queuedKeys = new Set(threads.queued().map((q) => q.key));
 	const mine = threads.forPerson(user, 10);
@@ -614,7 +759,7 @@ async function homeFor(user: string) {
 		const link = await linkOf(w.conversationId);
 		return { ...w, ...(link === undefined ? {} : { link }) };
 	}));
-	return homeView({
+	return {
 		working,
 		queued: threads.queued().length,
 		threads: theirs.map(({ approval: _, ...t }) => t),
@@ -622,7 +767,69 @@ async function homeFor(user: string) {
 			.filter((t) => t.state === "waiting on you")
 			.map((t) => ({ ...(t.link === undefined ? {} : { link: t.link }), channel: t.channel, what: t.approval ? "a change waiting for your approval (reply “approve” or 👍 my answer)" : "a question I asked you" })),
 		schedules: scout.schedules.all().filter((s) => s.createdBy === user),
-	});
+	};
+}
+
+// The list of Scout's work (worklist.ts): one row per thread, kept up to date as the work moves. Shared with the home
+// channel. Only where the workspace allows Lists; otherwise nothing changes.
+const workList = new WorkList({
+	path: join(config.dataDir, "scout.sqlite"),
+	api: () => slack.lists as never,
+	shareWith: async () => (config.reflect.channel === undefined ? undefined : slack.channelId(config.reflect.channel)),
+});
+async function track(conversationId: number, row: WorkRow): Promise<void> {
+	const thread = threads.byConversation(conversationId);
+	if (thread === undefined) return;
+	const first = workList.id === undefined || !trackedOnce.has(conversationId);
+	trackedOnce.add(conversationId);
+	const full: WorkRow = first
+		? {
+				request: scout.search.first(conversationId)?.text ?? "",
+				channel: thread.channel,
+				...(thread.startedBy.startsWith("U") ? { askedBy: thread.startedBy } : {}),
+				...(await linkOf(conversationId).then((link) => (link === undefined ? {} : { thread: link }))),
+				...row,
+			}
+		: row;
+	await capabilities.use("lists", () => workList.update(conversationId, full)).catch((error: unknown) => console.error("updating the list of Scout's work failed:", error));
+}
+const trackedOnce = new Set<number>();
+
+// Each repository channel's Scout canvas (weekly.ts): what's open, who's waiting, schedules and notes, kept current.
+const canvases = new ChannelCanvases(join(config.dataDir, "scout.sqlite"));
+async function refreshCanvases(force = false): Promise<void> {
+	if (!capabilities.on("canvases")) return;
+	const now = Date.now();
+	const channels = new Set(config.repos.flatMap((r) => scout.channelOf(r.name)?.name ?? []));
+	const waitingAll = recaps.waiting((c) => threads.byConversation(c));
+	for (const name of channels) {
+		const known = canvases.get(name);
+		if (!force && known !== undefined && now - known.updatedAt < 6 * HOUR) continue;
+		const id = await slack.channelId(name);
+		if (id === undefined) continue;
+		const inHere = async (conversationId: number) => (await channelOf(conversationId)) === name;
+		const open = (await Promise.all(pulls.open("work").map(async (p) => ((await inHere(p.conversationId)) ? [p] : [])))).flat();
+		const waiting = (
+			await Promise.all(
+				waitingAll.map(async (t) => {
+					if (!(await inHere(t.conversationId))) return [];
+					const link = await linkOf(t.conversationId);
+					return [{ since: t.since, ...(link === undefined ? {} : { link }) }];
+				}),
+			)
+		).flat();
+		const markdown = channelCanvas({
+			channel: name,
+			open,
+			waiting,
+			schedules: scout.schedules.forChannel(name),
+			notes: memory.forChannel(name),
+			...(workList.id === undefined || slack.teamUrl === "" ? {} : { listUrl: `${slack.teamUrl}lists/${slack.teamId}/${workList.id}` }),
+			now,
+		});
+		const canvasId = await capabilities.use("canvases", () => slack.channelCanvas(id, known?.canvasId, markdown));
+		if (canvasId !== undefined && canvasId !== "") canvases.saved(name, canvasId, now);
+	}
 }
 
 // Closed pull requests' branches, once they've been closed long enough (and weren't reopened).
@@ -698,6 +905,7 @@ const housekeeping = () => {
 	void health.watch("upkeep", "looking after Scout's pull requests failed", () => upkeep.poll(pulls.open("work")));
 	void health.watch("branches", "deleting closed pull requests' branches failed", cleanUpBranches);
 	void health.watch("recaps", "following up on stalled threads failed", followUpStalledThreads);
+	void health.watch("canvases", "refreshing the channels' canvases failed", () => refreshCanvases());
 	const today = new Date(now);
 	if (today.getDay() >= 1 && today.getDay() <= 5 && today.getHours() >= 9 && today.getHours() < 17) {
 		void health.watch("review nudges", "reminding reviewers failed", nudgeReviews);
@@ -710,6 +918,7 @@ const housekeeping = () => {
 		for (const pull of decided) {
 			audit.record("pull_decided", { actor: "code host", conversationId: pull.conversationId, detail: { url: pull.url, state: pull.state } });
 			// Merged: its branch has done its job. Closed: kept a while, so it can still be reopened.
+			if (pull.kind === "work") void track(pull.conversationId, { state: pull.state === "merged" ? "Merged" : "Closed" });
 			if (pull.state === "merged") await deleteBranchOf(pull).catch((error: unknown) => console.error(`deleting ${pull.url}'s branch failed:`, error));
 			else branches.later(pull, Date.now() + config.closedBranchDays * DAY);
 			const day = pull.kind === "profile" ? threads.reflectionDay(pull.conversationId) : undefined;
@@ -813,6 +1022,9 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		reviewNudges.close();
 		branches.close();
 		recaps.close();
+		workList.close();
+		canvases.close();
+		capabilities.close();
 		if (alertTick !== undefined) clearInterval(alertTick);
 		alertLog.close();
 		await slack.stop().catch(() => {});
