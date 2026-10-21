@@ -71,6 +71,19 @@ const scout = await openScout({
 	},
 	threadLink: (thread) => slack.permalink(thread.channel, thread.threadTs),
 	announce,
+	// The announcement is the reflection's thread: replies there, and comments on the pull request, reach it (#34).
+	reflectionProposed: (conversationId, text) => {
+		const home = config.reflect.channel;
+		if (home === undefined) return;
+		void slack
+			.channelId(home)
+			.then(async (channel) => {
+				if (channel === undefined) throw new Error(`there's no channel #${home}`);
+				const threadTs = await slack.surface.post(channel, undefined, { text, blocks: [] });
+				await bridge.adopt(conversationId, { channel, channelName: home, threadTs, about: text });
+			})
+			.catch((error: unknown) => console.error("announcing the reflection failed:", error));
+	},
 	// Threads start with someone's request, so in the channel nothing says which pull request came of which thread.
 	pullOpened: (id, pull) => {
 		const thread = scout.threads.byConversation(id);
@@ -308,7 +321,10 @@ async function takeAsk(ask: Ask): Promise<void> {
 	const { issue } = ask;
 	const kind = issue.pull ? "pull request" : "issue";
 	const ref = `${issue.slug}#${issue.number}`;
-	const repo = config.repos.find((r) => r.slug.toLowerCase() === issue.slug.toLowerCase());
+	const own = pulls.byNumber(issue.slug, issue.number);
+	// A reflection's proposal is about the profile, which isn't a repository Scout works in, but people review it all the same.
+	const profile = own?.kind === "profile" && config.profileRepo !== undefined ? { name: "profile", slug: config.profileRepo.slug } : undefined;
+	const repo = profile ?? config.repos.find((r) => r.slug.toLowerCase() === issue.slug.toLowerCase());
 	// Only answer when someone asked Scout directly; a remark on its pull request in a repository it no longer has isn't that.
 	const say = (body: string) => (ask.why === "own pull request" ? Promise.resolve() : forge.comment(issue.slug, issue.number, body));
 	if (repo === undefined) {
@@ -333,12 +349,16 @@ async function takeAsk(ask: Ask): Promise<void> {
 	const requestId = `forge:${ref}:${ask.said.map((s) => s.url ?? s.body.length).join(",")}`;
 
 	// A thread it already has: the pull request Scout opened, or this issue's own.
-	const existing = pulls.byNumber(issue.slug, issue.number)?.conversationId ?? inbox.threadOf(issue.slug, issue.number);
+	const existing = own?.conversationId ?? inbox.threadOf(issue.slug, issue.number);
 	if (existing !== undefined && threads.byConversation(existing) !== undefined) {
 		const quoted = ask.said.map((s) => `*${s.author}*${s.review === undefined ? "" : ` ${REVIEW_WORDS[s.review] ?? "reviewed"}`} on <${s.url ?? issue.url}|${ref}>:\n${quote(s.body)}`).join("\n\n");
 		await inThread(existing, quoted);
 		inbox.replyTo(existing, issue.slug, issue.number);
 		await bridge.work(existing, prompt, requestId, "pick this up");
+		return;
+	}
+	if (profile !== undefined) {
+		await say("I can only revise this from the reflection that proposed it, and its thread is gone. I'll take this into account tonight.");
 		return;
 	}
 	const name = scout.channelOf(repo.name)?.name ?? alertHome;

@@ -88,6 +88,13 @@ channel (or the alert channel, when the repository has none) and comments on the
 someone else's pull request in the same repository, the thread's changes go into that pull request's branch. Either
 way, Scout's answer goes back on the issue or pull request as a comment.
 
+A reflection's proposal gets a thread too: its announcement in the home channel. Comments on the pull request, and
+requests in that thread, go to the reflection that wrote it, which revises the same pull request. Revisions don't
+announce again.
+
+The account's token needs `write:notification` (Forgejo) or the `notifications` scope (GitHub classic tokens) as well
+as access to issues and repositories.
+
 Who may ask is decided as for Slack: the login is looked up in the directory and its groups checked against
 `SCOUT_ROLES_FILE`, or, without roles for the repository, the code host's own permission. Someone who may not, or a
 repository Scout isn't set up for, gets a short reply saying why. Nothing from before the inbox was first switched on

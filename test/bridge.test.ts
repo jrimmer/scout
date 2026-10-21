@@ -178,6 +178,21 @@ describe("bridge", () => {
 		assert.match(surface.texts().at(-1) ?? "", /raised to 90%/, "an approval wakes Scout even without a mention");
 	});
 
+	it("adopts a conversation that started without a thread, so replies there reach it", async () => {
+		const conversation = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: "faux", modelId: "faux-model" } } }, context);
+		await bridge.adopt(conversation.id, { channel: "C1", channelName: "team", threadTs: "500.1", about: "I proposed profile changes." });
+		assert.equal(threads.byConversation(conversation.id)?.threadTs, "500.1");
+		assert.equal(search.search("proposed profile")[0]?.conversationId, conversation.id, "and it can be found");
+
+		faux.setResponses([fauxAssistantMessage("Revised: the lesson now says the org is lacy.casa.")]);
+		await bridge.onMessage(message({ text: `<@${BOT}> the org has a dot in it`, ts: "500.2", threadTs: "500.1" }));
+		await settle(conversation.id);
+		assert.match(surface.texts().at(-1) ?? "", /Revised/, "a request in the thread reaches the adopted conversation");
+
+		await bridge.adopt(conversation.id, { channel: "C1", channelName: "team", threadTs: "600.1", about: "again" });
+		assert.equal(threads.byConversation(conversation.id)?.threadTs, "500.1", "a conversation keeps its first thread");
+	});
+
 	it("takes a 👍 on the answer that asked for approval as approval, and nowhere else", async () => {
 		faux.setResponses([fauxAssistantMessage("I'd rename the dashboard to Scout test (renamed). React 👍 to go ahead.")]);
 		asking = true;

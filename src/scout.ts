@@ -47,6 +47,8 @@ export type ScoutOptions = {
 	threadLink?: (thread: ThreadRow) => Promise<string | undefined>;
 	/** Say something in Scout's home channel. */
 	announce?: (text: string) => void;
+	/** A reflection proposed profile changes: say so where people can reply (a thread the reflection then answers in). */
+	reflectionProposed?: (conversationId: number, text: string) => void;
 	/** Scout opened a new pull request from a conversation (not an update to one). */
 	pullOpened?: (conversationId: number, pull: OpenedPull) => void;
 	/** Off for one-off jobs. */
@@ -161,7 +163,7 @@ export async function openScout(options: ScoutOptions) {
 		return { ok: false, reason: `I can only take work in ${repo.name} from people in ${groups.join(" or ")}. Ask an admin to add you.` };
 	};
 	/** The same, for someone asking on the code host: their login is their directory username. */
-	const mayAsk = async (login: string, repo: RepoConfig): Promise<Admission> => {
+	const mayAsk = async (login: string, repo: Pick<RepoConfig, "name" | "slug">): Promise<Admission> => {
 		const groups = requestersOf(roles, repo.name);
 		if (groups === undefined || !permissions.enforcing) return permissions.admitLogin(login, repo.slug);
 		const person = directory === undefined ? undefined : await directory.byUsername(login).catch(() => undefined);
@@ -244,10 +246,14 @@ export async function openScout(options: ScoutOptions) {
 			return reflector.target(id, ctx);
 		},
 		onPullRequest: (id, pull) => {
-			pulls.opened({ ...pull, kind: "profile", conversationId: id });
+			const first = pulls.opened({ ...pull, kind: "profile", conversationId: id });
 			audit.record("pull_opened", { actor: "scout", conversationId: id, detail: { url: pull.url, title: pull.title, profile: true } });
-			console.log(`reflection proposed ${pull.url}`);
-			announce(`I went over yesterday's threads and wrote down what I learned. Could someone review it? ${pull.url}`);
+			console.log(`reflection ${first ? "proposed" : "revised"} ${pull.url}`);
+			// A revision updates the same pull request; its thread already knows.
+			if (!first) return;
+			const text = `I went over yesterday's threads and wrote down what I learned. Could someone review it? ${pull.url}\nComment on the pull request, or ask me here, and I'll revise it.`;
+			if (options.reflectionProposed === undefined) announce(text);
+			else options.reflectionProposed(id, text);
 		},
 	});
 	const consolidation = consolidationExtension(memory);

@@ -368,6 +368,20 @@ export class Bridge {
 	}
 
 	/**
+	 * A thread for a conversation that started without one (a nightly reflection, from its announcement), so replies
+	 * there reach it and its runs answer there.
+	 */
+	async adopt(conversationId: number, thread: { channel: string; channelName: string; threadTs: string; about: string }): Promise<void> {
+		const { threads } = this.#options;
+		const key = threadKey(thread.channel, thread.threadTs);
+		if (threads.get(key) !== undefined || threads.byConversation(conversationId) !== undefined) return;
+		threads.insert({ key, conversationId, channel: thread.channel, threadTs: thread.threadTs, startedBy: "scout" });
+		threads.spoke(key, "scout");
+		this.#options.search?.add({ key, conversationId, channelName: thread.channelName, speaker: "Scout", text: thread.about });
+		await this.#view(threads.get(key)!);
+	}
+
+	/**
 	 * Work Scout starts itself, such as an alert's investigation: a thread it opened, with `context`, then `prompt` as a
 	 * request. It answers to budgets and concurrency like any request; if they say no, the thread says why.
 	 */
