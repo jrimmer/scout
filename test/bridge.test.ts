@@ -15,6 +15,7 @@ import { Approvals } from "../src/mcp.ts";
 import { ThreadSearch } from "../src/search.ts";
 import type { ChatMessage, ChatSurface } from "../src/render.ts";
 import { threadKey, Threads } from "../src/threads.ts";
+import { until } from "./helpers.ts";
 
 const BOT = "UBOT";
 
@@ -36,14 +37,6 @@ class FakeSurface implements ChatSurface {
 	}
 }
 
-async function until(check: () => boolean, ms = 3000): Promise<void> {
-	const deadline = Date.now() + ms;
-	while (!check()) {
-		if (Date.now() > deadline) throw new Error("timed out waiting");
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
-}
-
 describe("bridge", () => {
 	let harness: Harness;
 	let threads: Threads;
@@ -55,6 +48,8 @@ describe("bridge", () => {
 	/** Whether the next run's answer asks for approval, as mcp.ts would say. */
 	let asking: boolean;
 	let approvals: Approvals;
+	/** How many `wait` tool calls are running. */
+	let waiting: number;
 
 	const message = (overrides: Partial<IncomingMessage>): IncomingMessage => ({
 		channel: "C1",
@@ -77,12 +72,20 @@ describe("bridge", () => {
 		const registry = createRegistry();
 		registry.install(profileExtension(loadProfile(profileDir), { repo: async () => ({ name: "r", base: "main" }), branch: (id) => `scout/t-${id}` }));
 		// A tool that works until it is stopped.
+		waiting = 0;
 		const wait = defineTool({
 			name: "wait",
 			description: "Wait",
 			parameters: Type.Object({}),
-			execute: (_args, _api, ctx) =>
-				new Promise((_resolve, reject) => ctx.abortSignal?.addEventListener("abort", () => reject(new Error("stopped")))),
+			execute: (_args, _api, ctx) => {
+				waiting++;
+				return new Promise((_resolve, reject) =>
+					ctx.abortSignal?.addEventListener("abort", () => {
+						waiting--;
+						reject(new Error("stopped"));
+					}),
+				);
+			},
 		});
 		registry.install(defineExtension({ name: "wait", tools: [wait] }));
 		harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
@@ -288,8 +291,7 @@ describe("bridge", () => {
 			faux.setResponses([fauxAssistantMessage([fauxToolCall("wait", {})], { stopReason: "toolUse" })]);
 			await bridge.onMessage(message({ text: `<@${BOT}> take your time` }));
 			const thread = threads.get(threadKey("C1", "100.1"))!;
-			await until(() => bridge.view(thread.conversationId)?.runTs !== undefined && faux.state.callCount === 1);
-			await new Promise((resolve) => setTimeout(resolve, 50)); // the wait tool is running
+			await until(() => bridge.view(thread.conversationId)?.runTs !== undefined && waiting === 1);
 
 			if (how === "message") {
 				await bridge.onMessage(message({ user: "UBOB", text: `<@${BOT}> stop`, ts: "100.2", threadTs: "100.1" }));

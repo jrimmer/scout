@@ -4,7 +4,7 @@
   "description": "A public, multiplayer coding teammate that lives in Slack.",
   "scripts": {
     "start": "node --env-file-if-exists=.env src/main.ts",
-    "test": "node --test 'test/**/*.test.ts'",
+    "test": "node --test --test-timeout=120000 'test/**/*.test.ts'",
     "check": "tsc --noEmit",
     "job": "node --env-file-if-exists=.env src/job.ts",
     "eval": "node --env-file-if-exists=.env src/eval-cli.ts",

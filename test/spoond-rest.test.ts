@@ -9,7 +9,7 @@ import { createEnvConformance } from "@earendil-works/pi-durable/testing";
 import { SpoondDriver } from "../src/drivers/spoond.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { fakeSpoond } from "./fake-spoond.ts";
-import { bareRepo } from "./helpers.ts";
+import { bareRepo, until } from "./helpers.ts";
 
 const spec = { image: "dev-base", network: { mode: "none" as const }, labels: {} };
 
@@ -86,8 +86,7 @@ describe("spoond REST environment", () => {
 		const result = await env.exec("echo one; sleep 1.2; echo two", { onOutput: (t) => seen.push(t) }, context);
 		assert.ok(result.ok && result.value.exitCode === 0);
 		assert.deepEqual(seen, ["one\n", "two\n"]);
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		assert.equal(spoond.jobs.size, 0, "the job is deleted once read");
+		await until(() => spoond.jobs.size === 0, 5000, "the job to be deleted once read");
 	});
 
 	it("stops waiting for a command spoond took but never started, and says to run it again", async () => {
@@ -111,6 +110,7 @@ describe("spoond REST environment", () => {
 		const quick = (await new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest"), transport: "rest" }).open("t", spec)).connect!({ id: "sandbox:t", cwd: root, outageMs: 1500 } as never);
 		let out = "";
 		const through = quick.exec("sleep 1; echo done", { onOutput: (t) => (out += t) }, context);
+		// The sleeps here are the patience under test: an outage shorter than outageMs (1.5 s) is waited out, in real time.
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		spoond.down.on = true;
 		await new Promise((resolve) => setTimeout(resolve, 900));
@@ -133,6 +133,7 @@ describe("spoond REST environment", () => {
 		assert.ok(healthy.ok && healthy.value.exitCode === 0, "a long command in a sandbox that answers runs to the end");
 
 		const running = quick.exec("sleep 30", {}, context);
+		// Long enough for the start check and a few alive checks (100 ms each) to pass: then it's a running command.
 		await new Promise((resolve) => setTimeout(resolve, 1200));
 		spoond.unreachable.on = true;
 		const started = Date.now();

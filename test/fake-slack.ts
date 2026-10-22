@@ -56,6 +56,8 @@ export async function fakeSlack() {
 	const overrides = new Map<string, (args: Record<string, unknown>) => Answer>();
 	/** How long to hold the next call(s) to a method before answering, in order. */
 	const stalls = new Map<string, number[]>();
+	/** While each lasts, calls to its methods (every method, without any) fail. */
+	const outages: { until: number; methods: string[] | undefined; status: number; hang: boolean }[] = [];
 	const channels = new Map<string, Channel>([
 		[TEAM_CHANNEL, { id: TEAM_CHANNEL, name: "team", is_channel: true, is_private: false, is_member: true }],
 		[SECRET_CHANNEL, { id: SECRET_CHANNEL, name: "secret", is_channel: true, is_private: true, is_member: true }],
@@ -134,6 +136,17 @@ export async function fakeSlack() {
 		const stall = stalls.get(method)?.shift();
 		if (stall !== undefined) await new Promise((resolve) => setTimeout(resolve, stall));
 		if (res.destroyed) return;
+		const outage = outages.find((o) => Date.now() < o.until && (o.methods === undefined || o.methods.includes(method)));
+		if (outage?.hang === true) {
+			// No answer at all until it's over, then the connection drops: what a client sees as a timeout.
+			await new Promise((resolve) => setTimeout(resolve, Math.max(0, outage.until - Date.now())));
+			res.destroy();
+			return;
+		}
+		if (outage !== undefined) {
+			res.writeHead(outage.status, { "content-type": "text/html" }).end("<html>Slack is having trouble</html>");
+			return;
+		}
 		const answer = queued.get(method)?.shift() ?? overrides.get(method)?.(args) ?? defaults(method, args, base);
 		if (!("ok" in answer)) {
 			const a = answer as { status: number; headers?: Record<string, string>; body?: Record<string, unknown> };
@@ -165,6 +178,16 @@ export async function fakeSlack() {
 		stall: (method: string, ...ms: number[]) => stalls.set(method, [...(stalls.get(method) ?? []), ...ms]),
 		/** Answer every call to `method` this way from now on. */
 		answer: (method: string, answer: (args: Record<string, unknown>) => Answer) => overrides.set(method, answer),
+		/**
+		 * Slack is down for `ms`: calls to `methods` (every one, by default) answer `status` (503), or with `hang`, get no
+		 * answer until it's over and then lose their connection. Calls are still recorded.
+		 */
+		down: (ms: number, options: { methods?: string[]; status?: number; hang?: boolean } = {}) =>
+			void outages.push({ until: Date.now() + ms, methods: options.methods, status: options.status ?? 503, hang: options.hang ?? false }),
+		/** Slack is back for calls from now on (ones already hanging still wait out their outage). */
+		up: () => {
+			for (const o of outages) o.until = 0;
+		},
 		/** A Socket Mode envelope from test/fixtures/slack, its response_url pointing here; a fresh copy each time. */
 		envelope: (name: string): { type: string; payload: Record<string, unknown> } =>
 			JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "slack", `${name}.json`), "utf8").replaceAll("https://hooks.slack.com/", `http://127.0.0.1:${port}/hooks/`)),

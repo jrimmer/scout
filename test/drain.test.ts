@@ -12,15 +12,22 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { limitModels, ModelLimiter } from "../src/capacity.ts";
 import { drain } from "../src/drain.ts";
 import { reviewAsSubtask } from "../src/review.ts";
+import { until } from "./helpers.ts";
 
 const MODEL = { provider: "faux", modelId: "m" };
 
-async function until(check: () => boolean, ms = 5000): Promise<void> {
-	const deadline = Date.now() + ms;
-	while (!check()) {
-		if (Date.now() > deadline) throw new Error("timed out waiting");
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
+/**
+ * How many times a drain has looked at what's in flight: it rechecks the limiter on each look. A drain that has looked
+ * this many times has had its whole settle time to decide it was done, so one still running isn't done.
+ */
+function looks(limiter: ModelLimiter): () => number {
+	let n = 0;
+	const recheck = limiter.recheck.bind(limiter);
+	limiter.recheck = () => {
+		n++;
+		recheck();
+	};
+	return () => n;
 }
 
 /** A gate a test opens when it's ready. */
@@ -95,12 +102,13 @@ describe("draining for a restart", () => {
 		await started.opened;
 
 		let drained = false;
+		const looked = looks(limiter);
 		const draining = drain({ harness, limiter, context, maxMs: 10_000, settleMs: 100, pollMs: 20 }).finally(() => (drained = true));
 		// A message arrives while it drains: stored, its model call held.
 		const b = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: MODEL } }, context);
 		const meanwhile = await b.submit({ type: "input", content: "and this, please", requestId: "b" }, context);
 		await until(() => limiter.waiting === 1);
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await until(() => looked() >= 10 || drained);
 		assert.equal(drained, false, "the tool call is still running");
 		finish.open();
 		assert.equal((await draining).idle, true);
@@ -150,9 +158,10 @@ describe("draining for a restart", () => {
 		const submission = await a.submit({ type: "input", content: "hi", requestId: "a" }, context);
 		await asked.opened;
 		let drained = false;
+		const looked = looks(limiter);
 		const draining = drain({ harness, limiter, context, maxMs: 5_000, settleMs: 100, pollMs: 20 }).finally(() => (drained = true));
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		assert.equal(drained, false);
+		await until(() => looked() >= 10 || drained);
+		assert.equal(drained, false, "the model call is still answering");
 		answer.open();
 		assert.equal((await draining).idle, true);
 		assert.equal((await submission.wait(context)).status, "done");

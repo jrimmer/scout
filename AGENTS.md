@@ -22,9 +22,10 @@ npm run job -- "what to do"       # one task with the same agent, no Slack
 - **Pi Durable is pinned to an exact version** because its API is experimental. Read its README in
   `node_modules/@earendil-works/pi-durable/README.md` before using a feature; don't guess at the API. Code must work
   on the pinned release; `npm run pi -- main` installs Pi's main branch to try it (`npm run pi -- stable` goes back).
-- **Only `src/scout.ts` wires concrete things together** (with `main.ts` and `job.ts` as front doors). Everything
-  else takes what it needs as arguments, so tests can use the faux model, `MemoryStorage`, and a fake `ChatSurface`.
-  `openScout` takes `models` for the same reason.
+- **Only `src/scout.ts` wires concrete things together** (with `service.ts`, which `main.ts` starts, and `job.ts` as
+  front doors). Everything else takes what it needs as arguments, so tests can use the faux model, `MemoryStorage`, and
+  a fake `ChatSurface`. `openScout` and `startService` take `models` for the same reason; end-to-end tests start the
+  service itself (test/e2e.ts), so its wiring is what they test.
 - **In tests, a scripted tool call needs `{ stopReason: "toolUse" }`**, or the harness takes it as a final answer
   and runs nothing.
 - **Credentials and host git never touch agent-written files.** `codehost.ts` pushes from the host-owned mirror;
