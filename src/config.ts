@@ -20,6 +20,8 @@ export type RepoConfig = {
 	snapshot?: string;
 	/** Hosts this repository's sandboxes may reach, on substrates with an egress firewall (spoond). */
 	egress?: string[];
+	/** Its sandboxes' size, if its builds need more than SCOUT_SANDBOX_SIZE gives (spoond: small to xlarge). */
+	size?: string;
 };
 
 export type SandboxConfig = {
@@ -151,7 +153,7 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
 	return value;
 }
 
-/** More repositories, from a JSON file: `[{ "name", "gitUrl", "slug", "base"?, "image"?, "snapshot"?, "egress"? }]`. */
+/** More repositories, from a JSON file: `[{ "name", "gitUrl", "slug", "base"?, "image"?, "snapshot"?, "egress"?, "size"? }]`. */
 function moreRepos(path: string | undefined): RepoConfig[] {
 	if (path === undefined || path === "") return [];
 	let text: string;
@@ -177,6 +179,7 @@ function moreRepos(path: string | undefined): RepoConfig[] {
 			...(r.image ? { image: r.image } : {}),
 			...(r.snapshot ? { snapshot: r.snapshot } : {}),
 			...(Array.isArray(r.egress) ? { egress: r.egress } : {}),
+			...(typeof r.size === "string" && r.size !== "" ? { size: r.size } : {}),
 		};
 	});
 }

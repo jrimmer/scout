@@ -28,7 +28,7 @@ describe("workspaces (local driver)", () => {
 		instance: "t",
 		repos: [
 			{ name: "api", gitUrl: api, base: "main" },
-			{ name: "web", gitUrl: web, base: "develop", egress: ["registry.npmjs.org"] },
+			{ name: "web", gitUrl: web, base: "develop", egress: ["registry.npmjs.org"], size: "large" },
 		],
 		driver: new LocalDriver({ root: join(root, "sandboxes") }),
 		sandbox: { image: "unused", network: "none" },
@@ -53,6 +53,11 @@ describe("workspaces (local driver)", () => {
 	it("asks for the repository's egress list where the driver can enforce one", () => {
 		assert.deepEqual(workspaces.spec(workspaces.repo("web"), 2).network, { mode: "allow", hosts: ["registry.npmjs.org"] });
 		assert.deepEqual(workspaces.spec(workspaces.repo("api"), 1).network, { mode: "none" });
+	});
+
+	it("gives a repository that needs it bigger sandboxes", () => {
+		assert.equal(workspaces.spec(workspaces.repo("web"), 2).size, "large");
+		assert.equal(workspaces.spec(workspaces.repo("api"), 1).size, undefined, "the default otherwise");
 	});
 
 	it("hands commits out as a bundle, and the host pushes them from its mirror", async () => {

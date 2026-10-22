@@ -53,6 +53,9 @@ The default repository is `SCOUT_REPO_URL` and `SCOUT_REPO_SLUG` (`owner/name`).
    "egress": ["registry.npmjs.org"] }]
 ```
 
+A repository whose build needs more memory than `SCOUT_SANDBOX_SIZE` gives can ask for bigger sandboxes with
+`"size"` (spoond: `small`, `medium`, `large` or `xlarge`; Docker: a memory limit like `"8g"`).
+
 Each channel says which repository it works in, in the profile (`channels/<channel>/instructions.md`,
 `repo: web`).
 

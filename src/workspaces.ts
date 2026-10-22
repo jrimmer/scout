@@ -24,7 +24,8 @@ export type WorkspaceRepo = {
 	/** A saved sandbox its threads start from (spoond). */
 	snapshot?: string;
 	/** Hosts its sandboxes may reach, on substrates that can limit egress; otherwise the default network. */
-	egress?: string[];
+	egress?: string[];	/** Its sandboxes' size, over the default (SCOUT_SANDBOX_SIZE). */
+	size?: string;
 };
 
 export type WorkspacesConfig = {
@@ -182,7 +183,7 @@ export class Workspaces {
 			image: repo.image ?? sandbox.image,
 			...(snapshot === undefined ? {} : { snapshot }),
 			network,
-			...(sandbox.size === undefined ? {} : { size: sandbox.size }),
+			...((repo.size ?? sandbox.size) === undefined ? {} : { size: repo.size ?? sandbox.size }),
 			labels: { conversation: String(conversationId), repo: repo.name, instance: this.#config.instance },
 		};
 	}
@@ -264,7 +265,7 @@ export class Workspaces {
 			image: repo.image ?? this.#config.sandbox.image,
 			...(repo.snapshot === undefined ? {} : { snapshot: repo.snapshot }),
 			network: egress !== undefined && driver.supports(egress) ? egress : { mode: "open" },
-			...(this.#config.sandbox.size === undefined ? {} : { size: this.#config.sandbox.size }),
+			...((repo.size ?? this.#config.sandbox.size) === undefined ? {} : { size: repo.size ?? this.#config.sandbox.size }),
 			labels: { image: repo.name, instance: this.#config.instance },
 			about: `building the ${repo.name} image`,
 		};

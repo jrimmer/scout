@@ -66,7 +66,7 @@ describe("repositories and zones", () => {
 		writeFileSync(
 			file,
 			JSON.stringify([
-				{ name: "web", gitUrl: web, slug: "team/web", base: "develop", snapshot: "scout/node22" },
+				{ name: "web", gitUrl: web, slug: "team/web", base: "develop", snapshot: "scout/node22", size: "large" },
 				{ name: "cold", gitUrl: web, slug: "team/cold" },
 			]),
 		);
@@ -91,6 +91,7 @@ describe("repositories and zones", () => {
 			"scout/node22",
 			"a file repository's snapshot doesn't need SCOUT_REPO_SNAPSHOT",
 		);
+		assert.deepEqual(config.repos.map((r) => r.size), [undefined, "large", undefined], "a repository can ask for bigger sandboxes");
 	});
 
 	it("starts each channel's threads in its repository", async () => {
