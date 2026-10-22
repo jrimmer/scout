@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,20 +11,7 @@ import { loadProfile, profileExtension } from "../src/profile.ts";
 import { ThreadDoc } from "../src/docs.ts";
 import { LocalDriver } from "../src/drivers/local.ts";
 import { openScout } from "../src/scout.ts";
-
-const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
-
-function bareRepo(root: string, name: string, branch: string): string {
-	const remote = join(root, `${name}.git`);
-	const seed = join(root, `${name}-seed`);
-	git("init", "--quiet", "--bare", `--initial-branch=${branch}`, remote);
-	git("init", "--quiet", `--initial-branch=${branch}`, seed);
-	writeFileSync(join(seed, "README.md"), `${name}\n`);
-	git("-C", seed, "add", ".");
-	git("-C", seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "seed");
-	git("-C", seed, "push", "--quiet", remote, branch);
-	return remote;
-}
+import { bareRepo } from "./helpers.ts";
 
 describe("repositories and zones", () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-repos-")));
