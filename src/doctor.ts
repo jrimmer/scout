@@ -1,17 +1,21 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { isIP } from "node:net";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { NEEDS } from "./capabilities.ts";
 import type { CodeHost } from "./codehost.ts";
 import type { Config } from "./config.ts";
 import { parseAutheliaUsers } from "./directory.ts";
 import type { GatewayConfig } from "./gateway.ts";
+import { profileDirProblem } from "./profile.ts";
+import type { Models } from "@earendil-works/pi-ai/models";
 import type { Snapshot } from "./dash/collect.ts";
 
 const run = promisify(execFile);
 
 /**
- * Is everything Scout depends on reachable and set up right? One check per integration, each with how to fix what
+ * Is everything Scout depends on reachable and set up right? One check per integration it can try, each with how to fix what
  * isn't: for whoever installs Scout, and for "why isn't it doing X?". `npm run doctor` and `/scout doctor` run the same.
  */
 export type Check = { name: string; status: "ok" | "warn" | "fail"; detail: string; fix?: string };
@@ -106,8 +110,35 @@ export async function checkGitRemote(name: string, gitUrl: string, branch: strin
 		if (heads.trim() === "") return { name, status: "fail", detail: `${gitUrl} has no ${branch} branch` };
 		return { name, status: "ok", detail: `${gitUrl} (${branch})` };
 	} catch (error) {
-		return { name, status: "fail", detail: `can't reach ${gitUrl} (${firstLine(error)})`, fix: "Check the URL and that Scout's SSH key (SCOUT_GIT_SSH_KEY) is on its code host account." };
+		const why = gitReason(error);
+		return { name, status: "fail", detail: `can't reach ${gitUrl} (${why})`, fix: gitHint(why) };
 	}
+}
+
+/** The profile repository's clone: start-up refuses a directory that holds something else, so the doctor says so first. */
+export function checkProfileDir(dir: string, gitUrl: string): Check {
+	const name = "Profile directory";
+	const problem = profileDirProblem(dir, gitUrl);
+	if (problem !== undefined) return { name, status: "fail", detail: problem, fix: "Leave SCOUT_PROFILE_DIR unset (Scout clones the profile under its data directory), or give it a path that doesn't exist yet." };
+	return { name, status: "ok", detail: existsSync(join(dir, ".git")) ? `${dir} (a clone)` : `${dir} (Scout clones the profile there at its first start)` };
+}
+
+/** One request, a few tokens, through the same models and gateway Scout uses: does the configured model answer? */
+export async function checkModel(models: Models, model: Config["model"], timeoutMs = 20_000): Promise<Check> {
+	const name = "Model";
+	const which = `${model.provider}/${model.modelId}`;
+	const found = models.getModel(model.provider, model.modelId);
+	if (found === undefined) return { name, status: "fail", detail: `${which} isn't a model Scout knows`, fix: "Check SCOUT_MODEL (provider/modelId); for a model only your gateway serves, use gateway/<its name> and list it in SCOUT_GATEWAY_MODELS." };
+	const reply: { stopReason: string; errorMessage?: string } = await models
+		.completeSimple(found, { messages: [{ role: "user", content: "Reply with the word ok.", timestamp: Date.now() }] }, { maxTokens: 16, signal: AbortSignal.timeout(timeoutMs) })
+		.catch((error: unknown) => ({ stopReason: "error", errorMessage: error instanceof Error ? error.message : String(error) }));
+	if (reply.stopReason !== "error" && reply.stopReason !== "aborted") return { name, status: "ok", detail: `${which} answers` };
+	const why = reply.errorMessage ?? "no reason given";
+	const reason = why.match(/"message"\s*:\s*"([^"]+)"/)?.[1] ?? why.split("\n")[0]!.slice(0, 200);
+	if (reply.stopReason === "aborted" || /abort|timed? ?out/i.test(why)) return { name, status: "fail", detail: `${which} didn't answer within ${Math.round(timeoutMs / 1000)}s`, fix: "Check the provider's status and, through a gateway, SCOUT_GATEWAY_URL." };
+	if (/\b40[13]\b|unauthori|invalid.*key|api key|authenticat/i.test(why)) return { name, status: "fail", detail: `${which} refused the key (${reason})`, fix: "Check the provider's key (ANTHROPIC_API_KEY or OPENAI_API_KEY), or SCOUT_GATEWAY_KEY through a gateway." };
+	if (/\b404\b|not.?found|no such model|does not exist/i.test(why)) return { name, status: "fail", detail: `${which} wasn't found (${reason})`, fix: "Check SCOUT_MODEL against the names the provider or gateway serves." };
+	return { name, status: "fail", detail: `${which} didn't answer (${reason})`, fix: "Check the provider's status, the key, and SCOUT_GATEWAY_URL if there is one." };
 }
 
 export function checkDashboard(dash: Config["dash"]): Check {
@@ -129,6 +160,8 @@ export async function doctor(
 		git?: (args: string[]) => Promise<string>;
 		mcp?: () => Promise<number>;
 		directory?: () => Promise<string>;
+		/** The models Scout talks to; with them the doctor asks the configured model for one short answer. */
+		models?: Models;
 		/** What the running Scout says about itself; an error when it can't be asked. */
 		running?: () => Promise<Running>;
 	} = {},
@@ -142,8 +175,12 @@ export async function doctor(
 	if (config.sandbox.driver === "spoond" && config.sandbox.spoond !== undefined) checks.push(await checkSpoond(config.sandbox.spoond.url, config.sandbox.spoond.token, doFetch));
 	else checks.push({ name: "Sandboxes", status: "ok", detail: `${config.sandbox.driver} driver` });
 	if (config.gateway !== undefined) checks.push(await checkGateway(config.gateway, config.gateway.models ?? [], doFetch));
+	if (deps.models !== undefined) checks.push(await checkModel(deps.models, config.model));
 	for (const repo of config.repos) checks.push(await checkGitRemote(`Repository ${repo.name}`, repo.gitUrl, repo.base, deps.git));
-	if (config.profileRepo !== undefined) checks.push(await checkGitRemote("Profile repository", config.profileRepo.gitUrl, config.profileRepo.base, deps.git));
+	if (config.profileRepo !== undefined) {
+		checks.push(await checkGitRemote("Profile repository", config.profileRepo.gitUrl, config.profileRepo.base, deps.git));
+		checks.push(checkProfileDir(config.profileDir, config.profileRepo.gitUrl));
+	}
 	if (config.governance.directory !== undefined && deps.directory !== undefined) checks.push(await checkDirectory(deps.directory));
 	if (config.mcpFile !== undefined && deps.mcp !== undefined) {
 		try {
@@ -239,6 +276,25 @@ export async function fetchRunning(dash: Config["dash"], token: string | undefin
 async function gitOut(args: string[]): Promise<string> {
 	const { stdout } = await run("git", args, { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, timeout: 30_000 });
 	return stdout;
+}
+
+/** What the remote said that matters: stderr minus the boilerplate after it ("Please make sure you have the correct access rights…"). */
+function gitReason(error: unknown): string {
+	const stderr = (error as { stderr?: unknown }).stderr;
+	const text = typeof stderr === "string" && stderr.trim() !== "" ? stderr : error instanceof Error ? error.message : String(error);
+	const lines = text
+		.split("\n")
+		.map((l) => l.replace(/^(fatal|ssh|error): /, "").trim())
+		.filter((l) => l !== "" && !/^Command failed|^Could not read from remote|^Please make sure|^and the repository exists|^Warning: Permanently added/.test(l));
+	return (lines.length === 0 ? firstLine(error) : lines.join("; ")).slice(0, 300);
+}
+
+function gitHint(why: string): string {
+	if (/host key verification/i.test(why)) return "Trust the code host's SSH host key as Scout's user: ssh-keyscan <code host> >> ~/.ssh/known_hosts (docs/setup.md, step 3).";
+	if (/permission denied|publickey/i.test(why)) return "Scout's SSH key isn't accepted: add its public key to Scout's code host account, and check SCOUT_GIT_SSH_KEY names that key (docs/setup.md, step 3).";
+	if (/could not resolve|name or service|connection (refused|timed out)|timed out|no route/i.test(why)) return "Check the host in the URL, and that this machine can reach it (and the SSH port).";
+	if (/not found|does not exist|not appear to be a git repository/i.test(why)) return "Check the URL, and that Scout's account has access to the repository.";
+	return "Check the URL and that Scout's SSH key (SCOUT_GIT_SSH_KEY) is on its code host account.";
 }
 
 function firstLine(error: unknown): string {

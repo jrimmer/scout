@@ -24,7 +24,7 @@ export async function runJob(
 	prompt: string,
 	io: { progress: (line: string) => void },
 	options: { repo?: string } = {},
-): Promise<{ ok: boolean; answer: string; pullRequests: string[] }> {
+): Promise<{ ok: boolean; answer: string; pullRequests: string[]; problem?: string }> {
 	const context = BACKGROUND_CONTEXT;
 	const conversation = await scout.harness.createConversation(
 		{
@@ -38,6 +38,7 @@ export async function runJob(
 	);
 	const events = await watchEvents(scout.harness, conversation.id as ConversationId, context);
 	let answer = "";
+	let failedCall: string | undefined;
 	events.start(async (batch) => {
 		for (const event of batch) {
 			if (event.type === "tool_execution_start" && event.parentToolCallId === undefined) {
@@ -45,6 +46,8 @@ export async function runJob(
 			}
 			if (event.type === "message_end") {
 				const message = event.entry.model?.[0];
+				const stop = message as { role?: string; stopReason?: string; errorMessage?: string } | undefined;
+				failedCall = stop?.role === "assistant" && stop.stopReason === "error" ? (stop.errorMessage ?? "no reason given") : undefined;
 				if (message?.role === "assistant") {
 					const text = message.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("\n").trim();
 					if (text !== "") answer = text;
@@ -54,10 +57,14 @@ export async function runJob(
 	});
 	try {
 		const settled = await (await conversation.submit({ type: "input", content: prompt }, context)).wait(context);
+		const ok = settled.status === "done";
+		// A run that didn't finish says why: the last model call's error (a bad key, an unknown model), else the status.
+		const problem = ok ? undefined : failedCall !== undefined ? `the model didn't answer: ${failedCall.slice(0, 300)}` : `the run ended as ${settled.status}`;
 		return {
-			ok: settled.status === "done",
+			ok,
 			answer,
 			pullRequests: scout.pulls.forConversation(conversation.id).map((p) => p.url),
+			...(problem === undefined ? {} : { problem }),
 		};
 	} finally {
 		await events.stop();
@@ -98,6 +105,8 @@ if (import.meta.main) {
 	const result = await runJob(scout, prompt, { progress: (line) => console.error(`• ${line}`) }, repo === undefined ? {} : { repo });
 	await scout.close();
 	rmSync(dataDir, { recursive: true, force: true });
+	if (result.problem !== undefined) console.error(`Scout couldn't finish: ${result.problem}`);
+	if (result.problem !== undefined) console.error(`Scout couldn't finish: ${result.problem}`);
 	console.log(result.answer);
 	for (const url of result.pullRequests) console.log(url);
 	process.exit(result.ok ? 0 : 1);

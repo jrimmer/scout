@@ -223,10 +223,18 @@ const run = promisify(execFile);
  */
 export async function cloneProfile(dir: string, repo: { gitUrl: string; base: string }): Promise<void> {
 	if (existsSync(join(dir, ".git"))) return;
-	if (existsSync(dir) && readdirSync(dir).length > 0) {
-		throw new Error(`${dir} exists but is not a clone of ${repo.gitUrl}; move it or point SCOUT_PROFILE_DIR elsewhere`);
-	}
+	const problem = profileDirProblem(dir, repo.gitUrl);
+	if (problem !== undefined) throw new Error(problem);
 	await run("git", ["clone", "--quiet", "--branch", repo.base, repo.gitUrl, dir]);
+}
+
+/** Why `dir` can't be the profile repository's clone: it holds something else. Start-up and the doctor ask the same. */
+export function profileDirProblem(dir: string, gitUrl: string): string | undefined {
+	if (existsSync(join(dir, ".git"))) return undefined;
+	if (existsSync(dir) && readdirSync(dir).length > 0) {
+		return `${dir} exists but is not a clone of ${gitUrl}; move it or point SCOUT_PROFILE_DIR elsewhere`;
+	}
+	return undefined;
 }
 
 export async function pullProfile(dir: string): Promise<void> {

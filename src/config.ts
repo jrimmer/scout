@@ -235,13 +235,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	});
 	if (env.SCOUT_MCP_FILE && !existsSync(resolve(env.SCOUT_MCP_FILE))) throw new Error(`SCOUT_MCP_FILE: there's no file at ${resolve(env.SCOUT_MCP_FILE)}`);
 
+	const dataDir = resolve(env.SCOUT_DATA_DIR ?? "data");
+
 	return {
 		// Only the Slack service needs these (see main.ts); jobs run without them.
 		slack: { botToken: env.SLACK_BOT_TOKEN ?? "", appToken: env.SLACK_APP_TOKEN ?? "" },
 		model: { provider, modelId },
-		dataDir: resolve(env.SCOUT_DATA_DIR ?? "data"),
+		dataDir,
 		piMigrate: env.SCOUT_PI_MIGRATE === "1",
-		profileDir: resolve(env.SCOUT_PROFILE_DIR ?? "profile"),
+		// With a profile repository, Scout clones it into a directory of its own under the data directory; the example
+		// profile/ that ships here is not a clone, so it can't be the default.
+		profileDir: resolve(env.SCOUT_PROFILE_DIR ?? (env.SCOUT_PROFILE_REPO_URL ? join(dataDir, "profile") : "profile")),
 		repo,
 		repos: [repo, ...moreRepos(env.SCOUT_REPOS_FILE).filter((r) => r.name !== repo.name)],
 		codeHost: {

@@ -43,6 +43,11 @@ A change to any of these that needs people to act is a major version. Everything
 - **The MCP SDK is 1.32.1** (from 1.31.0), for four security advisories, among them headers re-sent across origins on a redirect.
 
 ### Fixed
+- **Profile repository:** with `SCOUT_PROFILE_REPO_URL` set and no `SCOUT_PROFILE_DIR`, Scout refused to start because the default, the example `profile/`, isn't a clone, while the doctor said OK. Scout now clones the profile into `data/profile`, and the doctor fails a profile directory that holds something else.
+- **`npm run job`:** with a model that wouldn't answer (a wrong key, an unknown model) it exited 1 without a word. It now says why.
+- **The doctor, on repositories:** it showed only the first line of what git said. It now shows the cause ("Host key verification failed", "Permission denied (publickey)") with a hint for it.
+- **The doctor, on the model:** it never tried the model. It now asks for a few tokens through the gateway Scout uses, and fails on a refused key or an unknown model, with how to fix it.
+- **Setting up from scratch:** `docs/setup.md` now covers what a new machine needs: Node 24, a user for Scout in the `docker` group, its SSH key and the code host's host key, `.env` permissions and a systemd unit. `.env.example` no longer says to clone the profile yourself. Found by an install on a fresh Debian container.
 - **spoond restarts:** a running command no longer fails when spoond restarts or the network hiccups. Scout keeps following it for two minutes, then stops and says it may still be running.
 - **Ask Scout form:** when Slack was slow to say where the form was sent, the form failed after Slack's three seconds and no thread started. Scout now remembers channels it can work in, gives Slack two seconds, and otherwise takes the form and checks afterwards, telling the person privately if it can't work there.
 - **Slack outages:** Slack's client tried a failed call again for about half an hour while the thread sat silent. It now tries for five minutes. A final answer Slack still won't take is tried again every two minutes for up to six hours, and after a restart the thread still gets it.

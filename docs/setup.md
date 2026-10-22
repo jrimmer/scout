@@ -6,16 +6,26 @@ setting, and [operations.md](operations.md) explains what each feature does once
 ## 1. What you need
 
 - A machine to run it on, always on: Node 24+, git, and (for the default sandboxes) Docker. A small VM or container
-  is plenty; the work itself happens in sandboxes.
+  is plenty (2 cores, 4 GB, 16 GB of disk); the work itself happens in sandboxes.
+  - Node: distributions often ship an older one (Debian 12 has 18). Take 24 from NodeSource
+    (`curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt-get install -y nodejs`) or the
+    tarball at [nodejs.org](https://nodejs.org/en/download). `node -v` should say 24 or later.
+  - Docker: Docker's own packages ([docs.docker.com/engine/install](https://docs.docker.com/engine/install/)). In a
+    Proxmox LXC container, turn on `nesting`.
 - A Slack workspace where you can install apps. Some features need a paid plan (Lists, custom workflow steps);
   Scout finds out what yours allows and says so at start.
 - A code host: Forgejo (or Gitea), or GitHub.
 - A model: an Anthropic or OpenAI key, or a model gateway (Bifrost, LiteLLM) in front of them.
 
+Scout runs as a user of its own, which can use Docker. Make it, then do the rest as that user, so the checkout,
+`.env` and Scout's SSH key are its own:
+
 ```bash
-git clone <this repository> scout && cd scout
-npm ci
-cp .env.example .env
+sudo useradd -m -s /bin/bash -G docker scout
+sudo -iu scout
+git clone <this repository> scout && cd scout   # a read-only clone; it needs no account
+npm ci                                          # its audit warning doesn't stop anything
+cp .env.example .env && chmod 600 .env          # .env will hold secrets
 ```
 
 ## 2. The Slack app
@@ -26,7 +36,8 @@ cp .env.example .env
 2. **Basic Information → App-Level Tokens**: generate one with `connections:write`. That's `SLACK_APP_TOKEN`
    (Scout uses Socket Mode, so it needs no public address).
 3. **Install App**: install it, and copy the Bot User OAuth Token into `SLACK_BOT_TOKEN`.
-4. Invite Scout to the public channels where it should work. It only ever works in public channels.
+4. Invite Scout (`/invite @Scout`) to the public channels where it should work, and to its home channel (step 7).
+   It only ever works in public channels.
 
 When you change the manifest later (a new Scout version may add scopes), paste it again and reinstall; the bot token
 usually stays the same.
@@ -35,9 +46,18 @@ usually stays the same.
 
 Give Scout its own account, so its pull requests are its own and you can revoke it without touching yours.
 
-- Add it as a collaborator (write access) on the repositories it works in.
-- An SSH key for it, on that account: the host clones and pushes with it (`SCOUT_GIT_SSH_KEY`). Sandboxes never get
-  it.
+- Add it as a collaborator (write access) on the repositories it works in, and on its profile repository (step 7).
+- An SSH key for it, on that account: the host clones and pushes with it, so repository URLs are `ssh://` ones.
+  Sandboxes never get it. Make it on Scout's machine, as Scout's user, and trust the code host's SSH host key once
+  (Scout never answers ssh's "are you sure?", so without this every clone fails with "Host key verification
+  failed"):
+
+  ```bash
+  ssh-keygen -t ed25519 -N "" -C scout -f ~/.ssh/scout_ed25519   # add ~/.ssh/scout_ed25519.pub to Scout's account
+  ssh-keyscan <code host> >> ~/.ssh/known_hosts                   # check the fingerprint against your code host's
+  ```
+
+  Then set `SCOUT_GIT_SSH_KEY=~/.ssh/scout_ed25519` in `.env`. The doctor (step 10) says which of these is missing.
 - An API token for it (`SCOUT_CODEHOST_TOKEN`):
   - **Forgejo/Gitea**: `write:issue`, `write:repository`, `read:user` and `write:notification` (the last for work
     asked of Scout on the code host). `SCOUT_CODEHOST=forgejo`, `SCOUT_CODEHOST_API=https://<host>/api/v1`.
@@ -56,15 +76,18 @@ The default repository is `SCOUT_REPO_URL` and `SCOUT_REPO_SLUG` (`owner/name`).
 A repository whose build needs more memory than `SCOUT_SANDBOX_SIZE` gives can ask for bigger sandboxes with
 `"size"` (spoond: `small`, `medium`, `large` or `xlarge`; Docker: a memory limit like `"8g"`).
 
-Each channel says which repository it works in, in the profile (`channels/<channel>/instructions.md`,
-`repo: web`).
+Each channel says which repository it works in, in the frontmatter of its profile's
+`channels/<channel>/instructions.md` (`repo: web`; see `profile/channels/README.md`). A channel that doesn't say works
+in the default repository.
 
 ## 5. Sandboxes
 
 Every thread works in its own sandbox: its own clone, no credentials.
 
-- **docker** (the default): build the image once with `docker build -t scout-sandbox:latest sandbox`. Network is off
-  unless `SCOUT_SANDBOX_NETWORK=open`; Docker can't limit it to a list of hosts.
+- **docker** (the default): add your repositories' toolchains to `sandbox/Dockerfile`, then build the image once
+  with `docker build -t scout-sandbox:latest sandbox` (a few minutes). Network is off unless
+  `SCOUT_SANDBOX_NETWORK=open`, so installs and downloads in a sandbox fail until you open it; Docker can't limit it
+  to a list of hosts.
 - **spoond**: microVMs with per-repository egress allowlists, snapshots and suspend/resume.
   `SCOUT_SANDBOX_DRIVER=spoond`, `SCOUT_SPOOND_URL`, `SCOUT_SPOOND_TOKEN`, and `SCOUT_SPOOND_TRANSPORT=rest` on
   spoond 3.11+.
@@ -78,10 +101,21 @@ knows. Set `SCOUT_PRICES_FILE` for models the built-in prices don't cover, so bu
 
 ## 7. The profile
 
-What Scout knows lives in files: a system prompt, skills, per-channel instructions. `profile/` here is a starter.
-Copy it into a repository of its own and point Scout at it (`SCOUT_PROFILE_REPO_URL`, `SCOUT_PROFILE_REPO_SLUG`,
-`SCOUT_PROFILE_DIR`); Scout keeps it pulled, and every night proposes changes to it as a pull request. Protect its
-main branch so Scout can only propose.
+What Scout knows lives in files: a system prompt, skills, per-channel instructions. `profile/` here is a starter,
+and without the settings below Scout uses it as it is, with no nightly proposals.
+
+For the learning loop, push the starter to a new, empty repository on the code host (here `team/scout-profile`):
+
+```bash
+cp -r profile ~/scout-profile && cd ~/scout-profile
+git init -b main && git add . && git commit -m "Scout's profile"
+git push ssh://git@<code host>/team/scout-profile.git main
+```
+
+Then set `SCOUT_PROFILE_REPO_URL` (that URL) and `SCOUT_PROFILE_REPO_SLUG` (`team/scout-profile`). Scout clones it
+at its first start, into `data/profile` unless `SCOUT_PROFILE_DIR` names another path; that path must not exist yet
+(or already be the clone), and `profile/` here isn't one. Scout keeps it pulled, and every night proposes changes to
+it as a pull request. Protect its main branch so Scout can only propose.
 
 Set `SCOUT_REFLECT_CHANNEL` to Scout's home channel: where it posts its proposals, weekly reports and requests to
 whoever runs it.
@@ -111,17 +145,40 @@ you'd rather get to know Scout before it acts on the team's work.
 ## 10. Check, then run
 
 ```bash
-npm run doctor   # every integration: ✅, ⚠️ or ❌, with how to fix it; exits 1 if anything is broken
+npm run doctor   # Slack, the code host, repositories, the model and the rest: ✅, ⚠️ or ❌, with how to fix it; exits 1 if anything is broken
 npm start
 ```
 
 Before the first `npm start`, the doctor's last check ("Running") fails, because there's no Scout yet to ask. Run it again once Scout is up.
 
+It asks the model for one short answer (a few tokens), and says what git said about a repository it can't reach.
+With Docker it doesn't check that Docker answers or that the sandbox image exists: `docker image ls scout-sandbox`
+should list it.
+
 Mention `@Scout` in one of its channels. Its startup log says which Slack features are on and why the rest aren't.
 In Slack, `/scout doctor` runs the same checks. [operations.md](operations.md#monitoring) says how to monitor Scout once it runs.
 
-To run it as a service, a systemd unit with `WorkingDirectory=` this checkout, `ExecStart=node --env-file=.env
-src/main.ts`, and its own user is enough; [operations.md](operations.md) covers backups, secrets, telemetry and the
+To run it as a service, a unit named `scout` (the doctor's hints say `systemctl status scout`) is enough, in
+`/etc/systemd/system/scout.service`:
+
+```ini
+[Unit]
+Description=Scout
+After=network-online.target docker.service
+
+[Service]
+User=scout
+WorkingDirectory=/home/scout/scout
+ExecStart=/usr/bin/node --env-file=.env src/main.ts
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`sudo systemctl enable --now scout`, then `journalctl -u scout -f` for its log. `deploy/scout.service` is the same
+with Litestream backups around it; [operations.md](operations.md) covers backups, secrets, telemetry and the
 dashboard.
 
 ## 11. Keeping it up to date

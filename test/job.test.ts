@@ -39,4 +39,27 @@ describe("job mode", () => {
 		assert.deepEqual(progress, ["search_threads lint"]);
 		await scout.close();
 	});
+
+	it("says why when the model won't answer", async () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-job-")));
+		mkdirSync(join(root, "profile"));
+		const config = loadConfig({
+			SCOUT_MODEL: "faux/m",
+			SCOUT_REPO_URL: join(root, "nowhere.git"),
+			SCOUT_REPO_SLUG: "o/r",
+			SCOUT_CODEHOST_TOKEN: "t",
+			SCOUT_CODEHOST_API: "http://forge/api/v1",
+			SCOUT_DATA_DIR: join(root, "data"),
+			SCOUT_PROFILE_DIR: join(root, "profile"),
+		});
+		const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }] });
+		const models = createModels();
+		models.setProvider(faux.provider);
+		const scout = await openScout({ config, storage: new MemoryStorage(), dataDir: config.dataDir, instance: "j", context, models, watchProfile: false });
+		faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "401 invalid x-api-key" })]);
+		const result = await runJob(scout, "fix lint everywhere", { progress: () => {} });
+		assert.equal(result.ok, false);
+		assert.match(result.problem ?? "", /the model didn't answer: 401 invalid x-api-key/);
+		await scout.close();
+	});
 });

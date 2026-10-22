@@ -38,6 +38,7 @@ import { weekOf } from "./pulls.ts";
 import { localDay } from "./reflect.ts";
 import { openScout, sourceReader } from "./scout.ts";
 import { countMcpTools, doctor, formatChecks } from "./doctor.ts";
+import { modelsFor } from "./gateway.ts";
 import { APPROVE_BUTTON, DECLINE_BUTTON, EGRESS_ALLOW, EGRESS_DECLINE, Slack } from "./slack.ts";
 import { threadKey } from "./threads.ts";
 
@@ -426,6 +427,7 @@ async function slashCommand(c: { user: string; channel: string; channelName: str
 			const directory = config.governance.directory;
 			return formatChecks(
 				await doctor(config, {
+					models: modelsFor(config.gateway),
 					...(mcpFile === undefined ? {} : { mcp: () => countMcpTools(mcpFile) }),
 					...(directory === undefined ? {} : { directory: sourceReader(directory.source, config.codeHost, fetch) }),
 					running: () => collector.collect(),
