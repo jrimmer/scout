@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { loadConfig } from "../src/config.ts";
 import { cloneProfile, watchProfile } from "../src/profile.ts";
+import { until } from "./helpers.ts";
 
 describe("profile", () => {
 	it("reloads when the profile's files change, not when a pull only touches .git", async () => {
@@ -13,15 +14,19 @@ describe("profile", () => {
 		writeFileSync(join(dir, "system.md"), "You are Scout.");
 		let reloads = 0;
 		const stop = watchProfile(dir, () => reloads++);
+		// A watcher of the test's own, set up after Scout's: once it has seen a change, so has Scout's.
+		const seen: string[] = [];
+		const spy = watch(dir, { recursive: true }, (_event, file) => void seen.push(String(file)));
 		try {
-			await new Promise((resolve) => setTimeout(resolve, 100));
 			writeFileSync(join(dir, ".git", "FETCH_HEAD"), "abc\n");
-			await new Promise((resolve) => setTimeout(resolve, 600));
+			await until(() => seen.some((f) => f.endsWith("FETCH_HEAD")), 5000, "the .git change to be seen");
+			// A reload would follow the change by the watcher's debounce (300 ms): wait that out, and a little more.
+			await new Promise((resolve) => setTimeout(resolve, 500));
 			assert.equal(reloads, 0, "a pull with nothing new isn't a change");
 			writeFileSync(join(dir, "system.md"), "You are Scout, a teammate.");
-			await new Promise((resolve) => setTimeout(resolve, 600));
-			assert.equal(reloads, 1);
+			await until(() => reloads === 1, 5000, "the reload");
 		} finally {
+			spy.close();
 			stop();
 		}
 	});

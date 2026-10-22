@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -12,35 +10,15 @@ import { PullReviewer } from "../src/automation.ts";
 import { loadConfig } from "../src/config.ts";
 import { changedLines, parsePullReview } from "../src/review.ts";
 import { openScout } from "../src/scout.ts";
-
-const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
-
-async function until(check: () => boolean, ms = 5000): Promise<void> {
-	const deadline = Date.now() + ms;
-	while (!check()) {
-		if (Date.now() > deadline) throw new Error("timed out waiting");
-		await new Promise((resolve) => setTimeout(resolve, 20));
-	}
-}
+import { seedRepo, tempDir, until } from "./helpers.ts";
 
 describe("pull request review, when asked", () => {
 	it("reviews pull requests Scout was asked to, as a review with line comments, then each new push", async () => {
-		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-automation-")));
-		const remote = join(root, "remote.git");
-		const seed = join(root, "seed");
-		git("init", "--quiet", "--bare", "--initial-branch=main", remote);
-		git("init", "--quiet", "--initial-branch=main", seed);
-		const commit = (file: string, text: string, message: string) => {
-			writeFileSync(join(seed, file), text);
-			git("-C", seed, "add", ".");
-			git("-C", seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", message);
-			return git("-C", seed, "rev-parse", "HEAD");
-		};
-		commit("a.txt", "a\n", "seed");
-		git("-C", seed, "push", "--quiet", remote, "main");
-		git("-C", seed, "checkout", "--quiet", "-b", "feature");
-		let head = commit("b.txt", "b\n", "add b");
-		git("-C", seed, "push", "--quiet", remote, "feature");
+		const root = tempDir("scout-automation-");
+		const { remote, commit, push, checkout } = seedRepo(root, "remote", "main", { "a.txt": "a\n" });
+		checkout("feature", true);
+		let head = commit({ "b.txt": "b\n" }, "add b");
+		push("feature");
 
 		const profileDir = join(root, "profile");
 		mkdirSync(join(profileDir, "channels", "team"), { recursive: true });
@@ -118,13 +96,14 @@ describe("pull request review, when asked", () => {
 		// Answering clears the request; a new push is still reviewed, the same commit never twice.
 		requested = false;
 		await reviewer.poll();
-		head = commit("b.test.txt", "test\n", "test b");
-		git("-C", seed, "push", "--quiet", remote, "feature");
+		head = commit({ "b.test.txt": "test\n" }, "test b");
+		push("feature");
 		faux.setResponses([fauxAssistantMessage("APPROVE")]);
 		await reviewer.poll();
 		await until(() => reviews.length === 2);
+		// Polling again starts nothing: no review of a commit already reviewed is waiting to be posted.
 		await reviewer.poll();
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.deepEqual(scout.pulls.unpostedReviews(), []);
 		assert.equal(reviews.length, 2);
 		assert.equal(reviews[1]!.body.event, "APPROVED");
 		assert.match(reviews[1]!.body.body, /^Looks good to me\./);
