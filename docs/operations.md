@@ -19,7 +19,7 @@ on and prints one line each, ✅, ⚠️ or ❌, with how to fix what isn't (`sr
 - the dashboard: not open to the network without a login;
 - backups: that Litestream is copying both databases off the machine ([Backups](#backups)), as the running Scout sees
   its data directory, or this one's when Scout can't be asked;
-- restarts: under systemd, that the unit has `Restart=always`, which a drain for a deploy needs ([Deploying](#deploying));
+- restarts: under systemd, that the unit has `Restart=always` and waits on the deploy lock, which a drain for a deploy needs ([Deploying](#deploying));
   from a shell, the unit named `scout`;
 - the running Scout, asked through its dashboard (`/status.json`, with `SCOUT_METRICS_TOKEN` when the dashboard has a login):
   - that it answers;
@@ -91,7 +91,7 @@ so: run `npm ci` in the install directory by hand.
 
 **The unit** has to start Scout again after it stops on its own, and not before the deploy is done. Update yours from `deploy/scout.service`, then `systemctl daemon-reload`. The deploy script refuses a unit without the first two:
 - `Restart=always`. The doctor warns without it too.
-- `ExecStartPre=/usr/bin/flock /opt/scout/.deploy.lock true` (your install directory): systemd waits for the deploy's lock before it starts Scout. `flock` makes the file if it's missing.
+- `ExecStartPre=/usr/bin/flock /opt/scout/.deploy.lock true` (your install directory): systemd waits for the deploy's lock before it starts Scout. `flock` makes the file if it's missing. The doctor warns without it too.
 - `TimeoutStartSec=15min`, so systemd keeps waiting while the deploy runs `npm ci`.
 
 Scout's node process is the unit's main process, so signals reach it directly: `kill -HUP "$(systemctl show -p MainPID --value scout)"`.

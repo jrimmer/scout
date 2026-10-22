@@ -8,6 +8,7 @@ import { ThreadDoc } from "./docs.ts";
 import { describeStep } from "./render.ts";
 import { openScout, type Scout } from "./scout.ts";
 import { resolveSecrets } from "./secrets.ts";
+import { startupProblem } from "./startup.ts";
 
 /**
  * Job mode: one task, no Slack, nothing kept. Provision a workspace, run, stream progress, clean up; for CI and batch
@@ -72,6 +73,13 @@ export async function runJob(
 	}
 }
 
+/** The first line of what went wrong: what the command said on stderr, else the error's message. */
+export function reportLine(error: unknown): string {
+	const stderr = (error as { stderr?: unknown } | null)?.stderr;
+	const text = typeof stderr === "string" && stderr.trim() !== "" ? stderr : error instanceof Error ? error.message : String(error);
+	return text.trim().split("\n")[0]!.replace(/^fatal: /, "").slice(0, 300);
+}
+
 if (import.meta.main) {
 	const args = process.argv.slice(2);
 	const repoFlag = args.indexOf("--repo");
@@ -81,6 +89,10 @@ if (import.meta.main) {
 		console.error('usage: npm run job -- [--repo name] "what to do"');
 		process.exit(2);
 	}
+	process.on("uncaughtException", (error) => {
+		console.error(startupProblem(error) ?? error);
+		process.exit(1);
+	});
 	// Secrets may be references, as for the service; a job never talks to Slack, so its tokens needn't resolve.
 	delete process.env.SLACK_BOT_TOKEN;
 	delete process.env.SLACK_APP_TOKEN;
@@ -94,6 +106,8 @@ if (import.meta.main) {
 	// Nothing is kept: conversations live in memory and start at 1 each run, so the rest gets its own folder too.
 	const instance = `job${randomBytes(3).toString("hex")}`;
 	const dataDir = join(config.dataDir, "jobs", instance);
+	// The harness's reports carry whole stacks; a job says what went wrong in one line, in its own closing line.
+	let reported: string | undefined;
 	const scout = await openScout({
 		config,
 		storage: new MemoryStorage(),
@@ -101,11 +115,14 @@ if (import.meta.main) {
 		instance,
 		context: BACKGROUND_CONTEXT,
 		watchProfile: false,
+		onReport: (error) => {
+			reported = reportLine(error);
+		},
 	});
 	const result = await runJob(scout, prompt, { progress: (line) => console.error(`• ${line}`) }, repo === undefined ? {} : { repo });
 	await scout.close();
 	rmSync(dataDir, { recursive: true, force: true });
-	if (result.problem !== undefined) console.error(`Scout couldn't finish: ${result.problem}`);
+	if (!result.ok) console.error(`Scout couldn't finish: ${result.problem ?? "the run failed"}${reported === undefined ? "" : ` (${reported})`}`);
 	console.log(result.answer);
 	for (const url of result.pullRequests) console.log(url);
 	process.exit(result.ok ? 0 : 1);

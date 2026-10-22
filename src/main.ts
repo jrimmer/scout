@@ -41,16 +41,23 @@ import { countMcpTools, doctor, formatChecks, restartsOf, type Unit, unitOf } fr
 import { backupGauge, backupState, describeBackup, startNotice, weekLine as backupWeekLine } from "./backups.ts";
 import { modelsFor } from "./gateway.ts";
 import { APPROVE_BUTTON, DECLINE_BUTTON, EGRESS_ALLOW, EGRESS_DECLINE, Slack } from "./slack.ts";
+import { ConfigError, refusedToken, startupProblem } from "./startup.ts";
 import { threadKey } from "./threads.ts";
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
 const context = BACKGROUND_CONTEXT;
 // Secrets first: references (op://, file:, cred:, NAME_FILE) become values before anything reads them.
+// A start-up that fails on a setting says so in a sentence; a bug keeps its stack.
+process.on("uncaughtException", (error) => {
+	const problem = startupProblem(error);
+	console.error(problem ?? error);
+	process.exit(1);
+});
 const secretSources = await resolveSecrets();
 const config = loadConfig();
 if (config.slack.botToken === "" || config.slack.appToken === "") {
-	throw new Error("SLACK_BOT_TOKEN and SLACK_APP_TOKEN are not set (see .env.example)");
+	throw new ConfigError("SLACK_BOT_TOKEN and SLACK_APP_TOKEN are not set (see .env.example)");
 }
 mkdirSync(config.dataDir, { recursive: true });
 checkPi(config.dataDir, config.piMigrate);
@@ -193,7 +200,9 @@ const bridge = new Bridge({
 	harness,
 	threads,
 	surface: slack.surface,
-	botUserId: await slack.identify(),
+	botUserId: await slack.identify().catch((error: unknown) => {
+		throw refusedToken(error, "SLACK_BOT_TOKEN");
+	}),
 	nameOf: (user) => slack.nameOf(user),
 	agent: scout.workAgent,
 	context,
@@ -263,6 +272,8 @@ await slack.start({
 		const threadTs = await startOn({ channel: ask.channel, channelName: info.channel.name ?? ask.channel, user: ask.user, request: ask.request, text: ask.about ?? "", intro });
 		return slack.permalink(ask.channel, threadTs);
 	},
+}).catch((error: unknown) => {
+	throw refusedToken(error, "SLACK_APP_TOKEN");
 });
 // How much Scout does on its own: in the log at every start, and in its home channel the first time on each level.
 console.log(describeInitiative(config.initiative));
@@ -1352,7 +1363,7 @@ function checkPi(dataDir: string, migrate: boolean): void {
 	const converted = join(dataDir, "pi-main");
 	if (pi === "stable") {
 		if (existsSync(converted)) {
-			throw new Error(
+			throw new ConfigError(
 				`${db} was converted by Pi Durable ${readFileSync(converted, "utf8").trim()}, which the release can't open. ` +
 					"Go back with `npm run pi -- main`, or restore a backup from before the switch.",
 			);
@@ -1360,7 +1371,7 @@ function checkPi(dataDir: string, migrate: boolean): void {
 		return;
 	}
 	if (existsSync(db) && !existsSync(converted) && !migrate) {
-		throw new Error(
+		throw new ConfigError(
 			`Pi Durable ${pi} converts ${db} for good: the release can't open it afterwards. Back it up (or use another ` +
 				"SCOUT_DATA_DIR), then start once with SCOUT_PI_MIGRATE=1.",
 		);

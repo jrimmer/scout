@@ -64,6 +64,8 @@ export type ScoutOptions = {
 	pullOpened?: (conversationId: number, pull: OpenedPull) => void;
 	/** Off for one-off jobs. */
 	watchProfile?: boolean;
+	/** What the harness reports (a failed task or tool, with its error); by default it goes to the log. */
+	onReport?: (error: unknown) => void;
 	/** Where sandboxes run; by default the one `config.sandbox.driver` names. */
 	driver?: SandboxDriver;
 	/** A model call for provider session `session` started answering `ms` after it was sent: for the evals. */
@@ -425,7 +427,7 @@ export async function openScout(options: ScoutOptions) {
 				(await reflector?.env(target, ctx)) ??
 				(await reviewEnv(target, ctx, (id) => workspaces.env(id))) ??
 				workspaces.env(target.conversationId),
-			onReport: (report) => console.error("harness:", report),
+			onReport: options.onReport ?? ((report) => console.error("harness:", report)),
 			// Pi's own spans (submissions, task phases, model requests) go out with Scout's, through the same exporter.
 			...(tracer === undefined ? {} : { telemetry: tracer.piTelemetry() }),
 			settings: {

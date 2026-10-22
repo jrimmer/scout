@@ -8,10 +8,16 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { loadConfig } from "../src/config.ts";
-import { runJob } from "../src/job.ts";
+import { reportLine, runJob } from "../src/job.ts";
 import { openScout } from "../src/scout.ts";
 
 describe("job mode", () => {
+	it("reduces a failed command's report to the line it ended on, not its stack", () => {
+		const clone = Object.assign(new Error("Command failed: git clone --mirror x\nfatal: repository 'x' does not exist\n    at wrappedFn"), { stderr: "fatal: repository 'x' does not exist\n" });
+		assert.equal(reportLine(clone), "repository 'x' does not exist");
+		assert.equal(reportLine(new Error("no space left\n    at somewhere")), "no space left");
+	});
+
 	it("runs one task without Slack, reports progress, and answers", async () => {
 		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-job-")));
 		mkdirSync(join(root, "profile"));

@@ -1,3 +1,4 @@
+import { ConfigError } from "./startup.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { type Initiative, parseInitiative } from "./initiative.ts";
 import { homedir } from "node:os";
@@ -150,7 +151,7 @@ function gatewayModels(env: NodeJS.ProcessEnv, model: string | undefined, more: 
 function modelList(env: NodeJS.ProcessEnv, name: string): { provider: string; modelId: string }[] {
 	return (env[name] ?? "").split(",").map((m) => m.trim()).filter(Boolean).map((m) => {
 		const [p, ...id] = m.split("/");
-		if (p === undefined || p === "" || id.join("/") === "") throw new Error(`${name}: "${m}" should look like provider/modelId, as SCOUT_MODEL does`);
+		if (p === undefined || p === "" || id.join("/") === "") throw new ConfigError(`${name}: "${m}" should look like provider/modelId, as SCOUT_MODEL does`);
 		return { provider: p, modelId: id.join("/") };
 	});
 }
@@ -162,13 +163,13 @@ function jsonSetting<T>(env: NodeJS.ProcessEnv, name: string, example: string): 
 	try {
 		return JSON.parse(raw) as T;
 	} catch (error) {
-		throw new Error(`${name} isn't valid JSON (${error instanceof Error ? error.message : String(error)}); it should look like ${example}`);
+		throw new ConfigError(`${name} isn't valid JSON (${error instanceof Error ? error.message : String(error)}); it should look like ${example}`);
 	}
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
 	const value = env[name];
-	if (value === undefined || value === "") throw new Error(`${name} is not set (see .env.example)`);
+	if (value === undefined || value === "") throw new ConfigError(`${name} is not set (see .env.example)`);
 	return value;
 }
 
@@ -179,17 +180,17 @@ function moreRepos(path: string | undefined): RepoConfig[] {
 	try {
 		text = readFileSync(path, "utf8");
 	} catch (error) {
-		throw new Error(`SCOUT_REPOS_FILE: can't read ${path} (${(error as { code?: string }).code ?? String(error)})`);
+		throw new ConfigError(`SCOUT_REPOS_FILE: can't read ${path} (${(error as { code?: string }).code ?? String(error)})`);
 	}
 	let list: Partial<RepoConfig>[];
 	try {
 		list = JSON.parse(text) as Partial<RepoConfig>[];
 	} catch (error) {
-		throw new Error(`SCOUT_REPOS_FILE: ${path} isn't valid JSON (${error instanceof Error ? error.message : String(error)})`);
+		throw new ConfigError(`SCOUT_REPOS_FILE: ${path} isn't valid JSON (${error instanceof Error ? error.message : String(error)})`);
 	}
-	if (!Array.isArray(list)) throw new Error(`SCOUT_REPOS_FILE: ${path} should be a list of repositories, [{ "name", "gitUrl", "slug" }, …]`);
+	if (!Array.isArray(list)) throw new ConfigError(`SCOUT_REPOS_FILE: ${path} should be a list of repositories, [{ "name", "gitUrl", "slug" }, …]`);
 	return list.map((r, i) => {
-		if (!r.name || !r.gitUrl || !r.slug) throw new Error(`${path}: repository ${i + 1} needs name, gitUrl and slug`);
+		if (!r.name || !r.gitUrl || !r.slug) throw new ConfigError(`${path}: repository ${i + 1} needs name, gitUrl and slug`);
 		return {
 			name: r.name,
 			gitUrl: r.gitUrl,
@@ -206,13 +207,13 @@ function moreRepos(path: string | undefined): RepoConfig[] {
 function sandboxConfig(env: NodeJS.ProcessEnv): SandboxConfig {
 	const driver = env.SCOUT_SANDBOX_DRIVER ?? "docker";
 	if (driver !== "docker" && driver !== "spoond" && driver !== "local") {
-		throw new Error("SCOUT_SANDBOX_DRIVER must be docker, spoond or local");
+		throw new ConfigError("SCOUT_SANDBOX_DRIVER must be docker, spoond or local");
 	}
 	const network = env.SCOUT_SANDBOX_NETWORK ?? "none";
-	if (network !== "none" && network !== "open") throw new Error("SCOUT_SANDBOX_NETWORK must be none or open");
+	if (network !== "none" && network !== "open") throw new ConfigError("SCOUT_SANDBOX_NETWORK must be none or open");
 	const size = env.SCOUT_SANDBOX_SIZE ?? (driver === "docker" ? "4g" : undefined);
 	const transport = env.SCOUT_SPOOND_TRANSPORT ?? "stream";
-	if (transport !== "stream" && transport !== "rest") throw new Error("SCOUT_SPOOND_TRANSPORT must be stream or rest");
+	if (transport !== "stream" && transport !== "rest") throw new ConfigError("SCOUT_SPOOND_TRANSPORT must be stream or rest");
 	return {
 		driver,
 		image: env.SCOUT_SANDBOX_IMAGE ?? (driver === "spoond" ? "dev-base" : "scout-sandbox:latest"),
@@ -225,7 +226,7 @@ function sandboxConfig(env: NodeJS.ProcessEnv): SandboxConfig {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	const slug = required(env, "SCOUT_REPO_SLUG");
-	if (!/^[^/\s]+\/[^/\s]+$/.test(slug)) throw new Error(`SCOUT_REPO_SLUG should look like owner/name, not "${slug}"`);
+	if (!/^[^/\s]+\/[^/\s]+$/.test(slug)) throw new ConfigError(`SCOUT_REPO_SLUG should look like owner/name, not "${slug}"`);
 	const repo: RepoConfig = {
 		name: env.SCOUT_REPO_NAME ?? slug.split("/").pop() ?? slug,
 		gitUrl: required(env, "SCOUT_REPO_URL"),
@@ -236,25 +237,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	};
 	const [provider, ...rest] = (env.SCOUT_MODEL ?? "anthropic/claude-opus-5-5").split("/");
 	const modelId = rest.join("/");
-	if (provider === undefined || modelId === "") throw new Error("SCOUT_MODEL must look like provider/modelId");
+	if (provider === undefined || modelId === "") throw new ConfigError("SCOUT_MODEL must look like provider/modelId");
 
 	const kind = env.SCOUT_CODEHOST ?? "forgejo";
-	if (kind !== "forgejo" && kind !== "github") throw new Error("SCOUT_CODEHOST must be forgejo or github");
+	if (kind !== "forgejo" && kind !== "github") throw new ConfigError("SCOUT_CODEHOST must be forgejo or github");
 	if (kind === "forgejo" && !env.SCOUT_CODEHOST_API) {
-		throw new Error("SCOUT_CODEHOST_API is required for Forgejo: its API address, like https://forgejo.example.com/api/v1");
+		throw new ConfigError("SCOUT_CODEHOST_API is required for Forgejo: its API address, like https://forgejo.example.com/api/v1");
 	}
 	const reflectHour = Number(env.SCOUT_REFLECT_HOUR ?? 3);
-	if (!Number.isInteger(reflectHour) || reflectHour < 0 || reflectHour > 23) throw new Error(`SCOUT_REFLECT_HOUR should be an hour, 0 to 23, not "${env.SCOUT_REFLECT_HOUR}"`);
+	if (!Number.isInteger(reflectHour) || reflectHour < 0 || reflectHour > 23) throw new ConfigError(`SCOUT_REFLECT_HOUR should be an hour, 0 to 23, not "${env.SCOUT_REFLECT_HOUR}"`);
 	const benchHour = Number(env.SCOUT_BENCH_HOUR ?? 1);
-	if (!Number.isInteger(benchHour) || benchHour < 0 || benchHour > 23) throw new Error(`SCOUT_BENCH_HOUR should be an hour, 0 to 23, not "${env.SCOUT_BENCH_HOUR}"`);
+	if (!Number.isInteger(benchHour) || benchHour < 0 || benchHour > 23) throw new ConfigError(`SCOUT_BENCH_HOUR should be an hour, 0 to 23, not "${env.SCOUT_BENCH_HOUR}"`);
 	const benchModels = modelList(env, "SCOUT_BENCH_MODELS");
 	const fallbackModels = modelList(env, "SCOUT_FALLBACK_MODELS");
 	if (fallbackModels.some((m) => m.provider === provider && m.modelId === modelId)) {
-		throw new Error(`SCOUT_FALLBACK_MODELS names SCOUT_MODEL (${provider}/${modelId}): a fallback has to be another model`);
+		throw new ConfigError(`SCOUT_FALLBACK_MODELS names SCOUT_MODEL (${provider}/${modelId}): a fallback has to be another model`);
 	}
 	const fallbackAfter = count(env, "SCOUT_FALLBACK_AFTER", 3, 1);
 	const fallbackFor = count(env, "SCOUT_FALLBACK_FOR", 15, 1);
-	if (env.SCOUT_MCP_FILE && !existsSync(resolve(env.SCOUT_MCP_FILE))) throw new Error(`SCOUT_MCP_FILE: there's no file at ${resolve(env.SCOUT_MCP_FILE)}`);
+	if (env.SCOUT_MCP_FILE && !existsSync(resolve(env.SCOUT_MCP_FILE))) throw new ConfigError(`SCOUT_MCP_FILE: there's no file at ${resolve(env.SCOUT_MCP_FILE)}`);
 
 	const dataDir = resolve(env.SCOUT_DATA_DIR ?? "data");
 
@@ -382,7 +383,7 @@ function backupSetting(value: string | undefined): BackupSetting {
 	const v = (value ?? "").trim().toLowerCase();
 	if (v === "" || v === "litestream") return "litestream";
 	if (v === "none") return "none";
-	throw new Error(`SCOUT_BACKUP must be litestream or none (it's "${value}"). See docs/operations.md, "Backups".`);
+	throw new ConfigError(`SCOUT_BACKUP must be litestream or none (it's "${value}"). See docs/operations.md, "Backups".`);
 }
 
 /** A whole-number setting, at least `min`, with a plain message when it isn't one. */
@@ -390,6 +391,6 @@ function count(env: NodeJS.ProcessEnv, name: string, fallback: number, min: numb
 	const raw = env[name];
 	if (raw === undefined || raw.trim() === "") return fallback;
 	const value = Number(raw);
-	if (!Number.isInteger(value) || value < min) throw new Error(`${name} must be a whole number of at least ${min} (it's "${raw}").`);
+	if (!Number.isInteger(value) || value < min) throw new ConfigError(`${name} must be a whole number of at least ${min} (it's "${raw}").`);
 	return value;
 }

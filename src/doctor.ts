@@ -52,7 +52,7 @@ export async function checkCodeHost(host: CodeHost, doFetch: typeof fetch = fetc
 	if (host.apiUrl === "") return { name, status: "fail", detail: "no API address", fix: "Set SCOUT_CODEHOST_API (Forgejo: https://<host>/api/v1)." };
 	const headers = { accept: host.kind === "github" ? "application/vnd.github+json" : "application/json", authorization: host.kind === "github" ? `Bearer ${host.token}` : `token ${host.token}` };
 	const user = await doFetch(`${host.apiUrl}/user`, { headers }).catch((error: unknown) => error as Error);
-	if (user instanceof Error) return { name, status: "fail", detail: `can't reach ${host.apiUrl} (${user.message})` };
+	if (user instanceof Error) return { name, status: "fail", detail: `can't reach ${host.apiUrl} (${user.message})`, ...hint(user, host.apiUrl) };
 	if (!user.ok) return { name, status: "fail", detail: `the token was refused (${user.status})`, fix: "Check SCOUT_CODEHOST_TOKEN." };
 	const login = ((await user.json().catch(() => ({}))) as { login?: string }).login ?? "?";
 	if (host.kind === "github") {
@@ -74,7 +74,7 @@ export async function checkCodeHost(host: CodeHost, doFetch: typeof fetch = fetc
 export async function checkSpoond(url: string, token: string, doFetch: typeof fetch = fetch): Promise<Check> {
 	const name = "spoond";
 	const response = await doFetch(`${url.replace(/\/$/, "")}/api/users/me`, { headers: { authorization: `Bearer ${token}` } }).catch((error: unknown) => error as Error);
-	if (response instanceof Error) return { name, status: "fail", detail: `can't reach ${url} (${response.message})` };
+	if (response instanceof Error) return { name, status: "fail", detail: `can't reach ${url} (${response.message})`, ...hint(response, url) };
 	if (!response.ok) return { name, status: "fail", detail: `the token was refused (${response.status})`, fix: "Check SCOUT_SPOOND_TOKEN (or the file it names)." };
 	const me = (await response.json().catch(() => ({}))) as { share?: { name?: string }; user?: { name?: string } };
 	return { name, status: "ok", detail: `signed in as ${me.share?.name ?? me.user?.name ?? "?"}` };
@@ -85,7 +85,7 @@ export async function checkGateway(gateway: GatewayConfig, wanted: readonly stri
 	const response = await doFetch(`${gateway.url}/models`, {
 		headers: { ...(gateway.key === undefined ? {} : { authorization: `Bearer ${gateway.key}` }), ...gateway.headers },
 	}).catch((error: unknown) => error as Error);
-	if (response instanceof Error) return { name, status: "fail", detail: `can't reach ${gateway.url} (${response.message})` };
+	if (response instanceof Error) return { name, status: "fail", detail: `can't reach ${gateway.url} (${response.message})`, ...hint(response, gateway.url) };
 	if (!response.ok) return { name, status: "fail", detail: `${gateway.url} answered ${response.status}`, fix: "Check SCOUT_GATEWAY_URL and SCOUT_GATEWAY_KEY." };
 	const listed = new Set((((await response.json().catch(() => ({}))) as { data?: { id?: string }[] }).data ?? []).flatMap((m) => (m.id === undefined ? [] : [m.id])));
 	const missing = wanted.filter((m) => listed.size > 0 && !listed.has(m));
@@ -174,25 +174,39 @@ export function unitOf(cgroup: string, env: NodeJS.ProcessEnv = process.env): Un
 
 /**
  * A drain for a deploy (scripts/deploy.sh) ends with Scout stopping, so its unit has to start it again: Restart=always.
- * `shown` is `systemctl show <unit> -p LoadState -p Restart`; a unit systemd doesn't know is no check at all.
+ * It also waits on the deploy lock before it starts: an `ExecStartPre` running `flock <install dir>/.deploy.lock`.
+ * `shown` is `systemctl show <unit> -p LoadState -p Restart -p ExecStartPre`; a unit systemd doesn't know is no check at all.
  */
-export function checkRestarts(unit: Unit, shown: string): Check | undefined {
+export function checkRestarts(unit: Unit, shown: string, installDir: string = process.cwd()): Check | undefined {
 	const props = Object.fromEntries(shown.split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1).trim()]));
 	if (props.LoadState !== "loaded") return undefined;
 	const name = "Restarts";
-	if (props.Restart === "always") return { name, status: "ok", detail: `the ${unit.name} unit restarts Scout whenever it stops` };
-	return {
-		name,
-		status: "warn",
-		detail: `the ${unit.name} unit has Restart=${props.Restart ?? "?"}, so a drain for a deploy leaves Scout stopped`,
-		fix: `Set Restart=always as deploy/scout.service does, then systemctl${unit.user ? " --user" : ""} daemon-reload (docs/operations.md#deploying).`,
-	};
+	const reload = `systemctl${unit.user ? " --user" : ""} daemon-reload`;
+	if (props.Restart !== "always") {
+		return {
+			name,
+			status: "warn",
+			detail: `the ${unit.name} unit has Restart=${props.Restart ?? "?"}, so a drain for a deploy leaves Scout stopped`,
+			fix: `Set Restart=always as deploy/scout.service does, then ${reload} (docs/operations.md#deploying).`,
+		};
+	}
+	// What scripts/deploy.sh looks for before it drains: the unit waits on the lock the deploy holds.
+	const lock = join(installDir, ".deploy.lock");
+	if (!(props.ExecStartPre ?? "").includes(`flock ${lock} `)) {
+		return {
+			name,
+			status: "warn",
+			detail: `the ${unit.name} unit doesn't wait for the deploy lock, so systemd could start Scout on half-updated code`,
+			fix: `Add these under [Service], then ${reload} (deploy/scout.service, docs/operations.md#deploying):\n    ExecStartPre=/usr/bin/flock ${lock} true\n    TimeoutStartSec=15min`,
+		};
+	}
+	return { name, status: "ok", detail: `the ${unit.name} unit restarts Scout whenever it stops, and waits for the deploy lock` };
 }
 
 /** The restart check for `unit`, or nothing when there's no unit or no systemd to ask. */
 export async function restartsOf(unit: Unit | undefined, show: (args: string[]) => Promise<string> = systemctl): Promise<Check | undefined> {
 	if (unit === undefined) return undefined;
-	const shown = await show([...(unit.user ? ["--user"] : []), "show", unit.name, "-p", "LoadState", "-p", "Restart"]).catch(() => undefined);
+	const shown = await show([...(unit.user ? ["--user"] : []), "show", unit.name, "-p", "LoadState", "-p", "Restart", "-p", "ExecStartPre"]).catch(() => undefined);
 	return shown === undefined ? undefined : checkRestarts(unit, shown);
 }
 
@@ -355,6 +369,28 @@ function gitHint(why: string): string {
 	if (/could not resolve|name or service|connection (refused|timed out)|timed out|no route/i.test(why)) return "Check the host in the URL, and that this machine can reach it (and the SSH port).";
 	if (/not found|does not exist|not appear to be a git repository/i.test(why)) return "Check the URL, and that Scout's account has access to the repository.";
 	return "Check the URL and that Scout's SSH key (SCOUT_GIT_SSH_KEY) is on its code host account.";
+}
+
+/** Why a request never got an answer, from what Node says under "fetch failed" (`error.cause.code`), and what to look at. */
+export function reachHint(error: Error, url: string): string | undefined {
+	const cause = (error as { cause?: { code?: unknown; message?: unknown } }).cause;
+	const code = typeof cause?.code === "string" ? cause.code : "";
+	const said = `${code} ${typeof cause?.message === "string" ? cause.message : ""} ${error.name}`;
+	if (code === "ECONNREFUSED") return "Nothing is listening at that host and port: check the URL, port included, and that the server is running.";
+	if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "That host name doesn't resolve: check its spelling in the URL, and this machine's DNS.";
+	if (code === "ECONNRESET" || code === "EPROTO" || /wrong version number|packet length|ssl|tls/i.test(said)) {
+		return url.startsWith("https:")
+			? "Often https against a server that serves plain http: try http:// in the URL, or check the port."
+			: "Often http against a server that needs https: try https:// in the URL, or check the port.";
+	}
+	if (/CERT|SELF_SIGNED|ISSUER/.test(code)) return "This machine doesn't trust the server's certificate: use one from a known authority, or have Node trust yours (NODE_EXTRA_CA_CERTS).";
+	if (/TIMEOUT|TimeoutError|abort/i.test(said)) return "The server didn't answer in time: check the URL, and that a firewall isn't dropping the connection.";
+	return undefined;
+}
+
+function hint(error: Error, url: string): { fix?: string } {
+	const fix = reachHint(error, url);
+	return fix === undefined ? {} : { fix };
 }
 
 function firstLine(error: unknown): string {

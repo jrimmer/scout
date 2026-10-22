@@ -6,7 +6,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { describe, it } from "node:test";
 import { loadConfig } from "../src/config.ts";
-import { checkBackups, checkCodeHost, checkDashboard, checkDirectory, checkGateway, checkGitRemote, checkModel, checkProfileDir, checkRestarts, checkRunning, checkSlack, checkSpoond, doctor, fetchRunning, formatChecks, restartsOf, type Running, unitOf } from "../src/doctor.ts";
+import { checkBackups, reachHint, checkCodeHost, checkDashboard, checkDirectory, checkGateway, checkGitRemote, checkModel, checkProfileDir, checkRestarts, checkRunning, checkSlack, checkSpoond, doctor, fetchRunning, formatChecks, restartsOf, type Running, unitOf } from "../src/doctor.ts";
 
 /** A fetch that answers by URL: a status, a JSON body, and headers. */
 function answering(routes: Record<string, { status?: number; body?: unknown; headers?: Record<string, string> } | Error>): typeof fetch {
@@ -43,6 +43,22 @@ describe("doctor", () => {
 		assert.equal((await checkCodeHost(host, answering({ "http://forge/api/v1/user": { status: 401 } }))).status, "fail");
 		const github = await checkCodeHost({ kind: "github", apiUrl: "https://api.github.com", token: "t" }, answering({ "https://api.github.com/user": { body: { login: "scout" }, headers: { "x-oauth-scopes": "repo" } } }));
 		assert.deepEqual([github.status, github.detail], ["warn", "signed in as scout; the token lacks notifications"]);
+	});
+
+	it("says what a failed connection probably means, from the cause under \"fetch failed\"", async () => {
+		const failed = (code: string, message = code) => Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error(message), { code }) });
+		assert.match(reachHint(failed("ECONNREFUSED"), "http://forge:3000/api/v1") ?? "", /Nothing is listening.*port/);
+		assert.match(reachHint(failed("ENOTFOUND"), "http://forgee/api/v1") ?? "", /host name doesn't resolve/);
+		assert.match(reachHint(failed("ECONNRESET"), "https://forge:3000/api/v1") ?? "", /serves plain http.*try http:\/\//);
+		assert.match(reachHint(failed("EPROTO", "wrong version number"), "https://forge:3000/api/v1") ?? "", /try http:\/\//);
+		assert.match(reachHint(failed("ECONNRESET"), "http://forge/api/v1") ?? "", /needs https.*try https:\/\//);
+		assert.match(reachHint(failed("DEPTH_ZERO_SELF_SIGNED_CERT"), "https://forge/api/v1") ?? "", /certificate/);
+		assert.match(reachHint(failed("UND_ERR_CONNECT_TIMEOUT"), "http://forge/api/v1") ?? "", /in time/);
+		assert.equal(reachHint(new Error("boom"), "http://forge"), undefined);
+		const host = { kind: "forgejo", apiUrl: "http://forge:3000/api/v1", token: "t" } as const;
+		const refused = await checkCodeHost(host, answering({ "http://forge:3000/api/v1/user": failed("ECONNREFUSED") }));
+		assert.deepEqual([refused.status, refused.detail], ["fail", "can't reach http://forge:3000/api/v1 (fetch failed)"]);
+		assert.match(refused.fix ?? "", /Nothing is listening/);
 	});
 
 	it("checks spoond, the model gateway, the directory and git remotes", async () => {
@@ -118,7 +134,12 @@ describe("doctor", () => {
 
 	it("warns when the service won't start Scout again after a drain, and skips without systemd", async () => {
 		const unit = { name: "scout.service", user: false };
-		assert.equal(checkRestarts(unit, "LoadState=loaded\nRestart=always\n")?.status, "ok");
+		const waits = "ExecStartPre={ path=/usr/bin/flock ; argv[]=/usr/bin/flock /opt/scout/.deploy.lock true ; ignore_errors=no }";
+		assert.equal(checkRestarts(unit, `LoadState=loaded\nRestart=always\n${waits}\n`, "/opt/scout")?.status, "ok");
+		const noLock = checkRestarts(unit, "LoadState=loaded\nRestart=always\nExecStartPre=\n", "/opt/scout");
+		assert.deepEqual([noLock?.status, noLock?.detail], ["warn", "the scout.service unit doesn't wait for the deploy lock, so systemd could start Scout on half-updated code"]);
+		assert.match(noLock?.fix ?? "", /ExecStartPre=\/usr\/bin\/flock \/opt\/scout\/\.deploy\.lock true\n {4}TimeoutStartSec=15min/);
+		assert.equal(checkRestarts(unit, `LoadState=loaded\nRestart=always\n${waits}\n`, "/srv/other")?.status, "warn", "a lock in another directory isn't this one's");
 		const onFailure = checkRestarts(unit, "LoadState=loaded\nRestart=on-failure\n");
 		assert.deepEqual([onFailure?.status, onFailure?.detail], ["warn", "the scout.service unit has Restart=on-failure, so a drain for a deploy leaves Scout stopped"]);
 		assert.match(onFailure?.fix ?? "", /Restart=always.*systemctl daemon-reload/);
@@ -129,7 +150,7 @@ describe("doctor", () => {
 			return "LoadState=loaded\nRestart=no\n";
 		};
 		assert.match((await restartsOf({ name: "scout.service", user: true }, show))?.fix ?? "", /systemctl --user daemon-reload/);
-		assert.deepEqual(asked, ["--user", "show", "scout.service", "-p", "LoadState", "-p", "Restart"]);
+		assert.deepEqual(asked, ["--user", "show", "scout.service", "-p", "LoadState", "-p", "Restart", "-p", "ExecStartPre"]);
 		assert.equal(await restartsOf(undefined, show), undefined);
 		assert.equal(await restartsOf(unit, async () => Promise.reject(new Error("systemctl: not found"))), undefined);
 	});

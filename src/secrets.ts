@@ -1,3 +1,4 @@
+import { ConfigError } from "./startup.ts";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -53,7 +54,7 @@ const defaultReaders: Readers = {
 		try {
 			return (await run("op", ["read", "--no-newline", reference])).stdout;
 		} catch (error) {
-			throw new Error(`couldn't read ${reference} with the 1Password CLI: ${(error as Error).message.split("\n")[0]}`);
+			throw new ConfigError(`couldn't read ${reference} with the 1Password CLI: ${(error as Error).message.split("\n")[0]}`);
 		}
 	},
 };
@@ -62,7 +63,7 @@ async function resolve(reference: string, env: NodeJS.ProcessEnv, read: Readers)
 	if (reference.startsWith("file:")) return read.file(reference.slice("file:".length));
 	if (reference.startsWith("cred:")) {
 		const dir = env.CREDENTIALS_DIRECTORY;
-		if (dir === undefined) throw new Error(`${reference}: not running with systemd credentials (no CREDENTIALS_DIRECTORY)`);
+		if (dir === undefined) throw new ConfigError(`${reference}: not running with systemd credentials (no CREDENTIALS_DIRECTORY)`);
 		return read.file(join(dir, reference.slice("cred:".length)));
 	}
 	if (reference.startsWith("op://")) return read.onePassword(reference);
