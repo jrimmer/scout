@@ -224,6 +224,7 @@ const bridge = new Bridge({
 	waited: (kind, ms) => scout.capacity.waited(kind, ms),
 	ran: (ms) => scout.capacity.ran(ms),
 	waitingFor: (conversationId) => scout.waitingFor(conversationId),
+	...(scout.breakers === undefined ? {} : { fallbackNotice: (conversationId: number) => scout.fallbackNotice(conversationId) }),
 	modelFor: scout.modelFor,
 	download: (url) => slack.download(url),
 	saveAttachment: (id, name, bytes) => workspaces.saveAttachment(id, name, bytes),
@@ -889,6 +890,12 @@ function capacityGauges(): Record<string, { help: string; value: number }> {
 	}
 	gauges.scout_model_first_token_p50_seconds = { help: "Median time for a model call to start answering, over the last day.", value: Math.round(c.firstToken.p50 / 100) / 10 };
 	gauges.scout_model_first_token_p90_seconds = { help: "90th percentile time for a model call to start answering, over the last day.", value: Math.round(c.firstToken.p90 / 100) / 10 };
+	const outages = scout.breakers?.outages() ?? [];
+	gauges.scout_models_failing = { help: "Models whose calls go to a fallback (or nowhere else) because they keep failing.", value: outages.length };
+	gauges.scout_model_on_fallback = {
+		help: "1 when SCOUT_MODEL keeps failing and its calls go to a fallback model.",
+		value: outages.some((o) => o.model === `${config.model.provider}/${config.model.modelId}` && o.fallback !== undefined) ? 1 : 0,
+	};
 	return gauges;
 }
 
@@ -1203,6 +1210,11 @@ const collector = new Collector({
 	alerts: () => health.list(),
 	schedules: () => scout.schedules.all(),
 	capacity: () => capacityNow(),
+	models: () => ({
+		primary: `${config.model.provider}/${config.model.modelId}`,
+		fallbacks: scout.breakers?.fallbacks.slice() ?? [],
+		outages: scout.breakers?.outages() ?? [],
+	}),
 });
 
 // The dashboard: read-only, on its own address (loopback unless it has a password).

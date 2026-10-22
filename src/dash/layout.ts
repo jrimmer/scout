@@ -1,3 +1,4 @@
+import { short } from "../capacity.ts";
 import type { Snapshot } from "./collect.ts";
 import { Grid, type Style } from "./grid.ts";
 
@@ -22,7 +23,7 @@ export function layout(s: Snapshot, width = WIDTH, links: { bench?: boolean } = 
 	}
 
 	y = sideBySide(grid, y, width, half, ["now", nowLines(s)], ["pull requests", pullLines(s)]);
-	if (s.capacity !== undefined) y = panel(grid, 0, y, width, "capacity", capacityLines(s.capacity, s.now));
+	if (s.capacity !== undefined || s.models !== undefined) y = panel(grid, 0, y, width, "capacity", [...modelLines(s), ...(s.capacity === undefined ? [] : capacityLines(s.capacity, s.now))]);
 	y = panel(grid, 0, y, width, "threads", threadLines(s));
 	y = sideBySide(grid, y, width, half, ["learning", learningLines(s)], ["spend", spendLines(s)]);
 	if (s.learning.notes.length > 0) y = panel(grid, 0, y, width, "unreviewed notes", noteLines(s));
@@ -255,6 +256,40 @@ function clock(ms: number): string {
 
 function dollars(amount: number): string {
 	return `$${amount.toFixed(2)}`;
+}
+
+/** Which model is answering: the default and what it falls back to, and a line for each model failing now. */
+function modelLines(s: Snapshot): Line[] {
+	const m = s.models;
+	if (m === undefined) return [];
+	const down = new Set(m.outages.map((o) => o.model));
+	const lines: Line[] = [
+		{
+			left: [
+				{ text: "model        ", style: "dim" },
+				{ text: down.has(m.primary) ? `${short(m.primary)} failing` : short(m.primary), style: down.has(m.primary) ? "warn" : "text" },
+				{ text: m.fallbacks.length === 0 ? "" : `  · falls back to ${m.fallbacks.map(short).join(", ")}`, style: "dim" },
+			],
+		},
+	];
+	for (const o of m.outages) {
+		const left = o.retryAt - s.now;
+		lines.push({
+			left:
+				o.fallback === undefined
+					? [
+							{ text: "failing      ", style: "dim" },
+							{ text: `${short(o.model)} since ${clock(o.since).slice(0, 5)}, and nothing to fall back to`, style: "bad" },
+						]
+					: [
+							{ text: "fallback     ", style: "dim" },
+							{ text: `${short(o.fallback)} since ${clock(o.since).slice(0, 5)}`, style: "warn" },
+							{ text: ` (${short(o.model)} failing${o.error === undefined ? "" : `: ${o.error}`})`, style: "dim" },
+						],
+			right: [{ text: left < 60_000 ? "retrying now" : `retry in ${age(left)}`, style: "dim" }],
+		});
+	}
+	return lines;
 }
 
 function capacityLines(c: NonNullable<Snapshot["capacity"]>, _now: number): Line[] {

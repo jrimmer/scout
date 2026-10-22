@@ -20,6 +20,14 @@ export type CapacitySnapshot = {
 	firstToken?: { count: number; p50: number; p90: number };
 };
 
+/** Which model is answering: the default, the fallbacks in order, and the models failing now (capacity.ts breakers). */
+export type ModelsSnapshot = {
+	primary: string;
+	fallbacks: string[];
+	/** Each failing model: since when, which model answers in its place (none when none is answering), and why. */
+	outages: { model: string; fallback?: string; since: number; retryAt: number; failures: number; error?: string }[];
+};
+
 export type Snapshot = {
 	now: number;
 	startedAt: number;
@@ -47,6 +55,7 @@ export type Snapshot = {
 	schedules: { id: number; channel: string; when: string; task: string; paused: boolean; next?: number; lastRun?: number }[];
 	/** Runs, model calls and sandboxes against their limits, what's waiting, and how long waits have been (capacity.ts). */
 	capacity?: CapacitySnapshot;
+	models?: ModelsSnapshot;
 	spend: {
 		total: number;
 		byModel: { model: string; cost: number }[];
@@ -85,6 +94,7 @@ export type Sources = {
 	alerts(): { message: string; since: number }[];
 	schedules?(): Schedule[];
 	capacity?(): CapacitySnapshot;
+	models?(): ModelsSnapshot;
 };
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -164,6 +174,7 @@ export class Collector {
 				notes: s.memory.active(),
 			},
 			...(s.capacity === undefined ? {} : { capacity: s.capacity() }),
+			...(s.models === undefined ? {} : { models: s.models() }),
 			schedules: (s.schedules?.() ?? []).map((sc) => {
 				const next = sc.paused ? undefined : nextTime(sc.cron, now);
 				return { id: sc.id, channel: sc.channel, when: sc.when, task: sc.task, paused: sc.paused, ...(next === undefined ? {} : { next }), ...(sc.lastRun === undefined ? {} : { lastRun: sc.lastRun }) };
