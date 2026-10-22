@@ -65,10 +65,11 @@ export const LOCATE_FORMAT = "Don't change any files. End your answer with one l
 export type Side = "candidate" | "baseline";
 
 /** What Scout measures as a run goes that the run's events don't show: set up by eval-cli's `openScout`. */
-export type Measures = { selfReviews: Map<number, number>; modelStarts: Map<string, number[]> };
+/** `waited`: all first-token waits so far, every session's, for telling a model's own time from a provider's. */
+export type Measures = { selfReviews: Map<number, number>; modelStarts: Map<string, number[]>; waited: { ms: number } };
 
 export function measures(): Measures & { selfReviewed: (id: number, ms: number) => void; modelStarted: (session: string, ms: number) => void } {
-	const m: Measures = { selfReviews: new Map(), modelStarts: new Map() };
+	const m: Measures = { selfReviews: new Map(), modelStarts: new Map(), waited: { ms: 0 } };
 	return {
 		...m,
 		selfReviewed: (id, ms) => m.selfReviews.set(id, (m.selfReviews.get(id) ?? 0) + ms),
@@ -76,6 +77,7 @@ export function measures(): Measures & { selfReviewed: (id: number, ms: number) 
 			const calls = m.modelStarts.get(session) ?? [];
 			calls.push(ms);
 			m.modelStarts.set(session, calls);
+			m.waited.ms += ms;
 		},
 	};
 }
@@ -116,7 +118,11 @@ export type Usage = {
 	firstTokens: number[];
 };
 
-export type RunResult = { task: string; side: Side; pass: boolean; why: string; cost: number; ms: number; steps: number; timing?: Timing; usage?: Usage };
+/**
+ * `unscored`: why a run says nothing about the model, so the benchmark leaves it out of what the model can do: the
+ * provider kept it waiting past the wall-clock limit, or its calls kept failing.
+ */
+export type RunResult = { task: string; side: Side; pass: boolean; why: string; cost: number; ms: number; steps: number; timing?: Timing; usage?: Usage; unscored?: string };
 
 /** The tasks in `dir` (`*.json`), checked; a file that isn't a task is an error that names it. */
 export function loadTasks(dir: string): EvalTask[] {
@@ -392,7 +398,8 @@ export function evalConfig(base: Config, options: { repos: RepoConfig[]; profile
 /**
  * One run of one task: a new conversation in the task's repository, the request, then the checks in its sandbox
  * before the sandbox goes. Pass means every check the task names passed. `fileAt` (from `evalRepos`) supplies a
- * task's hidden files; past `limitMs` the run is stopped, and fails.
+ * task's hidden files. Past `limitMs` of the model's own time (waiting for first tokens aside, with `measured`) the run
+ * is stopped and fails; past `wallMs` in all, it's stopped and left unscored, as the provider's doing.
  */
 export async function runTask(
 	scout: Scout,
@@ -401,9 +408,11 @@ export async function runTask(
 	side: Side,
 	context: Context,
 	measured?: Measures,
-	options: { fileAt?: (task: EvalTask, ref: string, path: string) => Promise<Uint8Array>; limitMs?: number } = {},
+	options: { fileAt?: (task: EvalTask, ref: string, path: string) => Promise<Uint8Array>; limitMs?: number; wallMs?: number } = {},
 ): Promise<RunResult> {
-	const { fileAt, limitMs } = options;
+	const { fileAt, limitMs, wallMs } = options;
+	let unscored: string | undefined;
+	let failedCall: string | undefined;
 	const started = Date.now();
 	const conversation = await scout.harness.createConversation(
 		{
@@ -458,6 +467,8 @@ export async function runTask(
 			if (event.type === "tool_execution_start" && event.parentToolCallId === undefined) steps++;
 			if (event.type === "message_end") {
 				const message = event.entry.model?.[0];
+				const stop = message as { role?: string; stopReason?: string; errorMessage?: string } | undefined;
+				failedCall = stop?.role === "assistant" && stop.stopReason === "error" ? (stop.errorMessage ?? "no reason given").slice(0, 200) : undefined;
 				if (message?.role === "assistant") {
 					const text = message.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("\n").trim();
 					if (text !== "") answer = text;
@@ -470,19 +481,31 @@ export async function runTask(
 	let ran: number | undefined;
 	try {
 		const request = task.kind === "locate" ? `${task.request}\n\n${LOCATE_FORMAT}` : task.request;
-		let late = false;
-		const limit = limitMs === undefined ? undefined : setTimeout(() => {
-			late = true;
-			void conversation.abort(context).catch(() => {});
-		}, limitMs);
-		const settled = await (await conversation.submit({ type: "input", content: request }, context)).wait(context).finally(() => clearTimeout(limit));
+		let stopped: string | undefined;
+		const waitedBefore = measured?.waited.ms ?? 0;
+		const watch =
+			limitMs === undefined && wallMs === undefined
+				? undefined
+				: setInterval(() => {
+						const elapsed = Date.now() - started;
+						const own = elapsed - ((measured?.waited.ms ?? 0) - waitedBefore);
+						if (wallMs !== undefined && elapsed > wallMs) stopped = `the provider kept it waiting: not done within ${Math.round(wallMs / 60_000)} minutes`;
+						else if (limitMs !== undefined && own > limitMs) stopped = `the model's own time passed ${Math.round(limitMs / 60_000)} minutes (waiting for first tokens aside)`;
+						if (stopped !== undefined) {
+							clearInterval(watch);
+							void conversation.abort(context).catch(() => {});
+						}
+					}, Math.min(5_000, limitMs ?? 5_000, wallMs ?? 5_000) / 5);
+		const settled = await (await conversation.submit({ type: "input", content: request }, context)).wait(context).finally(() => clearInterval(watch));
 		ran = Date.now();
-		if (late) {
+		if (stopped !== undefined) {
 			pass = false;
-			why.push(`the run didn't finish within ${Math.round(limitMs! / 60_000)} minutes`);
-		} else if (settled.status !== "done") {
+			why.push(stopped);
+			if (stopped.startsWith("the provider")) unscored = stopped;
+		} else if (settled.status !== "done" || failedCall !== undefined) {
 			pass = false;
-			why.push(`the run didn't finish (${settled.status})`);
+			why.push(failedCall === undefined ? `the run didn't finish (${settled.status})` : `the model's calls kept failing: ${failedCall}`);
+			if (failedCall !== undefined) unscored = `the model's calls kept failing`;
 		}
 		const env = await scout.workspaces.env(conversation.id);
 		const sh = async (command: string, timeout = 600) => {
@@ -557,7 +580,7 @@ export async function runTask(
 	usage.modelCalls = spent.calls;
 	usage.inputTokens = spent.input;
 	usage.outputTokens = spent.output;
-	return { task: task.name, side, pass, why: why.join("; ") || "passed", cost: spent.cost, ms: ended - started - checked, steps, timing, usage };
+	return { task: task.name, side, pass, why: why.join("; ") || "passed", cost: spent.cost, ms: ended - started - checked, steps, timing, usage, ...(unscored === undefined ? {} : { unscored }) };
 }
 
 /** Did the work meet the task's rubric? A model call with no tools: PASS or FAIL, and one line why. */

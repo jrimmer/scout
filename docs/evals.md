@@ -88,8 +88,10 @@ some tasks).
 - **Finding bugs** (`"kind": "locate"`): the failing test is there from the start (`given`), and the answer must
   end `LOCATION: <file> <function>`, naming the file and a function the real fix changed. Checked exactly, with no
   model judging.
-- A task not done in 30 minutes is stopped and fails, as public benchmarks time tasks out, so a slow provider
-  can't stretch a night into the day.
+- Tasks have time limits, as public benchmarks do. 30 minutes of the model's own time: a task that needs more fails.
+  Time spent waiting for the provider's first tokens doesn't count, so a slow provider doesn't read as a slow model.
+  And 90 minutes in all, so a slow night can't run into the day: a task cut short by that, or whose calls kept
+  failing, isn't scored as the model's. It counts under "Tasks not lost" instead.
 - Candidates were commits with a small change to `src/` and tests in `test/`, kept only when their tests fail
   before the fix and pass after it. Add more as JSON files in `bench/` (the fields are the eval task's).
 
@@ -112,6 +114,7 @@ kept (`bench.sqlite` in the data directory), and the oldest run goes as each new
 | Output speed | Tokens a second once answering: 200 is 100, 5 is 0 |
 | Task time | Median time for a whole task: 1 minute is 100, 30 minutes is 0 |
 | Call success | Model calls that worked without a retry |
+| Tasks not lost | Tasks the provider didn't cut short: the 90-minute limit, or calls that kept failing |
 
 It's a toy: a handful of tasks from one codebase. Read it as a comparison of models on this work, not a ranking.
 Costs come from the prices file, so a model without a price there shows as free; add list prices (OpenRouter's, or

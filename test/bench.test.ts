@@ -72,6 +72,18 @@ describe("benchmark", () => {
 		assert.equal(ops["Output speed"]!.value, "100 tokens/s");
 		assert.equal(ops["Call success"]!.score, 94, "2 retries among 34 calls");
 		assert.equal(ops["Task time"]!.value, "2.0m");
+		assert.equal(ops["Tasks not lost"]!.score, 100);
+	});
+
+	it("leaves tasks the provider cut short out of what the model can do, and counts them against working with it", () => {
+		const rows = [row({ task: "fix" }), row({ task: "slow", pass: false, unscored: "the provider kept it waiting", ms: 90 * 60_000 })];
+		const s = score("gateway/a", rows);
+		const cap = Object.fromEntries(s.capability.map((a) => [a.name, a]));
+		assert.equal(cap.Coding!.score, 100, "the cut-short task isn't the model's failure");
+		assert.equal(cap.Consistency!.value, "1/1 every time");
+		const ops = Object.fromEntries(s.operations.map((a) => [a.name, a]));
+		assert.deepEqual([ops["Tasks not lost"]!.score, ops["Tasks not lost"]!.value], [50, "1 lost of 2"]);
+		assert.equal(ops["Task time"]!.value, "46.0m", "its time still counts here");
 	});
 
 	it("keeps only each model's last runs, and nothing but a summary of each", () => {

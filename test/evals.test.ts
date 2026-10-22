@@ -200,9 +200,10 @@ describe("evals", () => {
 
 			// Last: a stopped run can still be finishing its command when the next one starts.
 			faux.setResponses([fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 5" })], { stopReason: "toolUse" }), fauxAssistantMessage("Done.")]);
-			const slow = await runTask(scout, change, nameOf(change), "candidate", context, measured, { fileAt, limitMs: 500 });
+			const slow = await runTask(scout, change, nameOf(change), "candidate", context, measured, { fileAt, limitMs: 60_000, wallMs: 500 });
 			assert.equal(slow.pass, false);
-			assert.match(slow.why, /^the run didn't finish within 0 minutes/);
+			assert.match(slow.why, /^the provider kept it waiting: not done within 0 minutes/);
+			assert.equal(slow.unscored, slow.why.split(";")[0], "the provider's doing, not the model's");
 			assert.ok(slow.ms < 4_000, "stopped at the limit, not after the command");
 		} finally {
 			await scout.close();

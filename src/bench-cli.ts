@@ -20,8 +20,13 @@ import { resolveSecrets } from "./secrets.ts";
  *     npm run bench -- --only ci     # tasks whose name has "ci" in it
  */
 
-/** As public benchmarks do: a task not done in this long fails, so a slow provider can't stretch a night into the day. */
+/**
+ * As public benchmarks do, tasks have a time limit: 30 minutes of the model's own time (a task that needs more fails),
+ * not counting time spent waiting for the provider's first tokens, and 90 minutes in all, so a slow provider can't
+ * stretch a night into the day. A task stopped by that, or whose calls kept failing, isn't scored as the model's.
+ */
 const TASK_LIMIT_MS = 30 * 60_000;
+const TASK_WALL_MS = 90 * 60_000;
 
 if (import.meta.main) {
 	const only = process.argv.includes("--only") ? process.argv[process.argv.indexOf("--only") + 1] : undefined;
@@ -73,7 +78,7 @@ if (import.meta.main) {
 			}));
 			try {
 				for (const task of tasks) {
-					const result = await runTask(scout, task, nameOf(task), "candidate", BACKGROUND_CONTEXT, measured, { fileAt, limitMs: TASK_LIMIT_MS });
+					const result = await runTask(scout, task, nameOf(task), "candidate", BACKGROUND_CONTEXT, measured, { fileAt, limitMs: TASK_LIMIT_MS, wallMs: TASK_WALL_MS });
 					console.log(`bench ${name} ${task.name}: ${result.pass ? "pass" : `fail (${result.why.slice(0, 300)})`}, $${result.cost.toFixed(3)}, ${Math.round(result.ms / 1000)}s, ${result.steps} steps`);
 					// Kept as each task ends: what finished counts, even if the rest of the night doesn't.
 					store.record([benchRow(name, night, task, result)]);

@@ -11,7 +11,7 @@ export function benchPage(scores: readonly ModelScores[], meta: { lastRun?: stri
 		scores.length === 0
 			? `<p class="note">No runs yet. They start each night after ${String(meta.hour).padStart(2, "0")}:00, and the scores show here once a model has finished its tasks.</p>`
 			: [
-					`<p class="note">${meta.tasks} tasks from Scout's own history, run by every model once a night. Scores are over each model's last ${meta.keep} runs (the latest ${esc(meta.lastRun ?? "")}), on fixed scales, so they mean the same from week to week. A toy: few tasks, one codebase. Compare models with each other here, not with public leaderboards: "Reasoning" here is finding bugs.</p>`,
+					`<p class="note">${meta.tasks} tasks from Scout's own history, run by every model once a night. Scores are over each model's last ${meta.keep} runs (the latest ${esc(meta.lastRun ?? "")}), on fixed scales, so they mean the same from week to week. A toy: few tasks, one codebase. Compare models with each other here, not with public leaderboards: "Reasoning" here is finding bugs. Tasks the provider cut short aren't scored as the model's, but a slow night still shows on the right: look at it before comparing.</p>`,
 					`<ol class="legend">${scores.map((s, i) => `<li class="s${i % SERIES}"><i></i>${esc(s.model)} <small>${s.runs} run${s.runs === 1 ? "" : "s"}</small></li>`).join("")}</ol>`,
 					`<section class="charts">`,
 					figure("What it can do", scores, (s) => s.capability),

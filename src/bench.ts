@@ -35,6 +35,8 @@ export type BenchRow = {
 	modelMs: number;
 	firstTokenP50: number;
 	firstTokenP90: number;
+	/** Why the run says nothing about the model (the provider was too slow, or its calls kept failing), if so. */
+	unscored?: string;
 };
 
 export type Axis = { name: string; score: number; value: string; about: string };
@@ -115,6 +117,7 @@ export function benchRow(model: string, run: string, task: EvalTask, result: Run
 		modelMs: result.timing?.model ?? 0,
 		firstTokenP50: quantile(firsts, 0.5),
 		firstTokenP90: quantile(firsts, 0.9),
+		...(result.unscored === undefined ? {} : { unscored: result.unscored }),
 	};
 }
 
@@ -141,9 +144,14 @@ export function logScale(value: number, best: number, worst: number): number {
 const pct = (part: number, whole: number) => (whole === 0 ? 0 : Math.round((part / whole) * 100));
 const secs = (ms: number) => (ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : ms < 120_000 ? `${Math.round(ms / 1000)}s` : `${(ms / 60_000).toFixed(1)}m`);
 
-/** One model's scores over its kept runs. */
-export function score(model: string, rows: readonly BenchRow[]): ModelScores {
-	const runs = new Set(rows.map((r) => r.run)).size;
+/**
+ * One model's scores over its kept runs. What it can do counts only runs that say something about the model: a task
+ * the provider cut short (too slow, or failing calls) shows under working with it instead.
+ */
+export function score(model: string, all: readonly BenchRow[]): ModelScores {
+	const runs = new Set(all.map((r) => r.run)).size;
+	const rows = all.filter((r) => r.unscored === undefined);
+	const lost = all.length - rows.length;
 	const change = rows.filter((r) => r.kind === "change");
 	const locate = rows.filter((r) => r.kind === "locate");
 	const passed = rows.filter((r) => r.pass);
@@ -154,15 +162,16 @@ export function score(model: string, rows: readonly BenchRow[]): ModelScores {
 	const badCalls = rows.reduce((n, r) => n + r.badToolCalls, 0);
 	const cost = rows.reduce((n, r) => n + r.cost, 0);
 	const perSolved = passed.length === 0 ? Number.POSITIVE_INFINITY : cost / passed.length;
-	const calls = rows.reduce((n, r) => n + r.modelCalls, 0);
-	const retries = rows.reduce((n, r) => n + r.retries, 0);
-	const output = rows.reduce((n, r) => n + r.outputTokens, 0);
-	const answering = rows.reduce((n, r) => n + r.modelMs, 0);
+	// Working with it counts every run: a provider's bad night is what this side is for.
+	const calls = all.reduce((n, r) => n + r.modelCalls, 0);
+	const retries = all.reduce((n, r) => n + r.retries, 0);
+	const output = all.reduce((n, r) => n + r.outputTokens, 0);
+	const answering = all.reduce((n, r) => n + r.modelMs, 0);
 	const speed = answering === 0 ? 0 : output / (answering / 1000);
-	const timed = rows.filter((r) => r.modelCalls > 0);
+	const timed = all.filter((r) => r.modelCalls > 0);
 	const p50 = median(timed.map((r) => r.firstTokenP50));
 	const p90 = median(timed.map((r) => r.firstTokenP90));
-	const taskTime = median(rows.map((r) => r.ms));
+	const taskTime = median(all.map((r) => r.ms));
 	return {
 		model,
 		runs,
@@ -180,6 +189,7 @@ export function score(model: string, rows: readonly BenchRow[]): ModelScores {
 			{ name: "Output speed", score: logScale(speed, 200, 5), value: `${Math.round(speed)} tokens/s`, about: "Tokens a second once answering: 200 is 100, 5 is 0" },
 			{ name: "Task time", score: logScale(taskTime, 60_000, 30 * 60_000), value: secs(taskTime), about: "Median time for a whole task: a minute is 100, 30 minutes is 0" },
 			{ name: "Call success", score: pct(calls, calls + retries), value: `${retries} retried of ${calls + retries}`, about: "Model calls that worked the first time" },
+			{ name: "Tasks not lost", score: 100 - pct(lost, all.length), value: `${lost} lost of ${all.length}`, about: "Tasks the provider didn't cut short: 90 minutes in all, or calls that kept failing. Lost ones aren't scored as the model's" },
 		],
 	};
 }
