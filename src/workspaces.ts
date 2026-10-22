@@ -511,7 +511,7 @@ export class Workspaces {
 	}
 }
 
-async function copyIn(env: ExecutionEnv, path: string, bytes: Uint8Array): Promise<void> {
+export async function copyIn(env: ExecutionEnv, path: string, bytes: Uint8Array): Promise<void> {
 	const parent = path.slice(0, path.lastIndexOf("/"));
 	await env.createDir(parent, { recursive: true }, BACKGROUND_CONTEXT);
 	for (let offset = 0; offset === 0 || offset < bytes.length; offset += CHUNK) {

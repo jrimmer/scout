@@ -8,6 +8,7 @@ import { AssistantEntry, type ConversationId, ProviderDoc, watchEvents } from "@
 import type { Config, RepoConfig } from "./config.ts";
 import { ThreadDoc } from "./docs.ts";
 import type { Scout } from "./scout.ts";
+import { copyIn } from "./workspaces.ts";
 
 const run = promisify(execFile);
 
@@ -30,26 +31,52 @@ const run = promisify(execFile);
  *         "rubric": "median sorts numerically and averages the middle pair on an even count"
  *       }
  *     }
+ *
+ * A task can also replay a real commit, as SWE-bench does: start from its parent, and judge the work by the commit's
+ * own tests, put in place only after the work (`check.hidden`). Or ask where a bug is, without fixing it
+ * (`kind: "locate"`): the failing test is there from the start (`given`), and the answer must name the file and
+ * function the commit changed.
  */
+export type Files = { ref: string; paths: string[] };
+
 export type EvalTask = {
 	name: string;
 	repo: string;
 	ref: string;
 	request: string;
-	check: { command?: string; expect?: { changed?: string[]; unchanged?: string[] }; rubric?: string };
+	/** "change" (the default): Scout does the work. "locate": Scout says where the bug is, and changes nothing. */
+	kind?: "change" | "locate";
+	/** Files from another commit, in place before the work starts: a failing test, say. */
+	given?: Files;
+	check: {
+		command?: string;
+		expect?: { changed?: string[]; unchanged?: string[] };
+		rubric?: string;
+		/** Files from another commit put in place after the work, before `command`: tests the work didn't see. */
+		hidden?: Files;
+		/** For "locate": the file, and the functions any one of which is right. */
+		locate?: { file: string; functions: string[] };
+	};
 };
+
+/** What a "locate" task's answer must end with, appended to its request. */
+export const LOCATE_FORMAT = "Don't change any files. End your answer with one line: `LOCATION: <file path> <function name>`.";
 
 export type Side = "candidate" | "baseline";
 
 /** What Scout measures as a run goes that the run's events don't show: set up by eval-cli's `openScout`. */
-export type Measures = { selfReviews: Map<number, number>; modelStarts: Map<string, number> };
+export type Measures = { selfReviews: Map<number, number>; modelStarts: Map<string, number[]> };
 
 export function measures(): Measures & { selfReviewed: (id: number, ms: number) => void; modelStarted: (session: string, ms: number) => void } {
 	const m: Measures = { selfReviews: new Map(), modelStarts: new Map() };
 	return {
 		...m,
 		selfReviewed: (id, ms) => m.selfReviews.set(id, (m.selfReviews.get(id) ?? 0) + ms),
-		modelStarted: (session, ms) => m.modelStarts.set(session, (m.modelStarts.get(session) ?? 0) + ms),
+		modelStarted: (session, ms) => {
+			const calls = m.modelStarts.get(session) ?? [];
+			calls.push(ms);
+			m.modelStarts.set(session, calls);
+		},
 	};
 }
 
@@ -76,7 +103,20 @@ export type Timing = {
 	byTool: Record<string, { calls: number; ms: number }>;
 };
 
-export type RunResult = { task: string; side: Side; pass: boolean; why: string; cost: number; ms: number; steps: number; timing?: Timing };
+/** What a run used, for the benchmark (bench.ts): tool calls and the malformed ones, model calls, tokens, retries. */
+export type Usage = {
+	toolCalls: number;
+	/** Calls with arguments that didn't fit the tool, or to a tool that doesn't exist. */
+	badToolCalls: number;
+	modelCalls: number;
+	retries: number;
+	inputTokens: number;
+	outputTokens: number;
+	/** Each model call's time to its first token, in ms. */
+	firstTokens: number[];
+};
+
+export type RunResult = { task: string; side: Side; pass: boolean; why: string; cost: number; ms: number; steps: number; timing?: Timing; usage?: Usage };
 
 /** The tasks in `dir` (`*.json`), checked; a file that isn't a task is an error that names it. */
 export function loadTasks(dir: string): EvalTask[] {
@@ -115,22 +155,59 @@ export function parseTask(raw: unknown, file: string): EvalTask {
 	};
 	const changed = list(expect.changed, "changed");
 	const unchanged = list(expect.unchanged, "unchanged");
+	const files = (value: unknown, key: string): Files | undefined => {
+		if (value === undefined) return undefined;
+		const f = value as { ref?: unknown; paths?: unknown };
+		if (typeof f.ref !== "string" || !HASH.test(f.ref)) throw new Error(`${file}: "${key}.ref" must be a commit hash`);
+		if (!Array.isArray(f.paths) || f.paths.length === 0 || f.paths.some((p) => typeof p !== "string" || p === "")) throw new Error(`${file}: "${key}.paths" must be a list of paths`);
+		return { ref: f.ref, paths: f.paths as string[] };
+	};
+	const kind = t?.kind ?? "change";
+	if (kind !== "change" && kind !== "locate") throw new Error(`${file}: "kind" must be "change" or "locate"`);
+	const given = files(t?.given, "given");
+	const hidden = files(check.hidden, "check.hidden");
+	const where = check.locate as { file?: unknown; functions?: unknown } | undefined;
+	if (where !== undefined && (typeof where.file !== "string" || !Array.isArray(where.functions) || where.functions.length === 0 || where.functions.some((f) => typeof f !== "string"))) {
+		throw new Error(`${file}: "check.locate" needs a "file" and a list of "functions"`);
+	}
 	const parsed: EvalTask = {
 		name: text("name"),
 		repo: text("repo"),
 		ref: text("ref"),
 		request: text("request"),
+		...(kind === "locate" ? { kind } : {}),
+		...(given === undefined ? {} : { given }),
 		check: {
 			...(typeof check.command === "string" && check.command.trim() !== "" ? { command: check.command } : {}),
 			...(changed === undefined && unchanged === undefined ? {} : { expect: { ...(changed === undefined ? {} : { changed }), ...(unchanged === undefined ? {} : { unchanged }) } }),
 			...(typeof check.rubric === "string" && check.rubric.trim() !== "" ? { rubric: check.rubric } : {}),
+			...(hidden === undefined ? {} : { hidden }),
+			...(where === undefined ? {} : { locate: { file: where.file as string, functions: where.functions as string[] } }),
 		},
 	};
-	if (parsed.check.command === undefined && parsed.check.expect === undefined && parsed.check.rubric === undefined) {
-		throw new Error(`${file}: needs a check: a "command", an "expect", or a "rubric"`);
+	if (parsed.check.command === undefined && parsed.check.expect === undefined && parsed.check.rubric === undefined && parsed.check.locate === undefined) {
+		throw new Error(`${file}: needs a check: a "command", an "expect", a "rubric", or a "locate"`);
 	}
-	if (!/^[0-9a-f]{7,40}$/i.test(parsed.ref)) throw new Error(`${file}: "ref" must be a commit hash`);
+	if (kind === "locate" && parsed.check.locate === undefined) throw new Error(`${file}: a "locate" task needs "check.locate"`);
+	if (!HASH.test(parsed.ref)) throw new Error(`${file}: "ref" must be a commit hash`);
 	return parsed;
+}
+
+const HASH = /^[0-9a-f]{7,40}$/i;
+
+/**
+ * Whether a "locate" answer named the right place: its last `LOCATION: <file> <function>` line, the file as the task
+ * has it (a leading `./` aside), and one of its functions (`Class.method` and `Class#method` count as `method`).
+ */
+export function located(answer: string, want: { file: string; functions: string[] }): { pass: boolean; why: string } {
+	const lines = [...answer.matchAll(/LOCATION:\s*`?([^\s`]+)`?\s+`?([^\s`(]+)/gi)];
+	const last = lines.at(-1);
+	if (last === undefined) return { pass: false, why: "the answer has no LOCATION line" };
+	const file = last[1]!.replace(/^\.\//, "");
+	const name = last[2]!.split(/[.#]/).pop()!;
+	if (file !== want.file) return { pass: false, why: `named ${file}, not ${want.file}` };
+	if (!want.functions.includes(name)) return { pass: false, why: `named ${name} in ${file}, not ${want.functions.join(" or ")}` };
+	return { pass: true, why: "passed" };
 }
 
 /**
@@ -216,12 +293,18 @@ export function report(results: readonly RunResult[], sides: readonly Side[]): s
 /**
  * A copy of the repository at each task's commit, on a branch of its own, as a configured repository named
  * `<repo>@<commit>`: what the run clones, and where its pull request goes, so nothing leaves this host. Made from
- * Scout's mirror when there is one (fast, offline), else from the repository itself.
+ * Scout's mirror when there is one (fast, offline), else from the repository itself. A task's `given` files are a
+ * commit on top, so the run starts with them. `fileAt` reads a file at any commit of a task's copy.
  */
-export async function evalRepos(config: Config, tasks: readonly EvalTask[], dir: string): Promise<{ repos: RepoConfig[]; nameOf: (task: EvalTask) => string }> {
+export async function evalRepos(
+	config: Config,
+	tasks: readonly EvalTask[],
+	dir: string,
+): Promise<{ repos: RepoConfig[]; nameOf: (task: EvalTask) => string; fileAt: (task: EvalTask, ref: string, path: string) => Promise<Buffer> }> {
 	mkdirSync(dir, { recursive: true });
 	const repos = new Map<string, RepoConfig>();
-	const nameOf = (task: EvalTask) => `${task.repo}@${task.ref.slice(0, 12)}`;
+	const copies = new Map<string, string>();
+	const nameOf = (task: EvalTask) => `${task.repo}@${task.ref.slice(0, 12)}${task.given === undefined ? "" : `+${task.given.ref.slice(0, 12)}`}`;
 	for (const task of tasks) {
 		const name = nameOf(task);
 		if (repos.has(name)) continue;
@@ -231,11 +314,32 @@ export async function evalRepos(config: Config, tasks: readonly EvalTask[], dir:
 		const copy = join(dir, `${name.replace(/[^\w.-]/g, "-")}.git`);
 		if (!existsSync(copy)) {
 			await run("git", ["clone", "--quiet", "--bare", "--no-tags", existsSync(mirror) ? mirror : real.gitUrl, copy]);
-			await run("git", ["-C", copy, "branch", "--force", "scout-eval", task.ref]);
+			await run("git", ["-C", copy, "branch", "--force", "scout-eval", await withGiven(copy, task)]);
 		}
+		copies.set(name, copy);
 		repos.set(name, { ...real, name, gitUrl: copy, base: "scout-eval" });
 	}
-	return { repos: [...repos.values()], nameOf };
+	const fileAt = async (task: EvalTask, ref: string, path: string) => {
+		const { stdout } = await run("git", ["-C", copies.get(nameOf(task))!, "show", `${ref}:${path}`], { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 });
+		return stdout;
+	};
+	return { repos: [...repos.values()], nameOf, fileAt };
+}
+
+/** The commit a task's run starts from: its `ref`, or a commit on it adding the `given` files as they are at theirs. */
+async function withGiven(copy: string, task: EvalTask): Promise<string> {
+	if (task.given === undefined) return task.ref;
+	const index = join(copy, "scout-eval-index");
+	const env = { ...process.env, GIT_INDEX_FILE: index };
+	await run("git", ["-C", copy, "read-tree", task.ref], { env });
+	for (const path of task.given.paths) {
+		const { stdout: blob } = await run("git", ["-C", copy, "rev-parse", `${task.given.ref}:${path}`]);
+		await run("git", ["-C", copy, "update-index", "--add", "--cacheinfo", `100644,${blob.trim()},${path}`], { env });
+	}
+	const { stdout: tree } = await run("git", ["-C", copy, "write-tree"], { env });
+	const ident = { ...process.env, GIT_AUTHOR_NAME: "eval", GIT_AUTHOR_EMAIL: "eval@invalid", GIT_COMMITTER_NAME: "eval", GIT_COMMITTER_EMAIL: "eval@invalid" };
+	const { stdout: commit } = await run("git", ["-C", copy, "commit-tree", tree.trim(), "-p", task.ref, "-m", "Files the task starts with"], { env: ident });
+	return commit.trim();
 }
 
 /** A stand-in code host that agrees to open any pull request, so a run can finish without reaching the real one. */
@@ -287,9 +391,18 @@ export function evalConfig(base: Config, options: { repos: RepoConfig[]; profile
 
 /**
  * One run of one task: a new conversation in the task's repository, the request, then the checks in its sandbox
- * before the sandbox goes. Pass means every check the task names passed.
+ * before the sandbox goes. Pass means every check the task names passed. `fileAt` (from `evalRepos`) supplies a
+ * task's hidden files.
  */
-export async function runTask(scout: Scout, task: EvalTask, repoName: string, side: Side, context: Context, measured?: Measures): Promise<RunResult> {
+export async function runTask(
+	scout: Scout,
+	task: EvalTask,
+	repoName: string,
+	side: Side,
+	context: Context,
+	measured?: Measures,
+	fileAt?: (task: EvalTask, ref: string, path: string) => Promise<Uint8Array>,
+): Promise<RunResult> {
 	const started = Date.now();
 	const conversation = await scout.harness.createConversation(
 		{
@@ -304,6 +417,7 @@ export async function runTask(scout: Scout, task: EvalTask, repoName: string, si
 	const events = await watchEvents(scout.harness, conversation.id as ConversationId, context);
 	let answer = "";
 	let steps = 0;
+	const usage: Usage = { toolCalls: 0, badToolCalls: 0, modelCalls: 0, retries: 0, inputTokens: 0, outputTokens: 0, firstTokens: [] };
 	const timing: Timing = { firstToken: 0, model: 0, tools: 0, firstTool: 0, selfReview: 0, retries: 0, check: 0, byTool: {} };
 	let modelFrom: number | undefined;
 	let retryFrom: number | undefined;
@@ -317,13 +431,19 @@ export async function runTask(scout: Scout, task: EvalTask, repoName: string, si
 				timing.model += now - modelFrom;
 				modelFrom = undefined;
 			}
-			if (event.type === "auto_retry_start") retryFrom ??= now;
+			if (event.type === "auto_retry_start") {
+				usage.retries++;
+				retryFrom ??= now;
+			}
 			if (event.type === "auto_retry_end" && retryFrom !== undefined) {
 				timing.retries += now - retryFrom;
 				retryFrom = undefined;
 			}
 			if (event.type === "tool_execution_start" && event.parentToolCallId === undefined) toolFrom.set(event.toolCallId, { at: now, first: steps === 0, name: event.toolName });
 			if (event.type === "tool_execution_end" && event.parentToolCallId === undefined) {
+				usage.toolCalls++;
+				const diagnostics = (event.entry?.data as { diagnostics?: { code?: string }[] } | undefined)?.diagnostics ?? [];
+				if (diagnostics.some((d) => d.code === "invalid_arguments" || d.code === "tool_unavailable")) usage.badToolCalls++;
 				const from = toolFrom.get(event.toolCallId);
 				if (from !== undefined) {
 					const t = (timing.byTool[from.name] ??= { calls: 0, ms: 0 });
@@ -348,7 +468,8 @@ export async function runTask(scout: Scout, task: EvalTask, repoName: string, si
 	let pass = true;
 	let ran: number | undefined;
 	try {
-		const settled = await (await conversation.submit({ type: "input", content: task.request }, context)).wait(context);
+		const request = task.kind === "locate" ? `${task.request}\n\n${LOCATE_FORMAT}` : task.request;
+		const settled = await (await conversation.submit({ type: "input", content: request }, context)).wait(context);
 		ran = Date.now();
 		if (settled.status !== "done") {
 			pass = false;
@@ -360,6 +481,11 @@ export async function runTask(scout: Scout, task: EvalTask, repoName: string, si
 			const result = await env.exec(command, { onOutput: (t) => (output += t), timeout }, context);
 			return { code: result.ok ? result.value.exitCode : 1, output: result.ok ? output : `${output}${String(result.error)}` };
 		};
+		if (task.check.hidden !== undefined) {
+			if (fileAt === undefined) throw new Error("a task with hidden files needs fileAt");
+			const root = (await sh("pwd", 30)).output.trim();
+			for (const path of task.check.hidden.paths) await copyIn(env, `${root}/${path}`, await fileAt(task, task.check.hidden.ref, path));
+		}
 		if (task.check.command !== undefined) {
 			const { code, output } = await sh(task.check.command);
 			if (code !== 0) {
@@ -383,6 +509,13 @@ export async function runTask(scout: Scout, task: EvalTask, repoName: string, si
 				}
 			}
 		}
+		if (task.check.locate !== undefined) {
+			const verdict = located(answer, task.check.locate);
+			if (!verdict.pass) {
+				pass = false;
+				why.push(verdict.why);
+			}
+		}
 		if (task.check.rubric !== undefined) {
 			const { output: diff } = await sh(`git diff ${task.ref}`, 60);
 			const verdict = await judge(scout, task, answer, diff, context);
@@ -403,14 +536,19 @@ export async function runTask(scout: Scout, task: EvalTask, repoName: string, si
 	timing.check = checked;
 	if (measured !== undefined) {
 		const session = (await scout.harness.snapshot(ProviderDoc, conversation.id as ConversationId, context).catch(() => undefined))?.sessionId;
-		timing.firstToken = session === undefined ? 0 : (measured.modelStarts.get(session) ?? 0);
+		usage.firstTokens = session === undefined ? [] : (measured.modelStarts.get(session) ?? []);
+		timing.firstToken = usage.firstTokens.reduce((sum, ms) => sum + ms, 0);
 		// The self-review runs inside open_pull_request: its time comes out of that tool's, to be shown apart.
 		timing.selfReview = measured.selfReviews.get(conversation.id) ?? 0;
 		const pull = timing.byTool.open_pull_request;
 		if (pull !== undefined) pull.ms = Math.max(0, pull.ms - timing.selfReview);
 		timing.tools = Math.max(0, timing.tools - timing.selfReview);
 	}
-	return { task: task.name, side, pass, why: why.join("; ") || "passed", cost: scout.spend.spentOn(conversation.id, 0).cost, ms: ended - started - checked, steps, timing };
+	const spent = scout.spend.spentOn(conversation.id, 0);
+	usage.modelCalls = spent.calls;
+	usage.inputTokens = spent.input;
+	usage.outputTokens = spent.output;
+	return { task: task.name, side, pass, why: why.join("; ") || "passed", cost: spent.cost, ms: ended - started - checked, steps, timing, usage };
 }
 
 /** Did the work meet the task's rubric? A model call with no tools: PASS or FAIL, and one line why. */

@@ -24,3 +24,26 @@ pre.grid > span.gr { display: block; white-space: pre; }
 .g-state { color: var(--state); }
 .g-id { color: var(--id); }
 .g-spark { color: var(--spark); }
+
+/* The tabs, and the Benchmark tab (dash/bench.ts): radar charts in the same palette, one class per model. */
+nav.tabs { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; margin: 0 0 0.75rem; display: flex; gap: 1.25rem; }
+nav.tabs a { color: var(--dim); text-decoration: none; }
+nav.tabs a[aria-current="page"] { color: var(--title); font-weight: 700; }
+main.bench { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; max-width: 1000px; width: auto; }
+main.bench h1 { color: var(--head); font-size: 15px; margin: 0 0 0.5rem; }
+main.bench .note { color: var(--dim); max-width: 72ch; }
+main.bench small { color: var(--dim); }
+.charts { display: flex; flex-wrap: wrap; gap: 1rem; }
+.charts figure { margin: 0; flex: 1 1 400px; min-width: 0; }
+.charts figcaption { color: var(--title); font-weight: 700; text-align: center; }
+.charts svg { width: 100%; height: auto; overflow: visible; }
+.charts text { fill: var(--fg); font-size: 9px; font-family: inherit; }
+.ring { fill: none; stroke: var(--frame); stroke-width: 0.6; }
+.charts g polygon { fill-opacity: 0.15; stroke-width: 1.5; }
+.s0 { color: var(--title); } .s1 { color: var(--warn); } .s2 { color: var(--id); } .s3 { color: var(--ok); }
+.charts g polygon, .charts g circle { stroke: currentColor; fill: currentColor; }
+ol.legend { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 1.25rem; }
+ol.legend i { display: inline-block; width: 0.8em; height: 0.8em; background: currentColor; margin-right: 0.4em; }
+main.bench table { border-collapse: collapse; margin: 1.25rem 0; width: 100%; }
+main.bench th, main.bench td { border-bottom: 1px solid var(--frame); padding: 0.35rem 0.6rem; text-align: left; vertical-align: top; }
+main.bench th:first-child { color: var(--title); }

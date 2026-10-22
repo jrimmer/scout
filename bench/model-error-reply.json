@@ -1,0 +1,15 @@
+{
+	"name": "model-error-reply",
+	"repo": "scout",
+	"ref": "8a26be4b6705892f4676896bd6d9e429b04ea32e",
+	"request": "When a model call fails during a run (the gateway answers with an error, like a 400 saying \"scheduler admission timeout\"), the thread's reply just says \"Done.\", which reads as if the work finished. The reply should say what happened: `I ran into a problem and stopped: the model didn't answer (<reason>)`, where the reason is the error's own \"message\" when the error carries JSON, and the error text otherwise. If Scout had already said something in that run, keep what it said and add `_Then I ran into a problem and stopped: the model didn't answer (<reason>)_` after a blank line.",
+	"check": {
+		"hidden": {
+			"ref": "72f26fa7d0f999dd5d7120be5cc8c98d9557522e",
+			"paths": [
+				"test/render.test.ts"
+			]
+		},
+		"command": "[ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null 2>&1; node --test test/render.test.ts"
+	}
+}

@@ -9,7 +9,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { loadConfig } from "../src/config.ts";
-import { evalConfig, evalRepos, fakeCodeHost, guard, loadTasks, parseTask, report, type RunResult, runTask } from "../src/evals.ts";
+import { evalConfig, evalRepos, fakeCodeHost, guard, LOCATE_FORMAT, loadTasks, located, measures, parseTask, report, type RunResult, runTask } from "../src/evals.ts";
 import { openScout } from "../src/scout.ts";
 import { bareRepo } from "./helpers.ts";
 
@@ -27,6 +27,28 @@ describe("evals", () => {
 		writeFileSync(join(dir, "b.json"), JSON.stringify({ name: "fix-median", repo: "r", ref: "abc1234", request: "y", check: { rubric: "z" } }));
 		assert.throws(() => loadTasks(dir), /two tasks are named fix-median/);
 		assert.deepEqual(loadTasks(join(dir, "nowhere")), []);
+	});
+
+	it("reads replayed commits: files given at the start, tests hidden until after, and where a bug is", () => {
+		const fix = "1111111111111111111111111111111111111111";
+		const replay = parseTask({ name: "r", repo: "app", ref: "abc1234", request: "fix it", check: { hidden: { ref: fix, paths: ["test/a.test.ts"] }, command: "node --test test/a.test.ts" } }, "r.json");
+		assert.deepEqual(replay.check.hidden, { ref: fix, paths: ["test/a.test.ts"] });
+		const locate = parseTask({ name: "l", kind: "locate", repo: "app", ref: "abc1234", request: "where?", given: { ref: fix, paths: ["test/a.test.ts"] }, check: { locate: { file: "src/a.ts", functions: ["f"] } } }, "l.json");
+		assert.equal(locate.kind, "locate");
+		assert.deepEqual(locate.given, { ref: fix, paths: ["test/a.test.ts"] });
+		assert.throws(() => parseTask({ name: "l", kind: "locate", repo: "app", ref: "abc1234", request: "where?", check: { command: "true" } }, "m.json"), /m\.json: a "locate" task needs "check\.locate"/);
+		assert.throws(() => parseTask({ name: "x", repo: "app", ref: "abc1234", request: "y", check: { hidden: { ref: "main", paths: ["a"] }, command: "true" } }, "h.json"), /"check\.hidden\.ref" must be a commit hash/);
+		assert.throws(() => parseTask({ name: "x", kind: "guess", repo: "app", ref: "abc1234", request: "y", check: { command: "true" } }, "k.json"), /"kind" must be "change" or "locate"/);
+	});
+
+	it("takes the last LOCATION line of an answer, and the function's own name", () => {
+		const want = { file: "src/doctor.ts", functions: ["checkRunning", "fetchRunning"] };
+		assert.deepEqual(located("It's in the fetch.\n\nLOCATION: src/doctor.ts fetchRunning", want), { pass: true, why: "passed" });
+		assert.equal(located("LOCATION: `./src/doctor.ts` `Doctor.checkRunning()`", want).pass, true);
+		assert.equal(located("LOCATION: src/a.ts f\nOn second thoughts:\nLOCATION: src/doctor.ts checkRunning", want).pass, true);
+		assert.deepEqual(located("LOCATION: src/main.ts checkRunning", want), { pass: false, why: "named src/main.ts, not src/doctor.ts" });
+		assert.deepEqual(located("LOCATION: src/doctor.ts doctor", want), { pass: false, why: "named doctor in src/doctor.ts, not checkRunning or fetchRunning" });
+		assert.equal(located("It's in doctor.ts somewhere.", want).why, "the answer has no LOCATION line");
 	});
 
 	it("won't start a costly set without --yes", () => {
@@ -100,6 +122,81 @@ describe("evals", () => {
 			assert.match(failed.why, /exited 1/);
 			assert.match(failed.why, /fix\.txt should have changed and didn't; README\.md changed and shouldn't have/);
 			assert.equal(git("--git-dir", remote, "rev-parse", "main"), git("-C", seed, "rev-parse", "HEAD"), "the real repository is untouched");
+		} finally {
+			await scout.close();
+			await host.close();
+		}
+	});
+
+	it("replays a commit: its tests hidden while the work runs, a failing test given for a locate task, and what the run used", async () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-eval-replay-")));
+		const remote = bareRepo(root, "app");
+		const seed = join(root, "app-seed");
+		const commit = (message: string) => {
+			git("-C", seed, "add", ".");
+			git("-C", seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", message);
+			git("-C", seed, "push", "--quiet", remote, "main");
+			return git("-C", seed, "rev-parse", "HEAD");
+		};
+		writeFileSync(join(seed, "value.txt"), "1\n");
+		const parent = commit("one");
+		mkdirSync(join(seed, "t"));
+		writeFileSync(join(seed, "value.txt"), "2\n");
+		writeFileSync(join(seed, "t", "check.sh"), 'test "$(cat value.txt)" = 2\n');
+		const fix = commit("two, and its test");
+		mkdirSync(join(root, "profile"));
+		const base = loadConfig({
+			SCOUT_MODEL: "faux/m",
+			SCOUT_REPO_URL: remote,
+			SCOUT_REPO_SLUG: "o/app",
+			SCOUT_CODEHOST_TOKEN: "t",
+			SCOUT_CODEHOST_API: "http://forge.invalid/api/v1",
+			SCOUT_DATA_DIR: join(root, "data"),
+			SCOUT_PROFILE_DIR: join(root, "profile"),
+			SCOUT_SANDBOX_DRIVER: "local",
+		});
+		const change = parseTask({ name: "two", repo: "app", ref: parent, request: "value should be 2", check: { hidden: { ref: fix, paths: ["t/check.sh"] }, command: "sh t/check.sh" } }, "two.json");
+		const locate = parseTask({ name: "where", kind: "locate", repo: "app", ref: parent, request: "t/check.sh fails. Where?", given: { ref: fix, paths: ["t/check.sh"] }, check: { locate: { file: "value.txt", functions: ["two"] } } }, "where.json");
+		const { repos, nameOf, fileAt } = await evalRepos(base, [change, locate], join(root, "eval-repos"));
+		assert.equal(nameOf(locate), `app@${parent.slice(0, 12)}+${fix.slice(0, 12)}`);
+		const host = await fakeCodeHost();
+		const config = evalConfig(base, { repos, profileDir: join(root, "profile"), apiUrl: host.apiUrl, dataDir: join(root, "eval-data") });
+		const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }] });
+		const models = createModels();
+		models.setProvider(faux.provider);
+		const measured = measures();
+		const scout = await openScout({ config, storage: new MemoryStorage(), dataDir: config.dataDir, instance: "r", context, models, watchProfile: false, mcp: [], modelStarted: measured.modelStarted });
+		try {
+			// The test isn't there while the work runs: with it, this would leave value.txt alone.
+			faux.setResponses([
+				fauxAssistantMessage([fauxToolCall("bash", {})], { stopReason: "toolUse" }),
+				fauxAssistantMessage([fauxToolCall("bash", { command: "test ! -e t/check.sh && echo 2 > value.txt" })], { stopReason: "toolUse" }),
+				fauxAssistantMessage("Set it to 2."),
+			]);
+			const fixed = await runTask(scout, change, nameOf(change), "candidate", context, measured, fileAt);
+			assert.equal(fixed.pass, true, fixed.why);
+			assert.equal(fixed.usage?.toolCalls, 2);
+			assert.equal(fixed.usage?.badToolCalls, 1, "a bash call without a command is malformed");
+			assert.equal(fixed.usage?.modelCalls, 3);
+			assert.equal(fixed.usage?.firstTokens.length, 3);
+
+			faux.setResponses([fauxAssistantMessage("Nothing to change.")]);
+			const unfixed = await runTask(scout, change, nameOf(change), "candidate", context, measured, fileAt);
+			assert.equal(unfixed.pass, false);
+			assert.match(unfixed.why, /`sh t\/check\.sh` exited 1/);
+
+			let asked = "";
+			faux.setResponses([
+				fauxAssistantMessage([fauxToolCall("bash", { command: "cat t/check.sh" })], { stopReason: "toolUse" }),
+				(transcript) => {
+					asked = JSON.stringify(transcript);
+					return fauxAssistantMessage("The test wants 2.\n\nLOCATION: value.txt two");
+				},
+			]);
+			const found = await runTask(scout, locate, nameOf(locate), "candidate", context, measured, fileAt);
+			assert.equal(found.pass, true, found.why);
+			assert.ok(asked.includes("LOCATION: <file path> <function name>"), "the request says how to answer");
+			assert.ok(asked.includes("cat value.txt"), "the failing test was there from the start");
 		} finally {
 			await scout.close();
 			await host.close();

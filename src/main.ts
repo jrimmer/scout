@@ -1,3 +1,4 @@
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -8,7 +9,9 @@ import { PullReviewer } from "./automation.ts";
 import { type Check, CiWatcher, MAX_FIXES } from "./ci.ts";
 import { hostname } from "node:os";
 import { Bridge } from "./bridge.ts";
+import { BenchStore, KEEP_RUNS } from "./bench.ts";
 import { Collector } from "./dash/collect.ts";
+import { loadTasks } from "./evals.ts";
 import { type Ask, forgeFor, Inbox } from "./forge.ts";
 import { BranchCleanup, MAX_TRIES as UPKEEP_TRIES, PullUpkeep, ReviewNudges } from "./upkeep.ts";
 import { ChannelCanvases, channelCanvas, channelWeeks, WeeklySummaries } from "./weekly.ts";
@@ -1075,6 +1078,27 @@ async function nudgeReviews(): Promise<void> {
 
 const inboxTick = setInterval(() => void health.watch("code host", "reading the code host's notifications failed", () => inbox.poll()), MINUTE);
 
+// The nightly benchmark (bench.ts), off unless SCOUT_BENCH_MODELS names models: a process of its own (bench-cli.ts),
+// once a night after SCOUT_BENCH_HOUR, so its runs never share Scout's harness or hold up Slack.
+const benchStore = config.bench === undefined ? undefined : new BenchStore(join(config.dataDir, "bench.sqlite"));
+let benchChild: ChildProcess | undefined;
+let benchTried: string | undefined;
+const benchNight = () => {
+	if (config.bench === undefined || benchChild !== undefined) return;
+	const now = new Date();
+	const night = localDay(now);
+	// Once a night, whether it worked or not: a broken run shouldn't start again every few minutes.
+	if (now.getHours() < config.bench.hour || benchTried === night || benchStore?.lastRun() === night) return;
+	benchTried = night;
+	console.log(`benchmark: starting tonight's runs (${config.bench.models.map((m) => `${m.provider}/${m.modelId}`).join(", ")})`);
+	benchChild = spawn(process.execPath, [join(import.meta.dirname, "bench-cli.ts")], { stdio: "inherit" });
+	benchChild.on("exit", (code) => {
+		benchChild = undefined;
+		if (code !== 0) console.error(`benchmark: tonight's runs stopped with exit code ${code}`);
+		else console.log("benchmark: tonight's runs are done");
+	});
+};
+
 /** Housekeeping every few minutes; also soon after a start, so a restart doesn't hold up reviews and retries. */
 const housekeeping = () => {
 	const now = Date.now();
@@ -1091,6 +1115,7 @@ const housekeeping = () => {
 	const own = allows(config.initiative, "own");
 	const team = allows(config.initiative, "team");
 	if (own && new Date(now).getHours() >= config.reflect.hour) void reflect(localDay(new Date(now)));
+	benchNight();
 	void health.watch("reviews", "reviewing pull requests failed", () => pullReviewer.poll());
 	if (own) {
 		void health.watch("upkeep", "looking after Scout's pull requests failed", () => upkeep.poll(pulls.open("work")));
@@ -1188,6 +1213,17 @@ const dashboard =
 				addr: config.dash.addr,
 				...(config.dash.auth === undefined ? {} : { auth: config.dash.auth }),
 				collector,
+				...(config.bench === undefined || benchStore === undefined
+					? {}
+					: {
+							bench: () => ({
+								scores: benchStore.scores(),
+								...(benchStore.lastRun() === undefined ? {} : { lastRun: benchStore.lastRun()! }),
+								keep: KEEP_RUNS,
+								hour: config.bench!.hour,
+								tasks: loadTasks(config.bench!.tasksDir).length,
+							}),
+						}),
 				metrics: {
 					...(config.governance.metricsToken === undefined ? {} : { token: config.governance.metricsToken }),
 					render: async () => {
@@ -1223,6 +1259,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		clearInterval(heartbeat);
 		clearInterval(inboxTick);
 		clearInterval(scheduleTick);
+		benchChild?.kill();
+		benchStore?.close();
 		inbox.close();
 		upkeep.close();
 		weekly.close();

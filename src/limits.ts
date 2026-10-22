@@ -70,11 +70,14 @@ export class SpendLedger implements Observer {
 	}
 
 	/** Dollars one conversation has spent since `since`, and the channel it's in. */
-	spentOn(conversationId: number, since: number): { cost: number; channel?: string } {
+	/** A conversation's spend since `since`: what it cost, its model calls and their tokens, and its channel. */
+	spentOn(conversationId: number, since: number): { cost: number; calls: number; input: number; output: number; channel?: string } {
 		const row = this.#db
-			.prepare("SELECT COALESCE(SUM(cost), 0) AS total, MAX(channel) AS channel FROM spend WHERE conversation_id = ? AND at >= ?")
-			.get(conversationId, since) as { total: number; channel: string | null };
-		return { cost: row.total, ...(row.channel === null ? {} : { channel: row.channel }) };
+			.prepare(
+				"SELECT COALESCE(SUM(cost), 0) AS total, COUNT(*) AS calls, COALESCE(SUM(input), 0) AS input, COALESCE(SUM(output), 0) AS output, MAX(channel) AS channel FROM spend WHERE conversation_id = ? AND at >= ?",
+			)
+			.get(conversationId, since) as { total: number; calls: number; input: number; output: number; channel: string | null };
+		return { cost: row.total, calls: row.calls, input: row.input, output: row.output, ...(row.channel === null ? {} : { channel: row.channel }) };
 	}
 
 	/** Spend by model since `since`. */

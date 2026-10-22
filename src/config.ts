@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { type Initiative, parseInitiative } from "./initiative.ts";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { GatewayConfig } from "./gateway.ts";
 
 export type CodeHostKind = "forgejo" | "github";
@@ -56,6 +56,11 @@ export type Config = {
 	profileRepo?: { gitUrl: string; base: string; slug: string };
 	/** Local hour (0-23) for the nightly reflection, and Scout's home channel: proposals and the weekly report. */
 	reflect: { hour: number; channel?: string };
+	/**
+	 * The nightly benchmark (bench.ts), off unless SCOUT_BENCH_MODELS names models: each night after `hour`, every
+	 * model runs the tasks in `tasksDir` once.
+	 */
+	bench?: { models: { provider: string; modelId: string }[]; hour: number; tasksDir: string };
 	/** Monitoring Scout watches for alerts to investigate (alerts.ts); none set, it watches none. */
 	alerts: { gatusUrl?: string; grafana?: { url: string; token: string }; channel?: string };
 	sandbox: SandboxConfig;
@@ -217,6 +222,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	}
 	const reflectHour = Number(env.SCOUT_REFLECT_HOUR ?? 3);
 	if (!Number.isInteger(reflectHour) || reflectHour < 0 || reflectHour > 23) throw new Error(`SCOUT_REFLECT_HOUR should be an hour, 0 to 23, not "${env.SCOUT_REFLECT_HOUR}"`);
+	const benchHour = Number(env.SCOUT_BENCH_HOUR ?? 1);
+	if (!Number.isInteger(benchHour) || benchHour < 0 || benchHour > 23) throw new Error(`SCOUT_BENCH_HOUR should be an hour, 0 to 23, not "${env.SCOUT_BENCH_HOUR}"`);
+	const benchModels = (env.SCOUT_BENCH_MODELS ?? "").split(",").map((m) => m.trim()).filter(Boolean).map((m) => {
+		const [p, ...id] = m.split("/");
+		if (p === undefined || id.length === 0) throw new Error(`SCOUT_BENCH_MODELS: "${m}" should look like provider/modelId, as SCOUT_MODEL does`);
+		return { provider: p, modelId: id.join("/") };
+	});
 	if (env.SCOUT_MCP_FILE && !existsSync(resolve(env.SCOUT_MCP_FILE))) throw new Error(`SCOUT_MCP_FILE: there's no file at ${resolve(env.SCOUT_MCP_FILE)}`);
 
 	return {
@@ -255,6 +267,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			// A name, with or without `#` (in an env file an unquoted `#` starts a comment, so `scout` is the safe spelling).
 			...(env.SCOUT_REFLECT_CHANNEL?.replace(/^#/, "") ? { channel: env.SCOUT_REFLECT_CHANNEL.replace(/^#/, "") } : {}),
 		},
+		...(benchModels.length === 0 ? {} : { bench: { models: benchModels, hour: benchHour, tasksDir: resolve(env.SCOUT_BENCH_TASKS ?? join(import.meta.dirname, "..", "bench")) } }),
 		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
 		pullUpkeep: {
 			staleDays: Number(env.SCOUT_PR_STALE_DAYS ?? 14),

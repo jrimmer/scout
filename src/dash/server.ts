@@ -4,6 +4,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { isIP } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ModelScores } from "../bench.ts";
+import { benchPage, tabs } from "./bench.ts";
 import type { Collector } from "./collect.ts";
 import type { Grid } from "./grid.ts";
 import { layout } from "./layout.ts";
@@ -22,6 +24,8 @@ export type DashOptions = {
 	intervalMs?: number;
 	/** Prometheus metrics at /metrics: with a token, only for that bearer token; without, behind the dashboard's login. */
 	metrics?: { token?: string; render: () => Promise<string> };
+	/** The nightly benchmark's scores, when it's on: a Benchmark tab at /bench. */
+	bench?: () => { scores: ModelScores[]; lastRun?: string; keep: number; hour: number; tasks: number };
 };
 
 const STATIC_DIR = join(dirname(fileURLToPath(import.meta.url)), "static");
@@ -81,7 +85,11 @@ export async function startDashboard(options: DashOptions): Promise<{ port: numb
 			return res.end();
 		}
 		if (req.method !== "GET") return reply(res, 405, "text/plain", "read-only");
-		if (path === "/") return reply(res, 200, "text/html; charset=utf-8", page(current));
+		if (path === "/") return reply(res, 200, "text/html; charset=utf-8", page(current, options.bench !== undefined));
+		if (path === "/bench" && options.bench !== undefined) {
+			const { scores, ...meta } = options.bench();
+			return reply(res, 200, "text/html; charset=utf-8", benchPage(scores, meta));
+		}
 		if (path === "/stream") {
 			res.writeHead(200, { ...HEADERS, "content-type": "text/event-stream", "cache-control": "no-store" });
 			const client = { res, rows: Array.from({ length: current.height }, (_, y) => current.rowHtml(y)) };
@@ -116,7 +124,7 @@ const HEADERS = {
 	"referrer-policy": "no-referrer",
 };
 
-function page(grid: Grid): string {
+function page(grid: Grid, bench: boolean): string {
 	return `<!doctype html>
 <html lang="en">
 <head>
@@ -127,7 +135,7 @@ function page(grid: Grid): string {
 <link rel="stylesheet" href="/static/dash.css">
 <script defer src="/static/dash.js"></script>
 </head>
-<body><main><pre id="grid" class="grid">${grid.html()}</pre></main></body>
+<body><main>${bench ? tabs("now") : ""}<pre id="grid" class="grid">${grid.html()}</pre></main></body>
 </html>
 `;
 }

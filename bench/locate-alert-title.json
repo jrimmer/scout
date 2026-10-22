@@ -1,0 +1,21 @@
+{
+	"name": "locate-alert-title",
+	"kind": "locate",
+	"repo": "scout",
+	"ref": "5a4d0837781d5d2f5b3833a6f6f222713e13c07a",
+	"given": {
+		"ref": "4552c69b6430e632fc1d68d33d9da33b3282116a",
+		"paths": [
+			"test/alerts.test.ts"
+		]
+	},
+	"request": "The test \"reads Grafana's firing alerts with their labels\" in test/alerts.test.ts fails. Grafana alerts about different disks on the same host get the same title, so nobody can tell which disk an alert is about. Where does that need fixing?",
+	"check": {
+		"locate": {
+			"file": "src/alerts.ts",
+			"functions": [
+				"grafanaAlerts"
+			]
+		}
+	}
+}

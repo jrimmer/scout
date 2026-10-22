@@ -71,3 +71,48 @@ Each run is a whole task with the model: with 10 tasks, 3 tries and a baseline t
 count first and won't start past `--max-runs` (default 60) without `--yes`. Runs are one at a time.
 
 Run it weekly, on a profile proposal you're unsure about, or before switching models; not on every nightly change.
+
+## The benchmark: models compared on Scout's own work
+
+Evals answer "is this change better?". The benchmark answers "how do these models do on our work, and what are they
+like to use through our gateway?", night after night. It's **off** unless `SCOUT_BENCH_MODELS` names the models
+(`provider/model`, comma-separated); then each night after `SCOUT_BENCH_HOUR` (1 by default), Scout starts
+`npm run bench` in a process of its own, and every model runs every task in `bench/` once, as an eval runs.
+The dashboard's **Benchmark** tab shows the result. `npm run bench` runs a night by hand (`--only <text>` for
+some tasks).
+
+**The tasks** are real fixes from Scout's history, chosen as public benchmarks choose theirs:
+- **Replayed fixes**, as in SWE-bench: Scout starts from the commit before a fix, with a request a person would
+  make. The fix's own tests are put in place only after the work (`check.hidden`), so the model can't fit its
+  change to tests it saw. It passes when they do: the new tests and the old ones in the same file.
+- **Finding bugs** (`"kind": "locate"`): the failing test is there from the start (`given`), and the answer must
+  end `LOCATION: <file> <function>`, naming the file and a function the real fix changed. Checked exactly, with no
+  model judging.
+- Candidates were commits with a small change to `src/` and tests in `test/`, kept only when their tests fail
+  before the fix and pass after it. Add more as JSON files in `bench/` (the fields are the eval task's).
+
+**The charts** score each model 0 to 100 on fixed scales, so a score means the same thing from week to week and a
+model added later compares fairly. Scores are over each model's last 10 nightly runs; only a summary of each run is
+kept (`bench.sqlite` in the data directory), and the oldest run goes as each new one comes in.
+
+| What it can do | Measured as |
+|---|---|
+| Coding | Replayed fixes passed |
+| Reasoning (finding bugs) | Bugs located. Not the maths and science quizzes public leaderboards call reasoning |
+| Tool use | Tool calls well formed, as in BFCL: arguments that fit, tools that exist |
+| Consistency | Tasks passed in every run, as τ-bench's pass^k |
+| Cost efficiency | List-price cost per solved task, from `SCOUT_PRICES_FILE`: $0.01 is 100, $2 is 0 (log scale) |
+
+| Working with it | Measured as |
+|---|---|
+| First token | Median time to a model call's first token: 0.5 s is 100, 60 s is 0 |
+| Slow first tokens | Its 90th percentile: 2 s is 100, 3 minutes is 0 |
+| Output speed | Tokens a second once answering: 200 is 100, 5 is 0 |
+| Task time | Median time for a whole task: 1 minute is 100, 30 minutes is 0 |
+| Call success | Model calls that worked without a retry |
+
+It's a toy: a handful of tasks from one codebase. Read it as a comparison of models on this work, not a ranking.
+Costs come from the prices file, so a model without a price there shows as free; add list prices (OpenRouter's, or
+the gateway's own catalog) for every model you compare. The nights cost about a task's worth of model calls per
+model per task, a few dollars a week for three models at today's prices.
+
