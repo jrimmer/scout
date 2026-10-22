@@ -127,8 +127,11 @@ dependencies, a first build). On spoond, Scout builds an image from it, `scout/<
 - Scout rebuilds when the script changes on the base branch, and weekly. A failed build is reported on the dashboard,
   threads keep starting from the last good image, and the same script is tried again after an hour.
 
-Scout's CI runner will start jobs from the same image (`runs-on: scout-<repo>`) once spoond's runner can start jobs
-from a named snapshot (#24).
+CI jobs can start from the same image, so passing in CI and passing in Scout's sandbox mean the same. spoond's runner
+(3.13.0 or later) takes a snapshot in its label map: `IMAGE_MAP=scout=snapshot:scout/node24,scout-<repo>=snapshot:scout/<repo>`,
+with each label also in `RUNNER_LABELS`, and jobs ask for it with `runs-on: scout-<repo>`. A bare snapshot name is its
+latest version, so the map needn't change when Scout rebuilds an image. The runner's spoond identity must own the
+snapshots, or have a grant to them (`snapshot:OWNER:NAME`). Add a repository's label once its first image is built.
 
 ## In Slack: nothing lost, and always saying where things stand
 

@@ -29,7 +29,8 @@ A change to any of these that needs people to act is a major version. Everything
 - **Tests at the edges:**
   - `src/slack.ts` against recorded Socket Mode payloads and a stand-in Slack Web API, covering every handler;
   - an end-to-end test from a Slack mention to a pull request on a stand-in Forgejo.
-- **Continuous integration:** on every pull request, merged with the latest `main`, and on `main` after every push, on Scout's own runner (`.forgejo/workflows/ci.yml`): type checks, the full test suite, and the Docker sandbox tests. It reports; it doesn't block merges.
+- **Continuous integration:** on every pull request, merged with the latest `main`, and on `main` after every push, on Scout's own runner (`.forgejo/workflows/ci.yml`): type checks, the full test suite, and the Docker sandbox tests. It reports; it doesn't block merges. Jobs start from the snapshot Scout's own sandboxes start from (`scout/node24`).
+- **Repository images in CI:** with spoond 3.13.0's runner, a repository's CI jobs can start from the image Scout builds from its `.scout/setup.sh` (`docs/operations.md`).
 - **Releases:** this changelog, and the release checklist in `docs/releasing.md`.
 - **Settings:** `.env.example` now lists every setting Scout reads, and a test keeps it so. `SCOUT_GATEWAY_OPENAI_API` was missing.
 
