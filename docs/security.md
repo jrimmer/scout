@@ -52,7 +52,7 @@ keep those behind approval.
 
 Thread transcripts, notes, schedules and the audit trail are in Scout's data directory (SQLite). Retention
 (`SCOUT_RETENTION_DAYS`) deletes what quiet threads leave behind; transcripts in Pi Durable's store are not yet
-deleted. Back the data directory up (see operations.md, Litestream).
+deleted. Back the data directory up (see operations.md, Backups).
 
 Answers to requests made on the code host are posted back there: in full on private repositories, only a pointer to
 the Slack thread on public ones, since an answer can draw on anything said in Slack.

@@ -1,5 +1,5 @@
 import { loadConfig, useScoutsKey } from "./config.ts";
-import { countMcpTools, doctor, fetchRunning, formatChecks } from "./doctor.ts";
+import { countMcpTools, doctor, fetchRunning, formatChecks, restartsOf } from "./doctor.ts";
 import { modelsFor } from "./gateway.ts";
 import { sourceReader } from "./scout.ts";
 import { resolveSecrets } from "./secrets.ts";
@@ -24,6 +24,8 @@ const checks = await doctor(config, {
 	...(mcpFile === undefined ? {} : { mcp: () => countMcpTools(mcpFile) }),
 	...(directory === undefined ? {} : { directory: sourceReader(directory.source, config.codeHost, fetch) }),
 	running: () => fetchRunning(config.dash, config.governance.metricsToken),
+	// From a shell, not the service: the unit named scout, as the doctor's hints say, if this machine has one.
+	restarts: () => restartsOf({ name: "scout", user: false }),
 });
 console.log(formatChecks(checks));
 process.exit(checks.some((c) => c.status === "fail") ? 1 : 0);

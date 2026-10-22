@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { type Backup, backupState, describeBackup } from "./backups.ts";
 import { isIP } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -152,6 +153,53 @@ export function checkDashboard(dash: Config["dash"]): Check {
 	return { name, status: "ok", detail: `${dash.addr}${loopback ? " (this machine only)" : ", behind a login"}` };
 }
 
+/** Whether Scout's databases are backed up off this machine (backups.ts): not is broken, off on purpose a warning. */
+export function checkBackups(backup: Backup): Check {
+	const name = "Backups";
+	if (backup.status === "ok") return { name, status: "ok", detail: describeBackup(backup) };
+	if (backup.status === "off") return { name, status: "warn", detail: describeBackup(backup), fix: "Fine for a test install. Anywhere people rely on Scout, run it under Litestream: docs/operations.md#backups." };
+	return { name, status: "fail", detail: describeBackup(backup), fix: "Run Scout under Litestream (deploy/scout.service and deploy/litestream.yml): docs/operations.md#backups. For a test install, SCOUT_BACKUP=none says it's on purpose." };
+}
+
+/** A systemd unit, and whether it's a user's (`systemctl --user`). */
+export type Unit = { name: string; user: boolean };
+
+/** The unit this process runs in, from `/proc/self/cgroup`, when systemd started it (INVOCATION_ID): Scout under its service. */
+export function unitOf(cgroup: string, env: NodeJS.ProcessEnv = process.env): Unit | undefined {
+	if (env.INVOCATION_ID === undefined) return undefined;
+	const path = cgroup.split("\n").find((l) => l.startsWith("0::"))?.slice(3).trim() ?? "";
+	const name = path.split("/").pop() ?? "";
+	return name.endsWith(".service") ? { name, user: path.includes("/user@") } : undefined;
+}
+
+/**
+ * A drain for a deploy (scripts/deploy.sh) ends with Scout stopping, so its unit has to start it again: Restart=always.
+ * `shown` is `systemctl show <unit> -p LoadState -p Restart`; a unit systemd doesn't know is no check at all.
+ */
+export function checkRestarts(unit: Unit, shown: string): Check | undefined {
+	const props = Object.fromEntries(shown.split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1).trim()]));
+	if (props.LoadState !== "loaded") return undefined;
+	const name = "Restarts";
+	if (props.Restart === "always") return { name, status: "ok", detail: `the ${unit.name} unit restarts Scout whenever it stops` };
+	return {
+		name,
+		status: "warn",
+		detail: `the ${unit.name} unit has Restart=${props.Restart ?? "?"}, so a drain for a deploy leaves Scout stopped`,
+		fix: `Set Restart=always as deploy/scout.service does, then systemctl${unit.user ? " --user" : ""} daemon-reload (docs/operations.md#deploying).`,
+	};
+}
+
+/** The restart check for `unit`, or nothing when there's no unit or no systemd to ask. */
+export async function restartsOf(unit: Unit | undefined, show: (args: string[]) => Promise<string> = systemctl): Promise<Check | undefined> {
+	if (unit === undefined) return undefined;
+	const shown = await show([...(unit.user ? ["--user"] : []), "show", unit.name, "-p", "LoadState", "-p", "Restart"]).catch(() => undefined);
+	return shown === undefined ? undefined : checkRestarts(unit, shown);
+}
+
+async function systemctl(args: string[]): Promise<string> {
+	return (await run("systemctl", args, { timeout: 10_000 })).stdout;
+}
+
 /** Everything, in order; `mcp` connects the configured servers and returns how many tools they offer. */
 export async function doctor(
 	config: Config,
@@ -164,6 +212,8 @@ export async function doctor(
 		models?: Models;
 		/** What the running Scout says about itself; an error when it can't be asked. */
 		running?: () => Promise<Running>;
+		/** The service's restart policy (restartsOf); nothing when Scout doesn't run under systemd. */
+		restarts?: () => Promise<Check | undefined>;
 	} = {},
 ): Promise<Check[]> {
 	const doFetch = deps.fetch ?? fetch;
@@ -191,7 +241,12 @@ export async function doctor(
 		}
 	}
 	checks.push(checkDashboard(config.dash));
-	if (deps.running !== undefined) checks.push(...checkRunning(await deps.running().catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))))));
+	const running = deps.running === undefined ? undefined : await deps.running().catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
+	// The running Scout knows its data directory for sure (a unit can set it outside .env); otherwise, this one's.
+	checks.push(checkBackups(running === undefined || running instanceof Error || running.backup === undefined ? backupState(config.dataDir, config.backup) : running.backup));
+	const restarts = await deps.restarts?.();
+	if (restarts !== undefined) checks.push(restarts);
+	if (running !== undefined) checks.push(...checkRunning(running));
 	return checks;
 }
 
@@ -199,7 +254,7 @@ export async function doctor(
 export class CantAsk extends Error {}
 
 /** What a running Scout reports about itself: the dashboard's snapshot (dash/collect.ts), or the part of it these checks read. */
-export type Running = Pick<Snapshot, "now" | "startedAt" | "alerts" | "working" | "capacity">;
+export type Running = Pick<Snapshot, "now" | "startedAt" | "alerts" | "working" | "capacity" | "backup">;
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;

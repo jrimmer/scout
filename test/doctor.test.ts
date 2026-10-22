@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { describe, it } from "node:test";
-import { checkCodeHost, checkDashboard, checkDirectory, checkGateway, checkGitRemote, checkModel, checkProfileDir, checkRunning, checkSlack, checkSpoond, fetchRunning, formatChecks, type Running } from "../src/doctor.ts";
+import { loadConfig } from "../src/config.ts";
+import { checkBackups, checkCodeHost, checkDashboard, checkDirectory, checkGateway, checkGitRemote, checkModel, checkProfileDir, checkRestarts, checkRunning, checkSlack, checkSpoond, doctor, fetchRunning, formatChecks, restartsOf, type Running, unitOf } from "../src/doctor.ts";
 
 /** A fetch that answers by URL: a status, a JSON body, and headers. */
 function answering(routes: Record<string, { status?: number; body?: unknown; headers?: Record<string, string> } | Error>): typeof fetch {
@@ -104,6 +105,58 @@ describe("doctor", () => {
 		assert.equal(checkDashboard({ addr: "0.0.0.0:8893" }).status, "fail");
 		assert.equal(checkDashboard({ addr: "0.0.0.0:8893", auth: { user: "u", passwordHash: "h" } }).status, "ok");
 		assert.equal(checkDashboard(undefined).detail, "off");
+	});
+
+	it("fails when Scout's data isn't backed up off the machine, and only warns when that's on purpose", () => {
+		assert.deepEqual(checkBackups({ status: "ok", problems: [] }), { name: "Backups", status: "ok", detail: "Litestream is copying pi.sqlite and scout.sqlite" });
+		const missing = checkBackups({ status: "missing", problems: ["no Litestream copy of pi.sqlite"] });
+		assert.deepEqual([missing.status, missing.detail], ["fail", "Scout's data isn't backed up off this machine: no Litestream copy of pi.sqlite"]);
+		assert.match(missing.fix ?? "", /docs\/operations\.md#backups/);
+		const off = checkBackups({ status: "off", problems: [] });
+		assert.deepEqual([off.status, off.detail], ["warn", "backups off, on purpose (SCOUT_BACKUP=none)"]);
+	});
+
+	it("warns when the service won't start Scout again after a drain, and skips without systemd", async () => {
+		const unit = { name: "scout.service", user: false };
+		assert.equal(checkRestarts(unit, "LoadState=loaded\nRestart=always\n")?.status, "ok");
+		const onFailure = checkRestarts(unit, "LoadState=loaded\nRestart=on-failure\n");
+		assert.deepEqual([onFailure?.status, onFailure?.detail], ["warn", "the scout.service unit has Restart=on-failure, so a drain for a deploy leaves Scout stopped"]);
+		assert.match(onFailure?.fix ?? "", /Restart=always.*systemctl daemon-reload/);
+		assert.equal(checkRestarts({ name: "scout", user: false }, "LoadState=not-found\nRestart=no\n"), undefined, "no such unit on this machine");
+		let asked: string[] = [];
+		const show = async (args: string[]) => {
+			asked = args;
+			return "LoadState=loaded\nRestart=no\n";
+		};
+		assert.match((await restartsOf({ name: "scout.service", user: true }, show))?.fix ?? "", /systemctl --user daemon-reload/);
+		assert.deepEqual(asked, ["--user", "show", "scout.service", "-p", "LoadState", "-p", "Restart"]);
+		assert.equal(await restartsOf(undefined, show), undefined);
+		assert.equal(await restartsOf(unit, async () => Promise.reject(new Error("systemctl: not found"))), undefined);
+	});
+
+	it("asks the running Scout about backups first, since a unit can set its data directory outside .env", async () => {
+		const dataDir = mkdtempSync(join(tmpdir(), "scout-doctor-"));
+		const env = { SCOUT_REPO_URL: "git@host:o/web.git", SCOUT_REPO_SLUG: "o/web", SCOUT_CODEHOST_TOKEN: "t", SCOUT_CODEHOST_API: "http://forge/api/v1", SCOUT_DATA_DIR: dataDir, SCOUT_DASH_ADDR: "off" };
+		const deps = { fetch: answering({}), git: async () => "abc\trefs/heads/main\n" };
+		const ran = (running: Running | Error) => ({ ...deps, running: async () => (running instanceof Error ? Promise.reject(running) : running) });
+		const named = (checks: { name: string; status: string; detail: string }[], name: string) => checks.find((c) => c.name === name);
+		const backedUp = await doctor(loadConfig(env), ran(running({ backup: { status: "ok", problems: [] } })));
+		assert.equal(named(backedUp, "Backups")?.status, "ok");
+		assert.deepEqual(backedUp.slice(-2).map((c) => c.name), ["Backups", "Running"]);
+		const local = named(await doctor(loadConfig(env), ran(new Error("ECONNREFUSED"))), "Backups");
+		assert.deepEqual([local?.status, local?.detail], ["fail", `Scout's data isn't backed up off this machine: there's no pi.sqlite in ${dataDir}; there's no scout.sqlite in ${dataDir}`]);
+		assert.equal(named(await doctor(loadConfig({ ...env, SCOUT_BACKUP: "none" }), deps), "Backups")?.status, "warn");
+		const restarts = await doctor(loadConfig(env), { ...deps, restarts: async () => ({ name: "Restarts", status: "warn" as const, detail: "Restart=no" }) });
+		assert.deepEqual(restarts.slice(-2).map((c) => c.name), ["Backups", "Restarts"]);
+		assert.throws(() => loadConfig({ ...env, SCOUT_BACKUP: "s3" }), /SCOUT_BACKUP must be litestream or none/);
+	});
+
+	it("finds the unit Scout runs in from its cgroup, only when systemd started it", () => {
+		const env = { INVOCATION_ID: "abc" };
+		assert.deepEqual(unitOf("0::/system.slice/scout.service\n", env), { name: "scout.service", user: false });
+		assert.deepEqual(unitOf("0::/user.slice/user-1000.slice/user@1000.service/app.slice/scout.service\n", env), { name: "scout.service", user: true });
+		assert.equal(unitOf("0::/user.slice/user-1000.slice/session-2.scope\n", env), undefined);
+		assert.equal(unitOf("0::/system.slice/scout.service\n", {}), undefined);
 	});
 
 	it("prints one line per check, with the fix under it", () => {
