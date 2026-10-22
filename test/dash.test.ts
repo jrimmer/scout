@@ -133,14 +133,44 @@ function get(port: number, path: string, headers: Record<string, string> = {}): 
 	return new Promise((resolve, reject) => {
 		const req = request({ host: "127.0.0.1", port, path, headers }, (res) => {
 			let body = "";
-			res.on("data", (chunk) => {
-				body += chunk;
-				if (path === "/stream" && body.includes("event: rows")) req.destroy();
-			});
+			res.on("data", (chunk) => (body += chunk));
 			res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
-			res.on("close", () => resolve({ status: res.statusCode ?? 0, body }));
 		});
 		req.on("error", reject);
+		req.end();
+	});
+}
+
+/**
+ * The live stream, up to its first `rows` event. `opened` runs once the stream has sent its grid, so a change made
+ * there is one the stream must then send as rows (made earlier, the next tick could fold it into the grid itself).
+ */
+function stream(port: number, headers: Record<string, string>, opened: () => void): Promise<string> {
+	return new Promise((resolve, reject) => {
+		let body = "";
+		let started = false;
+		const req = request({ host: "127.0.0.1", port, path: "/stream", headers }, (res) => {
+			res.on("data", (chunk) => {
+				body += chunk;
+				if (!started && body.includes("event: grid")) {
+					started = true;
+					opened();
+				}
+				if (body.includes("event: rows") && body.slice(body.indexOf("event: rows")).includes("\n\n")) {
+					clearTimeout(timer);
+					req.destroy();
+					resolve(body);
+				}
+			});
+		});
+		const timer = setTimeout(() => {
+			req.destroy();
+			reject(new Error(`no rows event within 10 s; got: ${body.slice(0, 200)}`));
+		}, 10_000);
+		req.on("error", (error) => {
+			clearTimeout(timer);
+			reject(error);
+		});
 		req.end();
 	});
 }
@@ -176,10 +206,9 @@ describe("dashboard server", () => {
 		assert.equal((await get(dash.port, "/static/../server.ts", auth)).status, 404);
 		assert.equal((await get(dash.port, "/static/dash.js", auth)).status, 200);
 
-		snapshot = { ...busy, threadsToday: 99 };
-		const stream = await get(dash.port, "/stream", auth);
-		assert.match(stream.body, /^event: grid\n/);
-		const patch = stream.body.split("event: rows\ndata: ")[1]!.split("\n")[0]!;
+		const streamed = await stream(dash.port, auth, () => (snapshot = { ...busy, threadsToday: 99 }));
+		assert.match(streamed, /^event: grid\n/);
+		const patch = streamed.split("event: rows\ndata: ")[1]!.split("\n")[0]!;
 		const rows = JSON.parse(patch) as { id: string; html: string }[];
 		assert.ok(rows.some((r) => r.html.includes("99")), "the changed row");
 		assert.ok(rows.length < 5, "and not the whole grid");
