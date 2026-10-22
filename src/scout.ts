@@ -43,7 +43,7 @@ import { type ThreadRow, Threads } from "./threads.ts";
 
 /**
  * Everything Scout is, apart from how people reach it: the harness, its extensions, its workspaces and its stores.
- * `main.ts` puts Slack in front of it; `job.ts` runs one task with it and exits.
+ * `service.ts` puts Slack in front of it (started by `main.ts`); `job.ts` runs one task with it and exits.
  */
 export type ScoutOptions = {
 	config: Config;
@@ -308,7 +308,7 @@ export async function openScout(options: ScoutOptions) {
 	});
 	const searchTools = searchExtension(search, threads, options.threadLink ?? (async () => undefined));
 	const memoryTools = memoryExtension(memory, audit);
-	// "What are you working on?": Scout's live state, which only the service running it knows (main.ts sets this).
+	// "What are you working on?": Scout's live state, which only the service running it knows (service.ts sets this).
 	let describeNow: (channel: string) => Promise<string> = async () => "I can't see my other threads from here.";
 	const statusTools = defineExtension({
 		name: "status",
@@ -332,10 +332,10 @@ export async function openScout(options: ScoutOptions) {
 	// Every repository's code, from any thread: the host's mirrors, read-only (codesearch.ts).
 	const codeSearchTools = codeSearchExtension(() => config.repos.map((r) => ({ name: r.name, base: r.base, mirror: workspaces.mirrorFor(r.name) })));
 	// Experimental: several approaches at once, compared in the thread (approaches.ts). Where the comparison goes is the
-	// service's to say (main.ts sets it); each approach works without this tool, and without opening pull requests.
+	// service's to say (service.ts sets it); each approach works without this tool, and without opening pull requests.
 	const approaches = new Approaches(db);
 	let showApproaches: ApproachesOptions["show"] = async () => undefined;
-	// How many approaches may run at once for a thread, given the run limits (main.ts sets it; it can see every run).
+	// How many approaches may run at once for a thread, given the run limits (service.ts sets it; it can see every run).
 	let approachRoom: (parentId: number) => Promise<number> = async () => Number.POSITIVE_INFINITY;
 	const approachesTools: Extension = approachesExtension({
 		store: approaches,

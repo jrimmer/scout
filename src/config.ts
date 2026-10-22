@@ -260,7 +260,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	const dataDir = resolve(env.SCOUT_DATA_DIR ?? "data");
 
 	return {
-		// Only the Slack service needs these (see main.ts); jobs run without them.
+		// Only the Slack service needs these (see service.ts); jobs run without them.
 		slack: { botToken: env.SLACK_BOT_TOKEN ?? "", appToken: env.SLACK_APP_TOKEN ?? "" },
 		model: { provider, modelId },
 		dataDir,

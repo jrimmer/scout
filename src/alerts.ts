@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 /**
  * The alert responder's ears. Scout watches what the monitoring already knows (Gatus's checks, Grafana's firing
  * alerts) rather than taking webhooks: it has no public address, and the alerts' existing destinations stay as they are.
- * Each new alert becomes a public thread in the channel that owns it, where Scout investigates (see main.ts).
+ * Each new alert becomes a public thread in the channel that owns it, where Scout investigates (see service.ts).
  *
  * The first look records what is already firing without opening threads, so starting to watch doesn't open a dozen.
  */

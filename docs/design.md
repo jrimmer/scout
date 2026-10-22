@@ -72,7 +72,8 @@ one-off:   job.ts ─▶ the same agent, no Slack, nothing kept
 | `src/health.ts` | What needs a person: background jobs that keep failing. |
 | `src/threads.ts` | Thread ↔ conversation map, plus per-thread stats (River's `river_sessions`). |
 | `src/scout.ts` | Everything but the front door: harness, extensions, workspaces, stores. |
-| `src/main.ts` | The Slack service and its schedules. `src/job.ts` is the one-off front door. |
+| `src/service.ts` | The Slack service and its schedules, startable on its own (the end-to-end tests start it with fakes). |
+| `src/main.ts` | The service's front door: settings, secrets, process signals. `src/job.ts` is the one-off front door. |
 
 ## Decisions
 
