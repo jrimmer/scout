@@ -50,9 +50,13 @@ if (import.meta.main) {
 	const work = mkdtempSync(join(tmpdir(), "scout-bench-"));
 	const host = await fakeCodeHost();
 	let current: Awaited<ReturnType<typeof openScout>> | undefined;
-	// Scout stops this run when it stops itself: leave no sandbox or copies behind.
+	// Scout stops this run when it stops itself: leave no sandbox or copies behind. Stopping can bring the signal twice
+	// (from systemd and from Scout), and the second mustn't cut the clean-up short.
+	let stopping = false;
 	for (const signal of ["SIGTERM", "SIGINT"] as const) {
-		process.once(signal, async () => {
+		process.on(signal, async () => {
+			if (stopping) return;
+			stopping = true;
 			console.log(`bench: stopped (${signal}); what finished is kept`);
 			await current?.workspaces.removeAll().catch(() => {});
 			rmSync(work, { recursive: true, force: true });
