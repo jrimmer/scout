@@ -13,6 +13,9 @@ process.on("uncaughtException", (error) => {
 	process.exit(1);
 });
 const secretSources = await resolveSecrets();
+// `kill -HUP <pid>` reads secrets again. Listened for from here, as before, so one during start-up doesn't end Scout.
+let service: Awaited<ReturnType<typeof startService>> | undefined;
+process.on("SIGHUP", () => (service === undefined ? void rotate(secretSources) : service.signal("SIGHUP")));
 const config = loadConfig();
 if (config.slack.botToken === "" || config.slack.appToken === "") {
 	throw new ConfigError("SLACK_BOT_TOKEN and SLACK_APP_TOKEN are not set (see .env.example)");
@@ -26,11 +29,12 @@ if (config.sandbox.network === "none") {
 }
 
 // Everything else is the service (service.ts), the same one the end-to-end tests start.
-const service = await startService({ config, rotateSecrets: () => rotate(secretSources) });
+service = await startService({ config, rotateSecrets: () => rotate(secretSources) });
+const running = service;
 
-// `kill -INT <pid>` drains for a restart and then stops; SIGTERM, or a second SIGINT, stops now. `kill -HUP <pid>` reads
-// secrets again; `kill -USR2 <pid>` reflects now, if today's reflection hasn't run yet.
-for (const name of ["SIGINT", "SIGTERM", "SIGHUP", "SIGUSR2"] satisfies Signal[]) process.on(name, () => service.signal(name));
+// `kill -INT <pid>` drains for a restart and then stops; SIGTERM, or a second SIGINT, stops now. `kill -USR2 <pid>`
+// reflects now, if today's reflection hasn't run yet.
+for (const name of ["SIGINT", "SIGTERM", "SIGUSR2"] satisfies Signal[]) process.on(name, () => running.signal(name));
 
 /**
  * Pi Durable from main (`npm run pi -- main`) converts pi.sqlite to a schema its release can't open, so it does that
