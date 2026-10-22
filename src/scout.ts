@@ -408,6 +408,8 @@ export async function openScout(options: ScoutOptions) {
 				(await reviewEnv(target, ctx, (id) => workspaces.env(id))) ??
 				workspaces.env(target.conversationId),
 			onReport: (report) => console.error("harness:", report),
+			// Pi's own spans (submissions, task phases, model requests) go out with Scout's, through the same exporter.
+			...(tracer === undefined ? {} : { telemetry: tracer.piTelemetry() }),
 			settings: {
 				// A busy gateway can queue requests for minutes ("scheduler admission timeout"): Pi's default three
 				// retries over about 14 seconds gave up too soon. Six, from 5 s and doubling up to a minute, wait it out

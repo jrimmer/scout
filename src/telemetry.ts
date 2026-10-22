@@ -1,30 +1,39 @@
 import { randomBytes } from "node:crypto";
+import type { SpanAttributes, SpanLink, SpanOptions, SpanStatus, TelemetryCarrier, TelemetryContext, TelemetryPropagation, TelemetrySpan } from "@earendil-works/pi-telemetry";
 import type { Observer, ToolCallEvent, Where } from "./observe.ts";
 import type { Pricing } from "./pricing.ts";
 
 /**
  * Telemetry an organization's monitoring can use, without a telemetry SDK:
- * - traces, as OTLP/HTTP JSON: a span per run, with child spans for each model call and tool call;
+ * - traces, as OTLP/HTTP JSON: a span per run, with child spans for each model call and tool call, and Pi Durable's own
+ *   spans (submissions, task phases, model requests) through the same exporter (`PiTelemetry`);
  * - counters for Prometheus (`/metrics` on the dashboard listener), next to the dashboard's own numbers.
  */
-type Attribute = { key: string; value: { stringValue?: string; intValue?: string; doubleValue?: number; boolValue?: boolean } };
+type Value = { stringValue?: string; intValue?: string; doubleValue?: number; boolValue?: boolean };
+type Attribute = { key: string; value: Value & { arrayValue?: { values: Value[] } } };
 type Span = {
 	traceId: string;
 	spanId: string;
 	parentSpanId?: string;
 	name: string;
 	kind: number;
+	/** OTLP span flags: whether the parent is known to be remote (0x100 says it is known, 0x200 that it is). */
+	flags?: number;
 	startTimeUnixNano: string;
 	endTimeUnixNano?: string;
 	attributes: Attribute[];
-	status?: { code: number };
+	events?: { timeUnixNano: string; name: string; attributes: Attribute[] }[];
+	links?: { traceId: string; spanId: string; attributes: Attribute[] }[];
+	status?: { code: number; message?: string };
 };
 
 const nanos = (ms: number) => `${BigInt(Math.round(ms)) * 1_000_000n}`;
 const id = (bytes: number) => randomBytes(bytes).toString("hex");
-const attr = (key: string, value: string | number | boolean): Attribute => ({
+const scalar = (value: string | number | boolean): Value =>
+	typeof value === "string" ? { stringValue: value } : typeof value === "boolean" ? { boolValue: value } : Number.isInteger(value) ? { intValue: String(value) } : { doubleValue: value };
+const attr = (key: string, value: string | number | boolean | readonly (string | number | boolean)[]): Attribute => ({
 	key,
-	value: typeof value === "string" ? { stringValue: value } : typeof value === "boolean" ? { boolValue: value } : Number.isInteger(value) ? { intValue: String(value) } : { doubleValue: value },
+	value: typeof value === "object" ? { arrayValue: { values: value.map(scalar) } } : scalar(value),
 });
 
 /** Spans for runs, model calls and tool calls, exported in batches to an OTLP/HTTP endpoint (`…/v1/traces`). */
@@ -36,6 +45,8 @@ export class Tracer implements Observer {
 	readonly #runs = new Map<number, Span>();
 	readonly #open = new Map<string, Span>();
 	#done: Span[] = [];
+	#pi = false;
+	readonly #cost = new Map<number, number>();
 	readonly #timer: ReturnType<typeof setInterval>;
 
 	constructor(options: { endpoint: string; headers?: Record<string, string>; pricing: Pricing; fetch?: typeof fetch; intervalMs?: number }) {
@@ -75,12 +86,28 @@ export class Tracer implements Observer {
 		this.#done.push({ ...span, endTimeUnixNano: nanos(Date.now()), attributes: [...span.attributes, ...attributes], status: { code: error ? 2 : 1 } });
 	}
 
+	/**
+	 * Pi Durable's telemetry context, exporting through this tracer. From here on Pi's `pi.ai.request` span stands for a
+	 * model call (it also has retries and the time to the first chunk), so `scout.model_call` is no longer emitted; what
+	 * Pi doesn't know, Scout's spend by its own price list, moves to the run span as `scout.cost_usd`.
+	 */
+	piTelemetry(): TelemetryContext {
+		this.#pi = true;
+		return new PiTelemetry((span) => this.#done.push(span));
+	}
+
 	requestStarted(e: Where & { taskId: string }): void {
+		if (this.#pi) return;
 		this.#child(e, `request:${e.taskId}`, "scout.model_call", []);
 	}
 
 	responded(e: Where & { taskId: string; message: import("@earendil-works/pi-ai").AssistantMessage }): void {
 		const m = e.message;
+		if (this.#pi) {
+			this.#cost.set(e.conversationId, (this.#cost.get(e.conversationId) ?? 0) + this.#pricing.cost(m));
+			this.#run(e);
+			return;
+		}
 		this.#end(
 			`request:${e.taskId}`,
 			[
@@ -108,7 +135,10 @@ export class Tracer implements Observer {
 		const run = this.#runs.get(w.conversationId);
 		if (run === undefined) return;
 		this.#runs.delete(w.conversationId);
-		this.#done.push({ ...run, endTimeUnixNano: nanos(Date.now()), status: { code: 1 } });
+		const cost = this.#cost.get(w.conversationId);
+		this.#cost.delete(w.conversationId);
+		const attributes = cost === undefined ? run.attributes : [...run.attributes, attr("scout.cost_usd", cost)];
+		this.#done.push({ ...run, attributes, endTimeUnixNano: nanos(Date.now()), status: { code: 1 } });
 	}
 
 	/** Send what's finished. Failures are logged and dropped: telemetry never gets in the way of work. */
@@ -139,6 +169,132 @@ export class Tracer implements Observer {
 	close(): Promise<void> {
 		clearInterval(this.#timer);
 		return this.flush();
+	}
+}
+
+/** W3C `traceparent`: the carrier Pi stores with a submission or task, so a later phase continues the same trace. */
+const traceparent = (traceId: string, spanId: string): TelemetryCarrier => ({ traceparent: `00-${traceId}-${spanId}-01` });
+
+/** Where spans can start: the root, or a parent from a carrier. A span is the same with its own ids. */
+class Parent implements TelemetryContext {
+	readonly propagation: TelemetryPropagation | undefined;
+	readonly finish: (span: Span) => void;
+	readonly traceId: string | undefined;
+	readonly spanId: string | undefined;
+	/** After the span settled, calls on it are accepted and ignored. It stays linkable, but spans started from it are `phantom`. */
+	inert = false;
+	phantom = false;
+	/** An extracted parent, which may be another process's span. */
+	readonly remote: boolean;
+
+	constructor(finish: (span: Span) => void, propagation: TelemetryPropagation | undefined, parent?: { traceId: string; spanId: string }, remote = false) {
+		this.remote = remote;
+		this.finish = finish;
+		this.propagation = propagation;
+		this.traceId = parent?.traceId;
+		this.spanId = parent?.spanId;
+	}
+
+	carrier(): TelemetryCarrier | undefined {
+		return this.phantom || this.traceId === undefined || this.spanId === undefined ? undefined : traceparent(this.traceId, this.spanId);
+	}
+
+	startSpan<T>(options: SpanOptions, callback: (span: TelemetrySpan) => T | Promise<T>): Promise<T> {
+		const span = new PiSpan(options, this);
+		let result: T | Promise<T>;
+		try {
+			result = callback(span);
+		} catch (error) {
+			span.settle({ error });
+			return Promise.reject(error);
+		}
+		return Promise.resolve(result).then(
+			(value) => (span.settle(), value),
+			(error) => {
+				span.settle({ error });
+				throw error;
+			},
+		);
+	}
+}
+
+class PiSpan extends Parent implements TelemetrySpan {
+	readonly #span: Span;
+	readonly #attributes = new Map<string, Attribute>();
+	#status: SpanStatus | undefined;
+
+	constructor(options: SpanOptions, parent: Parent) {
+		super(parent.finish, parent.propagation, { traceId: parent.traceId ?? id(16), spanId: id(8) });
+		this.inert = this.phantom = parent.inert;
+		this.#span = { traceId: this.traceId!, spanId: this.spanId!, name: options.name, kind: 1, startTimeUnixNano: nanos(Date.now()), attributes: [] };
+		if (parent.spanId !== undefined && parent.traceId !== undefined) {
+			this.#span.parentSpanId = parent.spanId;
+			this.#span.flags = parent.remote ? 0x300 : 0x100;
+		}
+		this.setAttributes(options.attributes ?? {});
+		for (const link of options.links ?? []) this.addLink(link);
+	}
+
+	addLink(link: SpanLink): void {
+		const [, traceId, spanId] = (link.context instanceof Parent ? link.context.carrier() : undefined)?.traceparent?.split("-") ?? [];
+		if (this.inert || traceId === undefined || spanId === undefined) return;
+		(this.#span.links ??= []).push({ traceId, spanId, attributes: attributesOf(link.attributes ?? {}) });
+	}
+
+	addEvent(name: string, attributes: SpanAttributes = {}): void {
+		if (!this.inert) (this.#span.events ??= []).push({ timeUnixNano: nanos(Date.now()), name, attributes: attributesOf(attributes) });
+	}
+
+	setAttributes(attributes: SpanAttributes): void {
+		if (this.inert) return;
+		for (const a of attributesOf(attributes)) this.#attributes.set(a.key, a);
+	}
+
+	setStatus(status: SpanStatus): void {
+		if (!this.inert) this.#status = status;
+	}
+
+	/** End the span: ok, or an error if the callback threw and nothing said otherwise. */
+	settle(thrown?: { error: unknown }): void {
+		if (this.inert) return;
+		this.inert = true;
+		const e = thrown?.error;
+		const error = e instanceof Error ? { name: e.name, message: e.message } : { name: "Error", message: String(e) };
+		const status: SpanStatus = this.#status ?? (thrown === undefined ? { status: "ok" } : { status: "error", error });
+		const span = this.#span;
+		span.attributes = [...this.#attributes.values()];
+		span.endTimeUnixNano = nanos(Date.now());
+		span.status = { code: status.status === "ok" ? 1 : 2 };
+		if (status.status === "error" && status.error !== undefined) {
+			const message = status.error.message.slice(0, 500);
+			span.status.message = message;
+			(span.events ??= []).push({ timeUnixNano: span.endTimeUnixNano, name: "exception", attributes: [attr("exception.type", status.error.name), attr("exception.message", message)] });
+		}
+		this.finish(span);
+	}
+}
+
+function attributesOf(attributes: SpanAttributes): Attribute[] {
+	return Object.entries(attributes).flatMap(([key, value]) => (value === undefined ? [] : [attr(key, value)]));
+}
+
+/**
+ * Pi's telemetry context (`HarnessOptions.telemetry`) over the exporter: its spans, events and statuses become OTLP
+ * spans in the same batches. Propagation is W3C `traceparent`. Metrics are not offered: OTLP metrics are another
+ * endpoint, and `/metrics` carries Scout's own.
+ */
+export class PiTelemetry extends Parent {
+	constructor(finish: (span: Span) => void) {
+		let root: Parent;
+		const propagation: TelemetryPropagation = {
+			inject: (context) => (context instanceof Parent ? context.carrier() : undefined),
+			extract: (carrier) => {
+				const [, traceId, spanId] = /^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$/.exec(carrier?.traceparent ?? "") ?? [];
+				return traceId === undefined || spanId === undefined ? root : new Parent(finish, propagation, { traceId, spanId }, true);
+			},
+		};
+		super(finish, propagation);
+		root = this;
 	}
 }
 

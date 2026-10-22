@@ -12,6 +12,7 @@ A change to any of these that needs people to act is a major version. Everything
 ## Unreleased
 
 ### Added
+- **Pi Durable's traces in the OTLP export** (`SCOUT_OTLP_ENDPOINT`): submissions, task phases and model requests (`pi.durable.*`, `pi.ai.request`), through the same exporter. `pi.ai.request` replaces Scout's own `scout.model_call`; the run's spend moves to `scout.cost_usd` on `scout.run` (`docs/operations.md`).
 - **Sandboxes:**
   - While a command runs, Scout checks every minute that the sandbox still answers. After five minutes without an answer it stops waiting and says the sandbox has probably crashed. Until now, a thread could wait silently for up to a day.
   - Scout reads spoond's own report of a command that never started (spoond 3.12.1), as well as checking for itself.

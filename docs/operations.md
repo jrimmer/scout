@@ -493,8 +493,14 @@ Slack tokens and MCP servers' credentials need a restart.
 ## Telemetry
 
 - **Traces**: `SCOUT_OTLP_ENDPOINT` (an OTLP/HTTP endpoint ending in `/v1/traces`) and `SCOUT_OTLP_HEADERS` (JSON).
-  Each run is a trace: a `scout.run` span with a child span for each model call (model, tokens, cost) and each tool
-  call.
+  Each run is a trace: a `scout.run` span (conversation, channel, and `scout.cost_usd`, the run's spend by Scout's price
+  list) with a child span for each tool call.
+  Pi Durable's own spans go to the same endpoint, with the same headers and resource: `pi.durable.submit` (a message
+  admitted), `pi.durable.phase` (each phase of a task, with its tool) and, under the phase, `pi.ai.request` (each model
+  call: provider, model, tokens, cost, retries as events). They carry IDs and counts, never messages or tool
+  arguments, and trace context is stored with the work, so a phase after a restart continues its trace. They are
+  separate traces from `scout.run`, not children of it. Pi's `pi.ai.request` is the model call's span, so Scout no
+  longer emits its own. Pi's metrics are not exported over OTLP; `/metrics` (below) is Scout's own.
 - **Metrics**: Prometheus text at `/metrics` on the dashboard's listener: model requests, tokens, spend, tool calls,
   runs, and gauges for working threads, open pull requests, unreviewed notes, problems, this week's spend and open
   sandbox connections, and the capacity gauges (below). With `SCOUT_METRICS_TOKEN` it takes that bearer token; otherwise the dashboard's login.
