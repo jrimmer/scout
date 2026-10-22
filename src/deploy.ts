@@ -9,6 +9,7 @@ import { resolveSecrets } from "./secrets.ts";
  *
  * - `check <from> <to> [--pi-backed-up]`: may `to` go out? Only when the code host says CI passed on it, and, when it
  *   moves Pi Durable to another version (which can convert pi.sqlite for good), only once pi.sqlite is backed up.
+ * - `stopped <pid>`: wait until the process draining (the service's main process) has stopped.
  * - `restarted <unit> <pid>`: wait until the service has a new main process and its dashboard says it's healthy.
  */
 export type CombinedStatus = { total_count?: number; statuses?: { context?: string; state?: string; status?: string }[] | null };
@@ -85,12 +86,42 @@ async function check(config: Config, from: string, to: string, piBackedUp: boole
 	return ok && verdict.ok;
 }
 
+/** Whether a process is still there: signal 0 checks without sending anything. */
+function alive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+async function stopped(config: Config, pid: number): Promise<boolean> {
+	const started = Date.now();
+	// Scout stops itself after SCOUT_DRAIN_MAX, busy or not; a minute more is for closing.
+	const deadline = started + (config.capacity.drainMax + 60) * 1000;
+	const seconds = () => Math.round((Date.now() - started) / 1000);
+	let said = started;
+	while (alive(pid)) {
+		if (Date.now() >= deadline) {
+			console.log(`Scout (pid ${pid}) is still running ${seconds()} s after the drain began.`);
+			return false;
+		}
+		if (Date.now() - said >= 30_000) {
+			said = Date.now();
+			console.log(`still draining after ${seconds()} s: waiting for the steps running to finish (at most ${config.capacity.drainMax} s)`);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 500));
+	}
+	console.log(`Scout stopped ${seconds()} s after the drain began.`);
+	return true;
+}
+
 async function restarted(config: Config, unit: string, pid: string): Promise<boolean> {
 	const started = Date.now();
-	const deadline = started + (config.capacity.drainMax + 180) * 1000;
+	const deadline = started + 180 * 1000;
 	const seconds = () => Math.round((Date.now() - started) / 1000);
 	const mainPid = () => execFileSync("systemctl", ["show", "-p", "MainPID", "--value", unit], { encoding: "utf8" }).trim();
-	let said = started;
 	while (Date.now() < deadline) {
 		const now = mainPid();
 		if (now !== pid && now !== "0") {
@@ -100,14 +131,11 @@ async function restarted(config: Config, unit: string, pid: string): Promise<boo
 			}
 			const answer = await fetch(`${dashboardUrl(config.dash.addr)}/healthz`, { signal: AbortSignal.timeout(5_000) }).then((r) => r.text(), () => "");
 			if (answer === "ok") {
-				console.log(`Scout is up again on the new code (pid ${now}), ${seconds()} s after the drain began.`);
+				console.log(`Scout is up again on the new code (pid ${now}), ${seconds()} s after the update.`);
 				return true;
 			}
-		} else if (Date.now() - said >= 30_000) {
-			said = Date.now();
-			console.log(`still draining after ${seconds()} s: waiting for the steps running to finish (at most ${config.capacity.drainMax} s)`);
 		}
-		await new Promise((resolve) => setTimeout(resolve, 2_000));
+		await new Promise((resolve) => setTimeout(resolve, 1_000));
 	}
 	console.log(`Scout hasn't come back healthy after ${seconds()} s. Look at \`systemctl status ${unit}\` and \`journalctl -u ${unit}\`.`);
 	return false;
@@ -119,9 +147,10 @@ if (import.meta.main) {
 	const [command, ...args] = process.argv.slice(2);
 	let ok: boolean;
 	if (command === "check" && args.length >= 2) ok = await check(config, args[0]!, args[1]!, args.includes("--pi-backed-up"));
+	else if (command === "stopped" && args.length === 1 && Number(args[0]) > 0) ok = await stopped(config, Number(args[0]));
 	else if (command === "restarted" && args.length === 2) ok = await restarted(config, args[0]!, args[1]!);
 	else {
-		console.error("usage: node src/deploy.ts check <from> <to> [--pi-backed-up] | restarted <unit> <pid>");
+		console.error("usage: node src/deploy.ts check <from> <to> [--pi-backed-up] | stopped <pid> | restarted <unit> <pid>");
 		ok = false;
 	}
 	process.exit(ok ? 0 : 1);

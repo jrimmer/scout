@@ -70,8 +70,15 @@ Run any time, busy or not: there's no need to wait for Scout to go quiet. `scrip
 1. Fetches.
 2. Refuses unless the code host says CI passed on the commit. It asks the code host in Scout's settings (`.env`, as `npm run doctor` reads it), so the checkout's `origin` must be there.
 3. Refuses a commit that moves Pi Durable to another version until you've backed `pi.sqlite` up, since the new version may convert it for good. `sqlite3 pi.sqlite ".backup pi-before.sqlite"` in the data directory works while Scout runs. Then pass `--pi-backed-up`.
-4. Fast-forwards, and runs `npm ci` if `package-lock.json` changed.
-5. Drains Scout, waits for systemd to start it again, and waits for the dashboard's `/healthz`. Then it prints what happened.
+4. Takes the deploy lock (`.deploy.lock` in the install directory), which Scout's unit waits for before it starts.
+5. Drains Scout and waits for it to stop. Only then does it fast-forward and run `npm ci` if `package-lock.json`
+   changed, so nothing changes under a Scout that is still finishing its steps.
+6. Lets go of the lock, so systemd starts Scout on the new code, and waits for the dashboard's `/healthz`. Then it
+   prints what happened.
+
+If the update fails (the fast-forward, or `npm ci`), it puts the checkout back where it was, and `npm ci` again if
+needed, before it lets go of the lock, so Scout starts on what it ran before. If even that `npm ci` fails, it says
+so: run `npm ci` in the install directory by hand.
 
 **Draining** is `kill -INT` to Scout's node process:
 - No new model call starts. They wait as they would for a slot, and threads waiting on their next step say Scout is restarting.
@@ -82,11 +89,12 @@ Run any time, busy or not: there's no need to wait for Scout to go quiet. `scrip
 - The nightly benchmark, a process of its own, is stopped; that night's runs are lost.
 - The dashboard's top line says it's draining. A second `kill -INT`, or `systemctl stop`, stops Scout now (still cleanly).
 
-**The unit** has to start Scout again after it stops on its own. Update yours from `deploy/scout.service`, then `systemctl daemon-reload`:
-- `Restart=always`, which the deploy script checks for, and the doctor warns without.
-- `KillMode=mixed`, so `systemctl stop` sends SIGTERM to Litestream alone, which passes it on once. Sent to both, Scout could get it twice, and a second signal stops it at once rather than cleanly.
+**The unit** has to start Scout again after it stops on its own, and not before the deploy is done. Update yours from `deploy/scout.service`, then `systemctl daemon-reload`. The deploy script refuses a unit without the first two:
+- `Restart=always`. The doctor warns without it too.
+- `ExecStartPre=/usr/bin/flock /opt/scout/.deploy.lock true` (your install directory): systemd waits for the deploy's lock before it starts Scout. `flock` makes the file if it's missing.
+- `TimeoutStartSec=15min`, so systemd keeps waiting while the deploy runs `npm ci`.
 
-**Signals under Litestream:** the service's main process is Litestream, which passes on only SIGINT and SIGTERM, and stops on SIGHUP. Send other signals (`-HUP`, `-USR2`) to Scout's node process, Litestream's child: `pgrep -P "$(systemctl show -p MainPID --value scout)" -f src/main.ts`.
+Scout's node process is the unit's main process, so signals reach it directly: `kill -HUP "$(systemctl show -p MainPID --value scout)"`.
 
 ## How much Scout does on its own
 
@@ -533,9 +541,21 @@ no configuration as code (a SaaS console, say):
 
 ## Backups
 
-Both databases (`pi.sqlite`, conversations; `scout.sqlite`, everything else) are SQLite in WAL mode.
-`deploy/litestream.yml` replicates them continuously to object storage, and `deploy/scout.service` restores them
-before start and runs Scout under Litestream. Without it, if the box goes, every thread goes with it.
+Both databases (`pi.sqlite`, conversations; `scout.sqlite`, everything else) are SQLite in WAL mode. Litestream
+(0.5) replicates them continuously to object storage, as a service of its own beside Scout. Without it, if the box
+goes, every thread goes with it. To set it up:
+1. Install Litestream's package, which brings `litestream.service`.
+2. Copy `deploy/litestream.yml` to `/etc/litestream.yml` and fill in your replica: bucket, endpoint (any
+   S3-compatible store; leave it out for AWS S3) and region. Its paths are Scout's data directory, `SCOUT_DATA_DIR` in
+   the unit; keep the two in step. A snapshot a day is kept for a week, so a restore can go back that far.
+3. Make `/etc/litestream.env`, readable by root alone (`sudo install -m 600 /dev/null /etc/litestream.env`), with
+   `LITESTREAM_ACCESS_KEY_ID` and `LITESTREAM_SECRET_ACCESS_KEY`.
+4. Copy `deploy/litestream.service.d/scout.conf` to `/etc/systemd/system/litestream.service.d/`, so Litestream runs as
+   Scout's user and reads those credentials. `systemctl daemon-reload`, then `systemctl enable --now litestream`.
+
+`deploy/scout.service` restores both databases from the replica before Scout starts, when they aren't there yet (a
+new host), so it reads `/etc/litestream.env` too. Once they are there, the restores do nothing. Litestream picks a
+database up when it appears, so it doesn't matter which service starts first.
 
 **Scout checks that it's backed up** (`src/backups.ts`). Litestream keeps a directory next to each database it
 replicates, `.pi.sqlite-litestream` and `.scout.sqlite-litestream` in the data directory, and writes to it within a
@@ -549,16 +569,15 @@ database isn't backed up:
 - Scout says so in its home channel once a start, 20 minutes in (so Litestream starting alongside has time to write
   first), with initiative `own` or `team`, and in the Monday report while it's still true.
 
-The check sees Litestream at work, not where its replica goes: a replica on the same disk (a path in
-`LITESTREAM_REPLICA_URL`) passes it. Litestream's `meta-path` or `meta-dir` settings move the directory, and the check
+The check sees Litestream at work, not where its replica goes: a replica on the same disk (`type: file`) passes it. Litestream's `meta-path` or `meta-dir` settings move the directory, and the check
 won't find it there; leave them unset.
 
 **Test and throwaway installs:** `SCOUT_BACKUP=none` says there's no Litestream on purpose. The doctor warns instead
 of failing, the dashboard shows "backups off, on purpose" dimmed, `scout_backup_ok` stays 1, and Scout says nothing
 in Slack.
 
-To move to a new host: install Scout and Litestream, set `LITESTREAM_REPLICA_URL` and its credentials, and start the
-service. The restore runs first, and Pi Durable resumes every unfinished run where it stopped. Sandboxes are not
+To move to a new host: install Scout and Litestream as above, with the same `/etc/litestream.yml` and credentials, and
+start both services. Scout's restores run first, and Pi Durable resumes every unfinished run where it stopped. Sandboxes are not
 backed up. Docker workspaces are re-cloned (uncommitted work in them is lost); spoond leases survive on spoond.
 
 ## Secrets
@@ -572,7 +591,7 @@ Any secret can be a reference instead of a value:
 | `NAME=cred:name` | a systemd credential (`LoadCredential=name:/path`) |
 | `NAME=op://vault/item/field` | 1Password, via the `op` CLI and `OP_SERVICE_ACCOUNT_TOKEN` |
 
-`kill -HUP <pid>` reads them all again (Scout's node process; under Litestream, see [Deploying](#deploying)). The code
+`kill -HUP <pid>` reads them all again (Scout's node process, the unit's main process). The code
 host token, the gateway key and spoond's token take effect at once; Slack tokens and MCP servers' credentials need a
 restart.
 

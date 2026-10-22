@@ -172,6 +172,8 @@ After=network-online.target docker.service
 [Service]
 User=scout
 WorkingDirectory=/home/scout/scout
+ExecStartPre=/usr/bin/flock /home/scout/scout/.deploy.lock true
+TimeoutStartSec=15min
 ExecStart=/usr/bin/node --env-file=.env src/main.ts
 Restart=always
 RestartSec=5
@@ -180,12 +182,14 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-`sudo systemctl enable --now scout`, then `journalctl -u scout -f` for its log. Keep `Restart=always`: deploys
-drain Scout and count on systemd to start it again, and the doctor warns without it.
+`sudo systemctl enable --now scout`, then `journalctl -u scout -f` for its log. Keep `Restart=always` and the
+`flock` line: deploys drain Scout and count on systemd to start it again, but only once the deploy has finished
+updating, and the deploy script refuses a unit without either.
 
 That unit has no backups: if the box goes, every thread goes with it, and Scout says so (the doctor fails, the
-dashboard shows a red line, and its home channel hears about it). `deploy/scout.service` is the same with Litestream
-backups around it; use it anywhere people rely on Scout ([operations.md](operations.md#backups)). For a test install,
+dashboard shows a red line, and its home channel hears about it). Anywhere people rely on Scout, run Litestream as a
+service beside it and use `deploy/scout.service`, which restores Scout's data on a new host
+([operations.md](operations.md#backups)). For a test install,
 `SCOUT_BACKUP=none` says no backups is on purpose. [operations.md](operations.md) also covers secrets, telemetry and
 the dashboard.
 

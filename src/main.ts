@@ -1279,14 +1279,13 @@ const dashboard =
 			});
 if (config.dash !== undefined) console.log(`dashboard on http://${config.dash.addr}/`);
 
-// `kill -USR2 <pid>` reflects now, if today's reflection hasn't run yet. Under Litestream, signal Scout's own process:
-// Litestream passes on only SIGINT and SIGTERM.
+// `kill -USR2 <pid>` reflects now, if today's reflection hasn't run yet.
 process.on("SIGUSR2", () => void reflect(localDay(new Date())));
 
 // `kill -INT <pid>` drains for a restart (drain.ts): no new model calls start, the model calls and tool calls running now
 // finish, then Scout stops cleanly, its service manager starts it again (Restart=always), and every run carries on from
-// the step it stopped at. Litestream passes SIGINT and SIGTERM on to Scout (only those). SIGTERM stops at once, as does
-// a second SIGINT while draining. scripts/deploy.sh drains this way.
+// the step it stopped at. SIGTERM stops at once, as does a second SIGINT while draining. scripts/deploy.sh drains this
+// way, and updates the code only once Scout has stopped.
 let stopping = false;
 process.on("SIGINT", () => {
 	if (draining !== undefined || stopping) return void stop();

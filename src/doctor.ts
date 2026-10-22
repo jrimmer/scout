@@ -157,8 +157,8 @@ export function checkDashboard(dash: Config["dash"]): Check {
 export function checkBackups(backup: Backup): Check {
 	const name = "Backups";
 	if (backup.status === "ok") return { name, status: "ok", detail: describeBackup(backup) };
-	if (backup.status === "off") return { name, status: "warn", detail: describeBackup(backup), fix: "Fine for a test install. Anywhere people rely on Scout, run it under Litestream: docs/operations.md#backups." };
-	return { name, status: "fail", detail: describeBackup(backup), fix: "Run Scout under Litestream (deploy/scout.service and deploy/litestream.yml): docs/operations.md#backups. For a test install, SCOUT_BACKUP=none says it's on purpose." };
+	if (backup.status === "off") return { name, status: "warn", detail: describeBackup(backup), fix: "Fine for a test install. Anywhere people rely on Scout, run Litestream beside it: docs/operations.md#backups." };
+	return { name, status: "fail", detail: describeBackup(backup), fix: "Run Litestream as a service beside Scout (deploy/litestream.yml, deploy/litestream.service.d/scout.conf), and check `systemctl status litestream`: docs/operations.md#backups. For a test install, SCOUT_BACKUP=none says it's on purpose." };
 }
 
 /** A systemd unit, and whether it's a user's (`systemctl --user`). */

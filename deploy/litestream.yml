@@ -1,15 +1,31 @@
 # Continuous replication of Scout's state to object storage, so losing the host loses seconds, not threads.
-# Both databases are SQLite in WAL mode, which is what Litestream needs. Restore on a new host and Pi Durable resumes
-# every unfinished run. See docs/operations.md.
+# Both databases are SQLite in WAL mode, which is what Litestream needs. On a new host, Scout's unit restores them from
+# here before it starts (deploy/scout.service), and Pi Durable resumes every unfinished run. See docs/operations.md.
 #
-# LITESTREAM_REPLICA_URL: e.g. s3://scout-backups/prod, or a path for a quick local test. Credentials come from the
-# usual LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY (or AWS_*) variables.
+# For Litestream 0.5, run as its own service (the packaged litestream.service, with deploy/litestream.service.d/scout.conf
+# as its drop-in): copy this to /etc/litestream.yml and fill in the replica. The paths are Scout's data directory,
+# SCOUT_DATA_DIR in deploy/scout.service; keep the two in step. Credentials come from LITESTREAM_ACCESS_KEY_ID and
+# LITESTREAM_SECRET_ACCESS_KEY in /etc/litestream.env, not from this file.
+
+# Retention is global in 0.5 (a `retention` under a replica is ignored): a full snapshot a day, kept a week, so a
+# restore can go back up to a week and older files are pruned.
+snapshot:
+  interval: 24h
+  retention: 168h
+
 dbs:
-  - path: ${SCOUT_DATA_DIR}/pi.sqlite # conversations: transcripts, tasks, checkpoints
-    replicas:
-      - url: ${LITESTREAM_REPLICA_URL}/pi
-        retention: 168h
-  - path: ${SCOUT_DATA_DIR}/scout.sqlite # threads, pull requests, notes, search, audit
-    replicas:
-      - url: ${LITESTREAM_REPLICA_URL}/scout
-        retention: 168h
+  - path: /var/lib/scout/data/pi.sqlite # conversations: transcripts, tasks, checkpoints
+    replica:
+      type: s3
+      bucket: scout-backups # yours, and the same for both
+      path: pi
+      # Any S3-compatible store (MinIO, Garage, R2, B2); leave endpoint out for AWS S3.
+      endpoint: https://s3.example.com
+      region: us-east-1
+  - path: /var/lib/scout/data/scout.sqlite # threads, pull requests, notes, search, audit
+    replica:
+      type: s3
+      bucket: scout-backups
+      path: scout
+      endpoint: https://s3.example.com
+      region: us-east-1

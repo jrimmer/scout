@@ -1,4 +1,5 @@
-# Scout as a systemd service, with Litestream restoring state before start and replicating it while running.
+# Scout as a systemd service. Litestream backs its data up as a service of its own (deploy/litestream.yml,
+# deploy/litestream.service.d/scout.conf); this unit restores the data from that backup on a new host before start.
 # Install: copy to /etc/systemd/system/, set WorkingDirectory and the paths, then `systemctl enable --now scout`.
 [Unit]
 Description=Scout
@@ -10,18 +11,20 @@ Type=simple
 User=scout
 WorkingDirectory=/opt/scout
 EnvironmentFile=/opt/scout/.env
-Environment=SCOUT_DATA_DIR=/var/lib/scout
+# Keep in step with the paths in /etc/litestream.yml.
+Environment=SCOUT_DATA_DIR=/var/lib/scout/data
 # Secrets can come from systemd credentials instead of the environment file (see docs/operations.md):
 # LoadCredential=slack-bot-token:/etc/scout/credentials/slack-bot-token
-ExecStartPre=/usr/bin/litestream restore -config /opt/scout/deploy/litestream.yml -if-db-not-exists -if-replica-exists /var/lib/scout/pi.sqlite
-ExecStartPre=/usr/bin/litestream restore -config /opt/scout/deploy/litestream.yml -if-db-not-exists -if-replica-exists /var/lib/scout/scout.sqlite
-ExecStart=/usr/bin/litestream replicate -config /opt/scout/deploy/litestream.yml -exec "/usr/bin/node src/main.ts"
-# Litestream passes on SIGINT and SIGTERM only, so other signals (HUP: read secrets again; USR2: reflect now) go to
-# Scout's node process, Litestream's child: `kill -HUP $(pgrep -P $(systemctl show -p MainPID --value scout) -f src/main.ts)`.
-# SIGTERM to Litestream alone (KillMode=mixed), which passes it on once: sent to every process (the default), Scout can
-# get it twice, and a second signal stops Scout at once instead of cleanly.
-KillSignal=SIGTERM
-KillMode=mixed
+# Wait while a deploy (scripts/deploy.sh) holds the lock, so Scout never starts on half-updated code or packages. The
+# lock file is made if it's missing. A deploy holds it through `npm ci`, hence the long start timeout.
+ExecStartPre=/usr/bin/flock /opt/scout/.deploy.lock true
+TimeoutStartSec=15min
+# On a new host, the databases come back from Litestream's replica before Scout starts; with a database already
+# there, or no replica yet, these do nothing. They read the replica's credentials from Litestream's environment file.
+EnvironmentFile=/etc/litestream.env
+ExecStartPre=/usr/bin/litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists /var/lib/scout/data/pi.sqlite
+ExecStartPre=/usr/bin/litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists /var/lib/scout/data/scout.sqlite
+ExecStart=/usr/bin/node src/main.ts
 TimeoutStopSec=60
 # Always: a drain for a deploy (scripts/deploy.sh, SIGINT to Scout) ends with Scout stopping cleanly, and systemd
 # starts it again on the new code.

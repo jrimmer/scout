@@ -3,3 +3,4 @@ data/
 .env
 profile-live/
 .claude/worktrees/
+.deploy.lock
