@@ -190,5 +190,5 @@ LLM gateway.
 - **hrmny**: its Discord-compatible API means a thin Discord adapter would also run on hrmny. Its machine-principal
   model is a good reference for Scout's identity: a bot is its own identity, with narrowing grants and no
   impersonation of its owner.
-- **louisiane** (`../sncan`): a bridge so local Claude Code or pi sessions can hand work to Scout and back. Its
-  reply rules already shaped `etiquette.ts`.
+- **A local-session bridge**: so coding sessions on someone's own machine (Claude Code, pi) can hand work to Scout
+  and back. A sibling project's reply rules already shaped `etiquette.ts`.

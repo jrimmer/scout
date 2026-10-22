@@ -98,7 +98,7 @@ describe("helpers", () => {
 	});
 
 	it("makes valid channel names", () => {
-		assert.equal(slackChannelName("Jason Rimmer_scout"), "jason-rimmer_scout");
+		assert.equal(slackChannelName("Alex Moss_scout"), "alex-moss_scout");
 		assert.equal(slackChannelName("Zoë_scout"), "zoe_scout");
 	});
 });

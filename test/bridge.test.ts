@@ -184,7 +184,7 @@ describe("bridge", () => {
 		assert.equal(threads.byConversation(conversation.id)?.threadTs, "500.1");
 		assert.equal(search.search("proposed profile")[0]?.conversationId, conversation.id, "and it can be found");
 
-		faux.setResponses([fauxAssistantMessage("Revised: the lesson now says the org is lacy.casa.")]);
+		faux.setResponses([fauxAssistantMessage("Revised: the lesson now says the org is example.org.")]);
 		await bridge.onMessage(message({ text: `<@${BOT}> the org has a dot in it`, ts: "500.2", threadTs: "500.1" }));
 		await settle(conversation.id);
 		assert.match(surface.texts().at(-1) ?? "", /Revised/, "a request in the thread reaches the adopted conversation");

@@ -14,17 +14,17 @@ import { Permissions } from "../src/permissions.ts";
 
 const USERS = `---
 users:
-  jrimmer:
+  alex:
     displayname: 'Jason Rimmer'
     password: '$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA'
-    email: jason@rimmer.net
+    email: alex@example.com
     groups:
       - admins
       - users
-  trina:
-    displayname: "Trina Rimmer"
+  sam:
+    displayname: "Sam Lee"
     password: "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$b3RoZXI"
-    email: 'trina@rimmer.net'   # a comment
+    email: 'sam@example.com'   # a comment
     groups: [users, user]
 `;
 
@@ -32,8 +32,8 @@ describe("the identity provider", () => {
 	it("reads Authelia's users file: usernames, emails and groups, never passwords", () => {
 		const people = parseAutheliaUsers(USERS);
 		assert.deepEqual(people, [
-			{ username: "jrimmer", email: "jason@rimmer.net", groups: ["admins", "users"] },
-			{ username: "trina", email: "trina@rimmer.net", groups: ["users", "user"] },
+			{ username: "alex", email: "alex@example.com", groups: ["admins", "users"] },
+			{ username: "sam", email: "sam@example.com", groups: ["users", "user"] },
 		]);
 		assert.doesNotMatch(JSON.stringify(people), /argon2/);
 	});
@@ -41,7 +41,7 @@ describe("the identity provider", () => {
 	it("finds people by email, reading the file again only after a while", async () => {
 		let reads = 0;
 		const directory = new AutheliaFile(async () => (reads++, USERS));
-		assert.equal((await directory.byEmail("Jason@Rimmer.net"))?.username, "jrimmer");
+		assert.equal((await directory.byEmail("Alex@Example.com"))?.username, "alex");
 		assert.equal(await directory.byEmail("nobody@example.com"), undefined);
 		assert.equal(reads, 1);
 	});
@@ -58,17 +58,17 @@ describe("the identity provider", () => {
 		const permissions = new Permissions({
 			config: { mode: "enforce", people: { UOVERRIDE: "someone-else" } },
 			codeHost: { kind: "forgejo", apiUrl: "http://forge/api/v1", token: "t" },
-			loginOf: async (user) => (user === "UJASON" ? "jrimmer" : undefined),
+			loginOf: async (user) => (user === "UALEX" ? "alex" : undefined),
 			fetch: (async (url: string | URL | Request) => {
 				asked.push(new URL(String(url)).pathname);
 				return Response.json({ permission: "write" });
 			}) as typeof fetch,
 		});
-		assert.equal((await permissions.admit("UJASON", "lacy.casa/gatus")).ok, true);
-		assert.equal((await permissions.admit("UOVERRIDE", "lacy.casa/gatus")).ok, true);
-		const stranger = await permissions.admit("USTRANGER", "lacy.casa/gatus");
+		assert.equal((await permissions.admit("UALEX", "example.org/gatus")).ok, true);
+		assert.equal((await permissions.admit("UOVERRIDE", "example.org/gatus")).ok, true);
+		const stranger = await permissions.admit("USTRANGER", "example.org/gatus");
 		assert.ok(!stranger.ok && /don't know your Forgejo account/.test(stranger.reason));
-		assert.deepEqual(asked, ["/api/v1/repos/lacy.casa/gatus/collaborators/jrimmer/permission", "/api/v1/repos/lacy.casa/gatus/collaborators/someone-else/permission"]);
+		assert.deepEqual(asked, ["/api/v1/repos/example.org/gatus/collaborators/alex/permission", "/api/v1/repos/example.org/gatus/collaborators/someone-else/permission"]);
 	});
 
 	it("lets people ask for work by their groups, found by the people file or their Slack email", async () => {
@@ -78,7 +78,7 @@ describe("the identity provider", () => {
 		mkdirSync(join(root, "profile"));
 		writeFileSync(join(root, "users_database.yml"), USERS);
 		writeFileSync(join(root, "roles.json"), JSON.stringify({ request: { "*": ["admins"], gatus: ["admins", "users"] } }));
-		writeFileSync(join(root, "people.json"), JSON.stringify({ UJASON: "jrimmer" }));
+		writeFileSync(join(root, "people.json"), JSON.stringify({ UALEX: "alex" }));
 		writeFileSync(join(root, "repos.json"), JSON.stringify([{ name: "gatus", gitUrl: remote, slug: "o/gatus" }]));
 		const config = loadConfig({
 			SCOUT_REPO_URL: remote,
@@ -102,15 +102,15 @@ describe("the identity provider", () => {
 			context,
 			models: createModels(),
 			watchProfile: false,
-			emailOf: async (user) => (user === "UTRINA" ? "trina@rimmer.net" : undefined),
+			emailOf: async (user) => (user === "USAM" ? "sam@example.com" : undefined),
 			fetch: (async () => assert.fail("the code host isn't asked when groups decide")) as typeof fetch,
 		});
 		const admit = scout.admitter(async () => []);
 		const ask = (user: string, repo?: string) => admit({ user, channelName: "x", ...(repo === undefined ? {} : { repo }), starting: true });
-		assert.deepEqual(await ask("UJASON"), { ok: true }, "an admin, by the people file");
-		assert.deepEqual(await ask("UTRINA", "gatus"), { ok: true }, "a user, by email, where users may ask");
-		const trina = await ask("UTRINA");
-		assert.ok(!trina.ok && /only take work in r from people in admins/.test(trina.reason));
+		assert.deepEqual(await ask("UALEX"), { ok: true }, "an admin, by the people file");
+		assert.deepEqual(await ask("USAM", "gatus"), { ok: true }, "a user, by email, where users may ask");
+		const sam = await ask("USAM");
+		assert.ok(!sam.ok && /only take work in r from people in admins/.test(sam.reason));
 		const stranger = await ask("UNOBODY");
 		assert.ok(!stranger.ok && /can't find you in the directory/.test(stranger.reason));
 		await scout.close();

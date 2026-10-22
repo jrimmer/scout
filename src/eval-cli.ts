@@ -15,7 +15,7 @@ import { resolveSecrets } from "./secrets.ts";
  *
  *     npm run eval -- --profile ../scout-profile --baseline /tmp/profile-main --tries 3
  *     npm run eval -- --model gateway/stronger-model --only median
- *     npm run eval -- --profile . --baseline /tmp/main --comment jrimmer/scout-profile#7
+ *     npm run eval -- --profile . --baseline /tmp/main --comment acme/scout-profile#7
  *
  * Tasks are read from the candidate profile's `evals/` (or `--tasks <dir>`). Prints progress to stderr and the report
  * to stdout; exits 1 if any run with the candidate failed.

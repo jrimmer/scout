@@ -49,7 +49,7 @@ had to correct Scout (with the corrected outcome as the check).
 npm run eval -- --profile <candidate profile> --baseline <current profile> --tries 3
 npm run eval -- --model gateway/another-model                 # the same profile, another model
 npm run eval -- --only median --tries 1                        # one task, once
-npm run eval -- --profile . --baseline /tmp/main --comment jrimmer/scout-profile#7
+npm run eval -- --profile . --baseline /tmp/main --comment acme/scout-profile#7
 ```
 
 - `--profile` defaults to Scout's profile directory (`SCOUT_PROFILE_DIR`); tasks come from its `evals/`, or `--tasks`.

@@ -32,7 +32,7 @@ describe("deploying", () => {
 	});
 
 	it("finds Scout's own repository on the code host from the checkout's remote", () => {
-		assert.equal(slugOn("ssh://git@git.lacy.casa/jrimmer/scout.git", "https://git.lacy.casa/api/v1"), "jrimmer/scout");
+		assert.equal(slugOn("ssh://git@git.example.org/acme/scout.git", "https://git.example.org/api/v1"), "acme/scout");
 		assert.equal(slugOn("ssh://git@git.example.com:2222/team/scout.git", "https://git.example.com/api/v1"), "team/scout");
 		assert.equal(slugOn("git@github.com:team/scout.git", "https://api.github.com"), "team/scout");
 		assert.equal(slugOn("https://github.com/team/scout", "https://api.github.com"), "team/scout");

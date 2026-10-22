@@ -35,15 +35,15 @@ describe("what the workspace allows", () => {
 
 describe("link previews", () => {
 	it("reads Forgejo and GitHub links, and shows where things stand and whether Scout's on it", () => {
-		assert.deepEqual(parseCodeLink("https://code.lacy.casa/jrimmer/scout-playground/pulls/10"), { slug: "jrimmer/scout-playground", number: 10, pull: true });
+		assert.deepEqual(parseCodeLink("https://code.example.org/acme/playground/pulls/10"), { slug: "acme/playground", number: 10, pull: true });
 		assert.deepEqual(parseCodeLink("https://github.com/o/r/pull/3"), { slug: "o/r", number: 3, pull: true });
-		assert.deepEqual(parseCodeLink("https://code.lacy.casa/o/r/issues/9"), { slug: "o/r", number: 9, pull: false });
-		assert.equal(parseCodeLink("https://code.lacy.casa/o/r/src/branch/main"), undefined);
+		assert.deepEqual(parseCodeLink("https://code.example.org/o/r/issues/9"), { slug: "o/r", number: 9, pull: false });
+		assert.equal(parseCodeLink("https://code.example.org/o/r/src/branch/main"), undefined);
 		const blocks = JSON.stringify(
-			previewBlocks({ url: "https://h/o/r/pulls/10", slug: "o/r", number: 10, title: "README: <tests>", pull: true, state: "open", author: "scout", ci: "passing", reviewers: ["jrimmer"], scout: { link: "https://slack/t", working: false } }),
+			previewBlocks({ url: "https://h/o/r/pulls/10", slug: "o/r", number: 10, title: "README: <tests>", pull: true, state: "open", author: "scout", ci: "passing", reviewers: ["alex"], scout: { link: "https://slack/t", working: false } }),
 		);
 		assert.match(blocks, /\*<https:\/\/h\/o\/r\/pulls\/10\|o\/r#10>\* README: &lt;tests&gt;/);
-		assert.match(blocks, /🟢 open · by scout · ✅ CI passing · waiting on review from jrimmer/);
+		assert.match(blocks, /🟢 open · by scout · ✅ CI passing · waiting on review from alex/);
 		assert.match(blocks, /Scout has a thread on this: <https:\/\/slack\/t\|open it>/);
 	});
 });
