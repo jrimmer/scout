@@ -16,10 +16,16 @@ Environment=SCOUT_DATA_DIR=/var/lib/scout
 ExecStartPre=/usr/bin/litestream restore -config /opt/scout/deploy/litestream.yml -if-db-not-exists -if-replica-exists /var/lib/scout/pi.sqlite
 ExecStartPre=/usr/bin/litestream restore -config /opt/scout/deploy/litestream.yml -if-db-not-exists -if-replica-exists /var/lib/scout/scout.sqlite
 ExecStart=/usr/bin/litestream replicate -config /opt/scout/deploy/litestream.yml -exec "/usr/bin/node src/main.ts"
-# kill -USR2 reflects now; Litestream passes signals to Scout.
+# Litestream passes on SIGINT and SIGTERM only, so other signals (HUP: read secrets again; USR2: reflect now) go to
+# Scout's node process, Litestream's child: `kill -HUP $(pgrep -P $(systemctl show -p MainPID --value scout) -f src/main.ts)`.
+# SIGTERM to Litestream alone (KillMode=mixed), which passes it on once: sent to every process (the default), Scout can
+# get it twice, and a second signal stops Scout at once instead of cleanly.
 KillSignal=SIGTERM
+KillMode=mixed
 TimeoutStopSec=60
-Restart=on-failure
+# Always: a drain for a deploy (scripts/deploy.sh, SIGINT to Scout) ends with Scout stopping cleanly, and systemd
+# starts it again on the new code.
+Restart=always
 RestartSec=5
 
 [Install]

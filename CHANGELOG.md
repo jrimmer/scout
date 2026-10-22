@@ -12,6 +12,10 @@ A change to any of these that needs people to act is a major version. Everything
 ## Unreleased
 
 ### Added
+- **Deploys without waiting for a quiet moment** (`npm run deploy`, `docs/operations.md`). **Update your systemd unit from `deploy/scout.service` first:** `Restart=always` and `KillMode=mixed`.
+  - `kill -INT` drains Scout for a restart: no new model calls start, the model calls and tool calls running finish, and Scout stops cleanly. systemd starts it again, and each run carries on from the step it stopped at. Messages that arrive meanwhile run after the restart.
+  - It waits at most `SCOUT_DRAIN_MAX` seconds (10 minutes), then stops anyway. The dashboard says it's draining, and a thread waiting on its next step says Scout is restarting.
+  - `scripts/deploy.sh` fetches and refuses a commit CI hasn't passed on the code host. It also refuses one that moves Pi Durable to another version until `pi.sqlite` is backed up. Otherwise it fast-forwards, runs `npm ci` if the lockfile changed, drains, and waits for the new Scout's `/healthz`.
 - **Sandboxes:**
   - While a command runs, Scout checks every minute that the sandbox still answers. After five minutes without an answer it stops waiting and says the sandbox has probably crashed. Until now, a thread could wait silently for up to a day.
   - Scout reads spoond's own report of a command that never started (spoond 3.12.1), as well as checking for itself.
@@ -42,6 +46,8 @@ A change to any of these that needs people to act is a major version. Everything
 - **The MCP SDK is 1.32.1** (from 1.31.0), for four security advisories, among them headers re-sent across origins on a redirect.
 
 ### Fixed
+- **Stopping under systemd:** the unit sent SIGTERM to every process, and Litestream passes it on to Scout, so Scout could get it twice and stop at once instead of cleanly. With Pi Durable 1.4.0, stops like that count towards parking a run as crash-looping. The unit now sends it to Litestream alone (`KillMode=mixed`).
+- **Signals under Litestream:** Litestream passes on only SIGINT and SIGTERM. The unit said it passed on every signal, so `kill -USR2` (reflect now) and `kill -HUP` (read secrets again) went to Litestream, and SIGHUP stopped it. The docs now say to signal Scout's own process.
 - **spoond restarts:** a running command no longer fails when spoond restarts or the network hiccups. Scout keeps following it for two minutes, then stops and says it may still be running.
 - **Ask Scout form:** when Slack was slow to say where the form was sent, the form failed after Slack's three seconds and no thread started. Scout now remembers channels it can work in, gives Slack two seconds, and otherwise takes the form and checks afterwards, telling the person privately if it can't work there.
 - **Slack outages:** Slack's client tried a failed call again for about half an hour while the thread sat silent. It now tries for five minutes. A final answer Slack still won't take is tried again every two minutes for up to six hours, and after a restart the thread still gets it.

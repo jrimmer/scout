@@ -12,7 +12,8 @@
     "doctor": "node --env-file-if-exists=.env src/doctor-cli.ts",
     "dash-password": "node src/dash/server.ts",
     "audit": "node --env-file-if-exists=.env src/audit.ts",
-    "pi": "scripts/pi.sh"
+    "pi": "scripts/pi.sh",
+    "deploy": "scripts/deploy.sh"
   },
   "type": "module",
   "dependencies": {

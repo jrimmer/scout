@@ -121,10 +121,11 @@ Mention `@Scout` in one of its channels. Its startup log says which Slack featur
 In Slack, `/scout doctor` runs the same checks. [operations.md](operations.md#monitoring) says how to monitor Scout once it runs.
 
 To run it as a service, a systemd unit with `WorkingDirectory=` this checkout, `ExecStart=node --env-file=.env
-src/main.ts`, and its own user is enough; [operations.md](operations.md) covers backups, secrets, telemetry and the
+src/main.ts`, `Restart=always`, and its own user is enough; [operations.md](operations.md) covers backups, secrets, telemetry and the
 dashboard.
 
 ## 11. Keeping it up to date
 
-`git pull`, `npm ci`, and restart, ideally when Scout is idle: runs survive a restart, but a reply being written at
-that moment is delayed. Paste the Slack manifest again if it changed.
+`npm run deploy` on the server: it checks CI passed, updates, and restarts Scout once the steps running have finished
+([operations.md](operations.md#deploying)). By hand: `git pull`, `npm ci`, and `kill -INT` Scout's process with a
+service manager that starts it again. Paste the Slack manifest again if it changed.

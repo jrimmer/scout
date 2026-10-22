@@ -15,7 +15,7 @@
 5. **Bump `package.json`'s version** in the same commit, titled `Release <version>`.
 6. **Tag and push:** `git tag -a v<version> -m "Scout <version>"`, then `git push origin main v<version>`.
 7. **Make a release** on the code host from the tag, with the changelog's section as its notes.
-8. **Deploy it** by following [operations.md](operations.md): only when Scout is idle, then `npm run doctor`.
+8. **Deploy it** with `npm run deploy -- v<version>` on the server ([operations.md](operations.md#deploying)), then `npm run doctor`.
 
 ## Before 1.0
 

@@ -25,6 +25,8 @@ export type Snapshot = {
 	startedAt: number;
 	host: string;
 	model: string;
+	/** Since when Scout has been draining for a restart (drain.ts), if it is. */
+	draining?: number;
 	alerts: { message: string; since: number }[];
 	working: { channel: string; startedAt: number; steps: number; lastStep?: string }[];
 	threadsToday: number;
@@ -85,6 +87,7 @@ export type Sources = {
 	alerts(): { message: string; since: number }[];
 	schedules?(): Schedule[];
 	capacity?(): CapacitySnapshot;
+	draining?(): number | undefined;
 };
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -117,11 +120,13 @@ export class Collector {
 
 		const last = s.threads.lastReflection();
 		const proposal = last === undefined ? undefined : s.pulls.forConversation(last.conversationId)[0];
+		const draining = s.draining?.();
 		return {
 			now,
 			startedAt: s.startedAt,
 			host: s.host,
 			model: s.model,
+			...(draining === undefined ? {} : { draining }),
 			alerts: s.alerts(),
 			working: await Promise.all(
 				working.map(async (w) => ({

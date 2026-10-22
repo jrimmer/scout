@@ -104,9 +104,10 @@ export type Config = {
 	weeklySummary: boolean;
 	/**
 	 * How much runs at once (capacity.ts): runs in all and per channel (unless the limits file says), model calls in
-	 * flight (0: no limit), and how long a new sandbox may wait for room on a full sandbox host, in seconds.
+	 * flight (0: no limit), how long a new sandbox may wait for room on a full sandbox host, and how long a drain for a
+	 * restart waits for the steps running to finish (drain.ts), in seconds.
 	 */
-	capacity: { maxRuns: number; maxRunsPerChannel: number; maxModelCalls: number; sandboxPatience: number };
+	capacity: { maxRuns: number; maxRunsPerChannel: number; maxModelCalls: number; sandboxPatience: number; drainMax: number };
 	/** Whether a request's reaction follows what Scout is doing (🧠, 📖, 🧪…), or only 👀 then ✅ (reactions.ts). */
 	statusReactions: boolean;
 	/** How much Scout does on its own initiative (initiative.ts): asked, own or team. */
@@ -286,6 +287,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			maxRunsPerChannel: count(env, "SCOUT_MAX_RUNS_PER_CHANNEL", 3, 1),
 			maxModelCalls: count(env, "SCOUT_MAX_MODEL_CALLS", 6, 0),
 			sandboxPatience: count(env, "SCOUT_SANDBOX_PATIENCE", 1800, 60),
+			drainMax: count(env, "SCOUT_DRAIN_MAX", 600, 0),
 		},
 		codeSearch: env.SCOUT_CODE_SEARCH !== "off",
 		parallel: env.SCOUT_PARALLEL !== "off",
