@@ -173,7 +173,7 @@ describe("evals", () => {
 				fauxAssistantMessage([fauxToolCall("bash", { command: "test ! -e t/check.sh && echo 2 > value.txt" })], { stopReason: "toolUse" }),
 				fauxAssistantMessage("Set it to 2."),
 			]);
-			const fixed = await runTask(scout, change, nameOf(change), "candidate", context, measured, fileAt);
+			const fixed = await runTask(scout, change, nameOf(change), "candidate", context, measured, { fileAt });
 			assert.equal(fixed.pass, true, fixed.why);
 			assert.equal(fixed.usage?.toolCalls, 2);
 			assert.equal(fixed.usage?.badToolCalls, 1, "a bash call without a command is malformed");
@@ -181,7 +181,7 @@ describe("evals", () => {
 			assert.equal(fixed.usage?.firstTokens.length, 3);
 
 			faux.setResponses([fauxAssistantMessage("Nothing to change.")]);
-			const unfixed = await runTask(scout, change, nameOf(change), "candidate", context, measured, fileAt);
+			const unfixed = await runTask(scout, change, nameOf(change), "candidate", context, measured, { fileAt });
 			assert.equal(unfixed.pass, false);
 			assert.match(unfixed.why, /`sh t\/check\.sh` exited 1/);
 
@@ -193,10 +193,17 @@ describe("evals", () => {
 					return fauxAssistantMessage("The test wants 2.\n\nLOCATION: value.txt two");
 				},
 			]);
-			const found = await runTask(scout, locate, nameOf(locate), "candidate", context, measured, fileAt);
+			const found = await runTask(scout, locate, nameOf(locate), "candidate", context, measured, { fileAt });
 			assert.equal(found.pass, true, found.why);
 			assert.ok(asked.includes("LOCATION: <file path> <function name>"), "the request says how to answer");
 			assert.ok(asked.includes("cat value.txt"), "the failing test was there from the start");
+
+			// Last: a stopped run can still be finishing its command when the next one starts.
+			faux.setResponses([fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 5" })], { stopReason: "toolUse" }), fauxAssistantMessage("Done.")]);
+			const slow = await runTask(scout, change, nameOf(change), "candidate", context, measured, { fileAt, limitMs: 500 });
+			assert.equal(slow.pass, false);
+			assert.match(slow.why, /^the run didn't finish within 0 minutes/);
+			assert.ok(slow.ms < 4_000, "stopped at the limit, not after the command");
 		} finally {
 			await scout.close();
 			await host.close();

@@ -19,6 +19,10 @@ import { resolveSecrets } from "./secrets.ts";
  *     npm run bench                  # every model, every task
  *     npm run bench -- --only ci     # tasks whose name has "ci" in it
  */
+
+/** As public benchmarks do: a task not done in this long fails, so a slow provider can't stretch a night into the day. */
+const TASK_LIMIT_MS = 30 * 60_000;
+
 if (import.meta.main) {
 	const only = process.argv.includes("--only") ? process.argv[process.argv.indexOf("--only") + 1] : undefined;
 	// A benchmark never talks to Slack, so its tokens needn't resolve.
@@ -60,7 +64,7 @@ if (import.meta.main) {
 			const rows: BenchRow[] = [];
 			try {
 				for (const task of tasks) {
-					const result = await runTask(scout, task, nameOf(task), "candidate", BACKGROUND_CONTEXT, measured, fileAt);
+					const result = await runTask(scout, task, nameOf(task), "candidate", BACKGROUND_CONTEXT, measured, { fileAt, limitMs: TASK_LIMIT_MS });
 					console.log(`bench ${name} ${task.name}: ${result.pass ? "pass" : `fail (${result.why.slice(0, 300)})`}, $${result.cost.toFixed(3)}, ${Math.round(result.ms / 1000)}s, ${result.steps} steps`);
 					rows.push(benchRow(name, night, task, result));
 				}

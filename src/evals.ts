@@ -392,7 +392,7 @@ export function evalConfig(base: Config, options: { repos: RepoConfig[]; profile
 /**
  * One run of one task: a new conversation in the task's repository, the request, then the checks in its sandbox
  * before the sandbox goes. Pass means every check the task names passed. `fileAt` (from `evalRepos`) supplies a
- * task's hidden files.
+ * task's hidden files; past `limitMs` the run is stopped, and fails.
  */
 export async function runTask(
 	scout: Scout,
@@ -401,8 +401,9 @@ export async function runTask(
 	side: Side,
 	context: Context,
 	measured?: Measures,
-	fileAt?: (task: EvalTask, ref: string, path: string) => Promise<Uint8Array>,
+	options: { fileAt?: (task: EvalTask, ref: string, path: string) => Promise<Uint8Array>; limitMs?: number } = {},
 ): Promise<RunResult> {
+	const { fileAt, limitMs } = options;
 	const started = Date.now();
 	const conversation = await scout.harness.createConversation(
 		{
@@ -469,9 +470,17 @@ export async function runTask(
 	let ran: number | undefined;
 	try {
 		const request = task.kind === "locate" ? `${task.request}\n\n${LOCATE_FORMAT}` : task.request;
-		const settled = await (await conversation.submit({ type: "input", content: request }, context)).wait(context);
+		let late = false;
+		const limit = limitMs === undefined ? undefined : setTimeout(() => {
+			late = true;
+			void conversation.abort(context).catch(() => {});
+		}, limitMs);
+		const settled = await (await conversation.submit({ type: "input", content: request }, context)).wait(context).finally(() => clearTimeout(limit));
 		ran = Date.now();
-		if (settled.status !== "done") {
+		if (late) {
+			pass = false;
+			why.push(`the run didn't finish within ${Math.round(limitMs! / 60_000)} minutes`);
+		} else if (settled.status !== "done") {
 			pass = false;
 			why.push(`the run didn't finish (${settled.status})`);
 		}

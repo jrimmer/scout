@@ -88,6 +88,8 @@ some tasks).
 - **Finding bugs** (`"kind": "locate"`): the failing test is there from the start (`given`), and the answer must
   end `LOCATION: <file> <function>`, naming the file and a function the real fix changed. Checked exactly, with no
   model judging.
+- A task not done in 30 minutes is stopped and fails, as public benchmarks time tasks out, so a slow provider
+  can't stretch a night into the day.
 - Candidates were commits with a small change to `src/` and tests in `test/`, kept only when their tests fail
   before the fix and pass after it. Add more as JSON files in `bench/` (the fields are the eval task's).
 
