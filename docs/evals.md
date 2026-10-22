@@ -89,9 +89,10 @@ some tasks).
   end `LOCATION: <file> <function>`, naming the file and a function the real fix changed. Checked exactly, with no
   model judging.
 - Tasks have time limits, as public benchmarks do. 30 minutes of the model's own time: a task that needs more fails.
-  Time spent waiting for the provider's first tokens doesn't count, so a slow provider doesn't read as a slow model.
-  And 90 minutes in all, so a slow night can't run into the day: a task cut short by that, or whose calls kept
-  failing, isn't scored as the model's. It counts under "Tasks not lost" instead.
+  Time spent waiting for the provider's first tokens, or retrying its failed calls, doesn't count, so a slow provider
+  doesn't read as a slow model. And 90 minutes in all, so a slow night can't run into the day: a task cut short by
+  that, whose calls kept failing, or that never reached the model, isn't scored as the model's. It counts under
+  "Tasks not lost" instead.
 - Candidates were commits with a small change to `src/` and tests in `test/`, kept only when their tests fail
   before the fix and pass after it. Add more as JSON files in `bench/` (the fields are the eval task's).
 

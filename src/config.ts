@@ -127,10 +127,11 @@ export type Config = {
 	git: { name: string; email: string; sshKey?: string };
 };
 
-/** `gateway/…` models: SCOUT_GATEWAY_MODELS (comma-separated), and SCOUT_MODEL's when it is one. */
-function gatewayModels(env: NodeJS.ProcessEnv, model: string | undefined): string[] {
+/** `gateway/…` models: SCOUT_GATEWAY_MODELS (comma-separated), SCOUT_MODEL's when it is one, and the benchmark's. */
+function gatewayModels(env: NodeJS.ProcessEnv, model: string | undefined, bench: readonly { provider: string; modelId: string }[]): string[] {
 	const listed = (env.SCOUT_GATEWAY_MODELS ?? "").split(",").map((m) => m.trim()).filter(Boolean);
-	return [...new Set(model === undefined ? listed : [model, ...listed])];
+	const benched = bench.filter((m) => m.provider === "gateway").map((m) => m.modelId);
+	return [...new Set([...(model === undefined ? [] : [model]), ...listed, ...benched])];
 }
 
 /** A JSON setting, or a plain message saying what's wrong with it. */
@@ -316,7 +317,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 						...(env.SCOUT_GATEWAY_KEY ? { key: env.SCOUT_GATEWAY_KEY } : {}),
 						...(env.SCOUT_GATEWAY_HEADERS ? { headers: jsonSetting<Record<string, string>>(env, "SCOUT_GATEWAY_HEADERS", '{"x-team": "web"}')! } : {}),
 						...(env.SCOUT_GATEWAY_OPENAI_API === "responses" ? { openaiApi: "responses" as const } : {}),
-						models: gatewayModels(env, provider === "gateway" ? modelId : undefined),
+						models: gatewayModels(env, provider === "gateway" ? modelId : undefined, benchModels),
 					},
 				}
 			: {}),

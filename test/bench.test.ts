@@ -126,6 +126,8 @@ describe("benchmark", () => {
 		assert.deepEqual(on.models, [{ provider: "gateway", modelId: "lunaroute/beam" }, { provider: "gateway", modelId: "lunaroute/glm-5.3" }]);
 		assert.equal(on.hour, 1);
 		assert.throws(() => loadConfig({ ...base, SCOUT_BENCH_MODELS: "beam" }), /should look like provider\/modelId/);
+		const gw = loadConfig({ ...base, SCOUT_MODEL: "gateway/lunaroute/flash", SCOUT_GATEWAY_URL: "http://gw", SCOUT_BENCH_MODELS: "gateway/lunaroute/beam,gateway/lunaroute/flash" });
+		assert.deepEqual(gw.gateway?.models, ["lunaroute/flash", "lunaroute/beam"], "the gateway knows the models the benchmark runs");
 
 		const collector = { collect: async () => busy } as unknown as Collector;
 		const off = await startDashboard({ addr: "127.0.0.1:0", collector });

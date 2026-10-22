@@ -198,6 +198,16 @@ describe("evals", () => {
 			assert.ok(asked.includes("LOCATION: <file path> <function name>"), "the request says how to answer");
 			assert.ok(asked.includes("cat value.txt"), "the failing test was there from the start");
 
+			// A model that isn't set up never gets a call: that's left unscored, not counted as the model failing.
+			const missing = await openScout({ config: evalConfig(base, { repos, profileDir: join(root, "profile"), apiUrl: host.apiUrl, dataDir: join(root, "eval-data-missing"), model: { provider: "faux", modelId: "missing" } }), storage: new MemoryStorage(), dataDir: join(root, "eval-data-missing"), instance: "r2", context, models, watchProfile: false, mcp: [] });
+			try {
+				const none = await runTask(missing, change, nameOf(change), "candidate", context, measures(), { fileAt });
+				assert.equal(none.pass, false);
+				assert.equal(none.unscored, "no model call was made", none.why);
+			} finally {
+				await missing.close();
+			}
+
 			// Last: a stopped run can still be finishing its command when the next one starts.
 			faux.setResponses([fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 5" })], { stopReason: "toolUse" }), fauxAssistantMessage("Done.")]);
 			const slow = await runTask(scout, change, nameOf(change), "candidate", context, measured, { fileAt, limitMs: 60_000, wallMs: 500 });

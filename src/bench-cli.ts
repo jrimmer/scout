@@ -22,8 +22,9 @@ import { resolveSecrets } from "./secrets.ts";
 
 /**
  * As public benchmarks do, tasks have a time limit: 30 minutes of the model's own time (a task that needs more fails),
- * not counting time spent waiting for the provider's first tokens, and 90 minutes in all, so a slow provider can't
- * stretch a night into the day. A task stopped by that, or whose calls kept failing, isn't scored as the model's.
+ * not counting time spent waiting for the provider's first tokens or retrying its failed calls, and 90 minutes in all,
+ * so a slow provider can't stretch a night into the day. A task stopped by that, whose calls kept failing, or that
+ * never reached the model, isn't scored as the model's.
  */
 const TASK_LIMIT_MS = 30 * 60_000;
 const TASK_WALL_MS = 90 * 60_000;

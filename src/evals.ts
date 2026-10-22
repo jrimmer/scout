@@ -398,8 +398,8 @@ export function evalConfig(base: Config, options: { repos: RepoConfig[]; profile
 /**
  * One run of one task: a new conversation in the task's repository, the request, then the checks in its sandbox
  * before the sandbox goes. Pass means every check the task names passed. `fileAt` (from `evalRepos`) supplies a
- * task's hidden files. Past `limitMs` of the model's own time (waiting for first tokens aside, with `measured`) the run
- * is stopped and fails; past `wallMs` in all, it's stopped and left unscored, as the provider's doing.
+ * task's hidden files. Past `limitMs` of the model's own time (waits for first tokens, with `measured`, and retries
+ * aside) the run is stopped and fails; past `wallMs` in all, it's stopped and left unscored, as the provider's doing.
  */
 export async function runTask(
 	scout: Scout,
@@ -488,9 +488,11 @@ export async function runTask(
 				? undefined
 				: setInterval(() => {
 						const elapsed = Date.now() - started;
-						const own = elapsed - ((measured?.waited.ms ?? 0) - waitedBefore);
+						// The provider's time isn't the model's: waits for first tokens, and retrying its failed calls.
+						const retrying = timing.retries + (retryFrom === undefined ? 0 : Date.now() - retryFrom);
+						const own = elapsed - ((measured?.waited.ms ?? 0) - waitedBefore) - retrying;
 						if (wallMs !== undefined && elapsed > wallMs) stopped = `the provider kept it waiting: not done within ${Math.round(wallMs / 60_000)} minutes`;
-						else if (limitMs !== undefined && own > limitMs) stopped = `the model's own time passed ${Math.round(limitMs / 60_000)} minutes (waiting for first tokens aside)`;
+						else if (limitMs !== undefined && own > limitMs) stopped = `the model's own time passed ${Math.round(limitMs / 60_000)} minutes (waiting on the provider aside)`;
 						if (stopped !== undefined) {
 							clearInterval(watch);
 							void conversation.abort(context).catch(() => {});
@@ -580,6 +582,8 @@ export async function runTask(
 	usage.modelCalls = spent.calls;
 	usage.inputTokens = spent.input;
 	usage.outputTokens = spent.output;
+	// A run that never reached a model (one that isn't set up, say) says nothing about the model.
+	if (!pass && unscored === undefined && spent.calls === 0 && steps === 0) unscored = "no model call was made";
 	return { task: task.name, side, pass, why: why.join("; ") || "passed", cost: spent.cost, ms: ended - started - checked, steps, timing, usage, ...(unscored === undefined ? {} : { unscored }) };
 }
 
