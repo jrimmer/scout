@@ -498,6 +498,11 @@ export class Workspaces {
 		await this.#config.driver.remove(this.key(conversationId)).catch(() => {});
 	}
 
+	/** Remove every sandbox this process has open: for a one-off run told to stop, so none is left behind. */
+	async removeAll(): Promise<void> {
+		await Promise.all([...this.#open.keys()].map((id) => this.remove(id)));
+	}
+
 	async #close(conversationId: number): Promise<void> {
 		const opened = this.#open.get(conversationId);
 		this.#open.delete(conversationId);

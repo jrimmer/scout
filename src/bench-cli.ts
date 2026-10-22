@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { MemoryStorage } from "@earendil-works/pi-durable";
-import { type BenchRow, BenchStore, benchRow } from "./bench.ts";
+import { BenchStore, benchRow } from "./bench.ts";
 import { loadConfig, useScoutsKey } from "./config.ts";
 import { evalConfig, evalRepos, fakeCodeHost, loadTasks, measures, runTask } from "./evals.ts";
 import { localDay } from "./reflect.ts";
@@ -44,13 +44,23 @@ if (import.meta.main) {
 	const store = new BenchStore(join(config.dataDir, "bench.sqlite"));
 	const work = mkdtempSync(join(tmpdir(), "scout-bench-"));
 	const host = await fakeCodeHost();
+	let current: Awaited<ReturnType<typeof openScout>> | undefined;
+	// Scout stops this run when it stops itself: leave no sandbox or copies behind.
+	for (const signal of ["SIGTERM", "SIGINT"] as const) {
+		process.once(signal, async () => {
+			console.log(`bench: stopped (${signal}); what finished is kept`);
+			await current?.workspaces.removeAll().catch(() => {});
+			rmSync(work, { recursive: true, force: true });
+			process.exit(1);
+		});
+	}
 	try {
 		const { repos, nameOf, fileAt } = await evalRepos(config, tasks, join(work, "repos"));
 		for (const model of config.bench.models) {
 			const name = `${model.provider}/${model.modelId}`;
 			const dataDir = join(work, name.replace(/[^\w.-]/g, "-"));
 			const measured = measures();
-			const scout = await openScout({
+			const scout = (current = await openScout({
 				config: evalConfig(config, { repos, profileDir: config.profileDir, apiUrl: host.apiUrl, dataDir, model }),
 				storage: new MemoryStorage(),
 				dataDir,
@@ -60,17 +70,15 @@ if (import.meta.main) {
 				mcp: [],
 				selfReviewed: measured.selfReviewed,
 				modelStarted: measured.modelStarted,
-			});
-			const rows: BenchRow[] = [];
+			}));
 			try {
 				for (const task of tasks) {
 					const result = await runTask(scout, task, nameOf(task), "candidate", BACKGROUND_CONTEXT, measured, { fileAt, limitMs: TASK_LIMIT_MS });
 					console.log(`bench ${name} ${task.name}: ${result.pass ? "pass" : `fail (${result.why.slice(0, 300)})`}, $${result.cost.toFixed(3)}, ${Math.round(result.ms / 1000)}s, ${result.steps} steps`);
-					rows.push(benchRow(name, night, task, result));
+					// Kept as each task ends: what finished counts, even if the rest of the night doesn't.
+					store.record([benchRow(name, night, task, result)]);
 				}
 			} finally {
-				// What finished counts, even if the rest of the night didn't.
-				store.record(rows);
 				await scout.close();
 			}
 		}
