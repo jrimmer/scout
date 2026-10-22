@@ -37,6 +37,10 @@ A change to any of these that needs people to act is a major version. Everything
 - **Releases:** this changelog, and the release checklist in `docs/releasing.md`.
 - **Settings:** `.env.example` now lists every setting Scout reads, and a test keeps it so. `SCOUT_GATEWAY_OPENAI_API` was missing.
 
+### Changed
+- **Pi Durable 1.4.0** (from 1.3.0). Model retries now wait without holding a process, so a restart during one loses nothing, and a task that keeps crashing is parked instead of looping. **Upgrading converts `pi.sqlite` for good:** 1.3.0 can't open it afterwards, so back it up first.
+- **The MCP SDK is 1.32.1** (from 1.31.0), for four security advisories, among them headers re-sent across origins on a redirect.
+
 ### Fixed
 - **spoond restarts:** a running command no longer fails when spoond restarts or the network hiccups. Scout keeps following it for two minutes, then stops and says it may still be running.
 - **Ask Scout form:** when Slack was slow to say where the form was sent, the form failed after Slack's three seconds and no thread started. Scout now remembers channels it can work in, gives Slack two seconds, and otherwise takes the form and checks afterwards, telling the person privately if it can't work there.
