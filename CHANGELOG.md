@@ -25,7 +25,7 @@ A change to any of these that needs people to act is a major version. Everything
   - event-loop lag.
 
   It reads the dashboard's snapshot (`/status.json`, with `SCOUT_METRICS_TOKEN`). Slowness is a warning, with where it comes from. Only Scout not answering, or a problem lasting an hour, fails. So a scheduled `npm run doctor` works as a monitor.
-- **A nightly benchmark** of models on Scout's own work (`docs/evals.md`), off unless `SCOUT_BENCH_MODELS` names models. Replayed fixes judged by their own hidden tests, as in SWE-bench, and bugs to locate. Two radar charts on the dashboard's new Benchmark tab: what each model can do (coding, finding bugs, tool use, consistency, cost) and what it's like to work with (first tokens, output speed, task time, retries), over each model's last 10 nights.
+- **A nightly benchmark** of models on Scout's own work (`docs/evals.md`), off unless `SCOUT_BENCH_MODELS` names models. Replayed fixes judged by their own hidden tests, as in SWE-bench, and bugs to locate. Two radar charts on a new Benchmark page, linked from the foot of the dashboard: what each model can do (coding, finding bugs, tool use, consistency, cost) and what it's like to work with (first tokens, output speed, task time, retries), over each model's last 10 nights.
 - **Evals** can replay a commit: files given at the start, tests hidden until after the work, and tasks that ask where a bug is.
 - **Monitoring:** `docs/operations.md` recommends how to monitor Scout with the tools you already have: `/healthz`, a scheduled doctor, and alerts on `/metrics`.
 - **Tests at the edges:**

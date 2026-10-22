@@ -5,7 +5,7 @@ import { isIP } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ModelScores } from "../bench.ts";
-import { benchPage, tabs } from "./bench.ts";
+import { benchPage, footer } from "./bench.ts";
 import type { Collector } from "./collect.ts";
 import type { Grid } from "./grid.ts";
 import { layout } from "./layout.ts";
@@ -24,7 +24,7 @@ export type DashOptions = {
 	intervalMs?: number;
 	/** Prometheus metrics at /metrics: with a token, only for that bearer token; without, behind the dashboard's login. */
 	metrics?: { token?: string; render: () => Promise<string> };
-	/** The nightly benchmark's scores, when it's on: a Benchmark tab at /bench. */
+	/** The nightly benchmark's scores, when it's on: a Benchmark page at /bench, linked from the footer. */
 	bench?: () => { scores: ModelScores[]; lastRun?: string; keep: number; hour: number; tasks: number };
 };
 
@@ -135,7 +135,7 @@ function page(grid: Grid, bench: boolean): string {
 <link rel="stylesheet" href="/static/dash.css">
 <script defer src="/static/dash.js"></script>
 </head>
-<body><main>${bench ? tabs("now") : ""}<pre id="grid" class="grid">${grid.html()}</pre></main></body>
+<body><main><pre id="grid" class="grid">${grid.html()}</pre>${bench ? footer("/bench", "Benchmark") : ""}</main></body>
 </html>
 `;
 }

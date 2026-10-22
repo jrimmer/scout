@@ -1,14 +1,15 @@
 import type { Axis, ModelScores } from "../bench.ts";
 
 /**
- * The dashboard's Benchmark tab: two radar charts of the nightly benchmark (bench.ts), what each model can do and what
- * it's like to work with, one outline per model, with the numbers behind them. Plain SVG drawn here, so the page needs
- * no script and works under the dashboard's content security policy (colours come from dash.css classes).
+ * The dashboard's Benchmark page (/bench, linked from its footer): two radar charts of the nightly benchmark
+ * (bench.ts), what each model can do and what it's like to work with, one outline per model, with the numbers behind
+ * them. Plain SVG drawn here, so the page needs no script and works under the dashboard's content security policy
+ * (colours come from dash.css classes).
  */
 export function benchPage(scores: readonly ModelScores[], meta: { lastRun?: string; keep: number; hour: number; tasks: number }): string {
 	const body =
 		scores.length === 0
-			? `<p class="note">No runs yet. The first is tonight after ${String(meta.hour).padStart(2, "0")}:00.</p>`
+			? `<p class="note">No runs yet. They start each night after ${String(meta.hour).padStart(2, "0")}:00, and the scores show here once a model has finished its tasks.</p>`
 			: [
 					`<p class="note">${meta.tasks} tasks from Scout's own history, run by every model once a night. Scores are over each model's last ${meta.keep} runs (the latest ${esc(meta.lastRun ?? "")}), on fixed scales, so they mean the same from week to week. A toy: few tasks, one codebase. Compare models with each other here, not with public leaderboards: "Reasoning" here is finding bugs.</p>`,
 					`<ol class="legend">${scores.map((s, i) => `<li class="s${i % SERIES}"><i></i>${esc(s.model)} <small>${s.runs} run${s.runs === 1 ? "" : "s"}</small></li>`).join("")}</ol>`,
@@ -29,18 +30,17 @@ export function benchPage(scores: readonly ModelScores[], meta: { lastRun?: stri
 <link rel="stylesheet" href="/static/dash.css">
 </head>
 <body><main class="bench">
-${tabs("bench")}
 <h1>Benchmark</h1>
 ${body}
+${footer("/", "Dashboard")}
 </main></body>
 </html>
 `;
 }
 
-/** The tabs at the top of both pages; the Benchmark tab only when the benchmark is on. */
-export function tabs(current: "now" | "bench"): string {
-	const tab = (id: "now" | "bench", href: string, label: string) => `<a href="${href}"${id === current ? ' aria-current="page"' : ""}>${label}</a>`;
-	return `<nav class="tabs">${tab("now", "/", "Now")}${tab("bench", "/bench", "Benchmark")}</nav>`;
+/** A page's footer link: the dashboard's to the Benchmark (only when the benchmark is on), and back. */
+export function footer(href: string, label: string): string {
+	return `<footer class="links"><a href="${href}">${label}</a></footer>`;
 }
 
 const SERIES = 4;

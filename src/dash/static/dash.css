@@ -25,10 +25,11 @@ pre.grid > span.gr { display: block; white-space: pre; }
 .g-id { color: var(--id); }
 .g-spark { color: var(--spark); }
 
-/* The tabs, and the Benchmark tab (dash/bench.ts): radar charts in the same palette, one class per model. */
-nav.tabs { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; margin: 0 0 0.75rem; display: flex; gap: 1.25rem; }
-nav.tabs a { color: var(--dim); text-decoration: none; }
-nav.tabs a[aria-current="page"] { color: var(--title); font-weight: 700; }
+/* The footer link between the dashboard and the Benchmark page (dash/bench.ts), whose radar charts use the same
+   palette, one class per model. */
+footer.links { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; margin-top: 1rem; }
+footer.links a { color: var(--dim); text-decoration: none; }
+footer.links a:hover { color: var(--title); }
 main.bench { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; max-width: 1000px; width: auto; }
 main.bench h1 { color: var(--head); font-size: 15px; margin: 0 0 0.5rem; }
 main.bench .note { color: var(--dim); max-width: 72ch; }

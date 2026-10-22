@@ -78,7 +78,7 @@ Evals answer "is this change better?". The benchmark answers "how do these model
 like to use through our gateway?", night after night. It's **off** unless `SCOUT_BENCH_MODELS` names the models
 (`provider/model`, comma-separated); then each night after `SCOUT_BENCH_HOUR` (1 by default), Scout starts
 `npm run bench` in a process of its own, and every model runs every task in `bench/` once, as an eval runs.
-The dashboard's **Benchmark** tab shows the result. `npm run bench` runs a night by hand (`--only <text>` for
+The **Benchmark** page shows the result, linked from the foot of the dashboard. `npm run bench` runs a night by hand (`--only <text>` for
 some tasks).
 
 **The tasks** are real fixes from Scout's history, chosen as public benchmarks choose theirs:
