@@ -62,6 +62,8 @@ if (config.sandbox.network === "none") {
 const slack = new Slack(config.slack);
 const health = new Health();
 const startedAt = Date.now();
+/** Since when Scout has been draining for a restart (SIGINT, below), if it is. */
+let draining: number | undefined;
 /** Say something in Scout's home channel, if it has one. */
 function announce(text: string): void {
 	const home = config.reflect.channel;
@@ -1093,7 +1095,7 @@ const benchStore = config.bench === undefined ? undefined : new BenchStore(join(
 let benchChild: ChildProcess | undefined;
 let benchTried: string | undefined;
 const benchNight = () => {
-	if (config.bench === undefined || benchChild !== undefined) return;
+	if (config.bench === undefined || benchChild !== undefined || draining !== undefined) return;
 	const now = new Date();
 	const night = localDay(now);
 	// Once a night, whether it worked or not: a broken run shouldn't start again every few minutes.
@@ -1110,6 +1112,8 @@ const benchNight = () => {
 
 /** Housekeeping every few minutes; also soon after a start, so a restart doesn't hold up reviews and retries. */
 const housekeeping = () => {
+	// Draining for a restart: the next process does it, rather than this one starting what it can't finish.
+	if (draining !== undefined) return;
 	const now = Date.now();
 	// Sandboxes are cattle: put to sleep the ones whose threads went quiet; the next tool call wakes them (a spoond lease
 	// in under a second), so sleeping early costs little and leaves room for other threads.
@@ -1217,6 +1221,7 @@ const collector = new Collector({
 		fallbacks: scout.breakers?.fallbacks.slice() ?? [],
 		outages: scout.breakers?.outages() ?? [],
 	}),
+	draining: () => draining,
 });
 
 // The dashboard: read-only, on its own address (loopback unless it has a password).
@@ -1257,41 +1262,65 @@ const dashboard =
 			});
 if (config.dash !== undefined) console.log(`dashboard on http://${config.dash.addr}/`);
 
-// `kill -USR2 <pid>` reflects now, if today's reflection hasn't run yet.
+// `kill -USR2 <pid>` reflects now, if today's reflection hasn't run yet. Under Litestream, signal Scout's own process:
+// Litestream passes on only SIGINT and SIGTERM.
 process.on("SIGUSR2", () => void reflect(localDay(new Date())));
 
+// `kill -INT <pid>` drains for a restart (drain.ts): no new model calls start, the model calls and tool calls running now
+// finish, then Scout stops cleanly, its service manager starts it again (Restart=always), and every run carries on from
+// the step it stopped at. Litestream passes SIGINT and SIGTERM on to Scout (only those). SIGTERM stops at once, as does
+// a second SIGINT while draining. scripts/deploy.sh drains this way.
 let stopping = false;
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-	process.on(signal, async () => {
-		if (stopping) process.exit(1);
-		stopping = true;
-		clearInterval(tick);
-		clearTimeout(firstTick);
-		clearInterval(ciTick);
-		clearInterval(watchdog);
-		clearInterval(waitsTick);
-		clearInterval(heartbeat);
-		clearInterval(inboxTick);
-		clearInterval(scheduleTick);
-		benchChild?.kill();
-		benchStore?.close();
-		inbox.close();
-		upkeep.close();
-		weekly.close();
-		reviewNudges.close();
-		branches.close();
-		recaps.close();
-		workList.close();
-		canvases.close();
-		capabilities.close();
-		egress.close();
-		if (alertTick !== undefined) clearInterval(alertTick);
-		alertLog.close();
-		await slack.stop().catch(() => {});
-		await dashboard?.close();
-		await scout.close();
-		process.exit(0);
-	});
+process.on("SIGINT", () => {
+	if (draining !== undefined || stopping) return void stop();
+	draining = Date.now();
+	// The nightly benchmark is a process of its own, with runs too long to wait for: tonight's are lost.
+	benchChild?.kill();
+	console.log(`draining for a restart: the model calls and tool calls running now finish first, for at most ${config.capacity.drainMax} s (SIGINT again stops now)`);
+	void scout.drain(config.capacity.drainMax * 1000).then(
+		(drained) => {
+			const said = drained.idle ? "drained" : `still busy (${drained.modelCalls} model call(s), ${drained.toolCalls} tool call(s)), stopping anyway`;
+			console.log(`${said} after ${Math.round(drained.ms / 1000)} s; the next start carries every run on`);
+			// Stopped meanwhile (a second signal), it's already on its way out.
+			return stopping ? undefined : stop();
+		},
+		(error: unknown) => {
+			console.error("draining failed; stopping:", error);
+			return stopping ? undefined : stop();
+		},
+	);
+});
+process.on("SIGTERM", () => void stop());
+
+async function stop(): Promise<void> {
+	if (stopping) process.exit(1);
+	stopping = true;
+	clearInterval(tick);
+	clearTimeout(firstTick);
+	clearInterval(ciTick);
+	clearInterval(watchdog);
+	clearInterval(waitsTick);
+	clearInterval(heartbeat);
+	clearInterval(inboxTick);
+	clearInterval(scheduleTick);
+	benchChild?.kill();
+	benchStore?.close();
+	inbox.close();
+	upkeep.close();
+	weekly.close();
+	reviewNudges.close();
+	branches.close();
+	recaps.close();
+	workList.close();
+	canvases.close();
+	capabilities.close();
+	egress.close();
+	if (alertTick !== undefined) clearInterval(alertTick);
+	alertLog.close();
+	await slack.stop().catch(() => {});
+	await dashboard?.close();
+	await scout.close();
+	process.exit(0);
 }
 
 /**

@@ -8,6 +8,7 @@ import { Capacity, limitModels, minutes, ModelBreakers, ModelLimiter, WaitBoard 
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createCodeHostExtension, type OpenedPull } from "./codehost.ts";
 import type { Config, RepoConfig } from "./config.ts";
+import { drain } from "./drain.ts";
 import { modelsFor } from "./gateway.ts";
 import { Audit } from "./audit.ts";
 import { type Admission, Limits, loadLimits, SpendLedger } from "./limits.ts";
@@ -563,6 +564,8 @@ export async function openScout(options: ScoutOptions) {
 			const provider = await harness?.snapshot(ProviderDoc, conversationId as ConversationId, context).catch(() => undefined);
 			return provider === undefined ? undefined : breakers.notice(provider.sessionId);
 		},
+		/** For a restart: start no new steps, and resolve once the ones running have finished, or after `maxMs` (drain.ts). */
+		drain: (maxMs: number) => drain({ harness: opened, limiter: modelLimiter, context, maxMs }),
 		/** What a run is waiting on right now, in Scout's words, or nothing: a sandbox on a full host, or the model. */
 		waitingFor: async (conversationId: number): Promise<string | undefined> => {
 			const now = Date.now();
@@ -574,6 +577,7 @@ export async function openScout(options: ScoutOptions) {
 			const provider = harness === undefined ? undefined : await harness.snapshot(ProviderDoc, conversationId as ConversationId, context).catch(() => undefined);
 			const position = provider === undefined ? undefined : modelLimiter.position(provider.sessionId);
 			if (position === undefined) return undefined;
+			if (modelLimiter.draining) return "I'm restarting for an update. I'll carry on from here in a minute or two.";
 			const usual = capacity.waits("model", DAY, now);
 			const ahead = position === 1 ? "I'm next" : `${position - 1} ahead of me`;
 			return `Waiting my turn for the model: it's busy with other threads, ${ahead}.${usual.count >= 5 ? ` That usually takes under ${minutes(usual.p90)}.` : ""}`;

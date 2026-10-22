@@ -67,6 +67,14 @@ describe("dashboard layout", () => {
 		assert.match(text, /merged 7d   nothing decided/);
 		assert.match(text, /nightly reflection is off/);
 	});
+
+	it("says in its top line when Scout is draining for a restart", () => {
+		const grid = layout({ ...busy, draining: busy.now - 75_000 });
+		const top = grid.text().split("\n")[0]!;
+		assert.match(top, /^ SCOUT · scout-1 · anthropic\/claude-opus-5-5 +draining for a restart, 1m 15s · up 3h 12m · [\d:]+$/);
+		assert.match(grid.rowHtml(0), /<span class="g-warn">draining for a restart, 1m 15s · <\/span>/);
+		assert.doesNotMatch(layout(busy).text().split("\n")[0]!, /draining/);
+	});
 });
 
 describe("collector", () => {

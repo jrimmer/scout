@@ -50,6 +50,38 @@ Scout doesn't monitor itself from the inside, since a Scout that has stopped can
 
 **Before a release, and after a deploy**, ask Scout for something small in a channel that works in a throwaway repository and see a pull request come of it. Nothing else exercises the model, sandboxes and code host together the way a person's request does.
 
+## Deploying
+
+On the server, as the user Scout runs as, in its install directory:
+
+```bash
+npm run deploy                       # origin/main
+npm run deploy -- v0.2.0             # or a tag, branch or commit ahead of what's running
+npm run deploy -- --pi-backed-up     # when the deploy moves Pi Durable to another version (see below)
+```
+
+Run any time, busy or not: there's no need to wait for Scout to go quiet. `scripts/deploy.sh`:
+1. Fetches.
+2. Refuses unless the code host says CI passed on the commit. It asks the code host in Scout's settings (`.env`, as `npm run doctor` reads it), so the checkout's `origin` must be there.
+3. Refuses a commit that moves Pi Durable to another version until you've backed `pi.sqlite` up, since the new version may convert it for good. `sqlite3 pi.sqlite ".backup pi-before.sqlite"` in the data directory works while Scout runs. Then pass `--pi-backed-up`.
+4. Fast-forwards, and runs `npm ci` if `package-lock.json` changed.
+5. Drains Scout, waits for systemd to start it again, and waits for the dashboard's `/healthz`. Then it prints what happened.
+
+**Draining** is `kill -INT` to Scout's node process:
+- No new model call starts. They wait as they would for a slot, and threads waiting on their next step say Scout is restarting.
+- The model calls and tool calls running now finish. Model calls that a running tool waits on go ahead too, such as a pull request's self-review.
+- Scout stops cleanly once nothing has been in flight for a moment. Pi Durable writes every unfinished run back as pending, and the next start carries each on from the step it stopped at.
+- So a deploy waits for the current step, not for whole threads: usually seconds, at most `SCOUT_DRAIN_MAX` (600 seconds), after which Scout stops anyway. A tool call cut off then gets an "interrupted" result, as after a crash.
+- Messages that arrive while it drains are stored, and run after the restart.
+- The nightly benchmark, a process of its own, is stopped; that night's runs are lost.
+- The dashboard's top line says it's draining. A second `kill -INT`, or `systemctl stop`, stops Scout now (still cleanly).
+
+**The unit** has to start Scout again after it stops on its own. Update yours from `deploy/scout.service`, then `systemctl daemon-reload`:
+- `Restart=always`, which the deploy script checks for.
+- `KillMode=mixed`, so `systemctl stop` sends SIGTERM to Litestream alone, which passes it on once. Sent to both, Scout could get it twice, and a second signal stops it at once rather than cleanly.
+
+**Signals under Litestream:** the service's main process is Litestream, which passes on only SIGINT and SIGTERM, and stops on SIGHUP. Send other signals (`-HUP`, `-USR2`) to Scout's node process, Litestream's child: `pgrep -P "$(systemctl show -p MainPID --value scout)" -f src/main.ts`.
+
 ## How much Scout does on its own
 
 `SCOUT_INITIATIVE` (`asked`, `own`, or `team`, the default) sets how much Scout does without being asked
@@ -514,8 +546,9 @@ Any secret can be a reference instead of a value:
 | `NAME=cred:name` | a systemd credential (`LoadCredential=name:/path`) |
 | `NAME=op://vault/item/field` | 1Password, via the `op` CLI and `OP_SERVICE_ACCOUNT_TOKEN` |
 
-`kill -HUP <pid>` reads them all again. The code host token, the gateway key and spoond's token take effect at once;
-Slack tokens and MCP servers' credentials need a restart.
+`kill -HUP <pid>` reads them all again (Scout's node process; under Litestream, see [Deploying](#deploying)). The code
+host token, the gateway key and spoond's token take effect at once; Slack tokens and MCP servers' credentials need a
+restart.
 
 ## Telemetry
 

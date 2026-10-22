@@ -170,7 +170,7 @@ After=network-online.target docker.service
 User=scout
 WorkingDirectory=/home/scout/scout
 ExecStart=/usr/bin/node --env-file=.env src/main.ts
-Restart=on-failure
+Restart=always
 RestartSec=5
 
 [Install]
@@ -183,5 +183,6 @@ dashboard.
 
 ## 11. Keeping it up to date
 
-`git pull`, `npm ci`, and restart, ideally when Scout is idle: runs survive a restart, but a reply being written at
-that moment is delayed. Paste the Slack manifest again if it changed.
+`npm run deploy` on the server: it checks CI passed, updates, and restarts Scout once the steps running have finished
+([operations.md](operations.md#deploying)). By hand: `git pull`, `npm ci`, and `kill -INT` Scout's process with a
+service manager that starts it again. Paste the Slack manifest again if it changed.

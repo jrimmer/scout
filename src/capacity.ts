@@ -233,11 +233,15 @@ export class WaitBoard {
  * At most `max` model calls in flight at once, the rest waiting their turn in order, so a busy moment queues instead
  * of overrunning the model gateway. Each call is known by its provider session (one per conversation, from Pi
  * Durable), so a run can say it's waiting and how many calls are ahead of it. `max` 0 means no limit.
+ *
+ * Draining for a restart (drain.ts), no new call starts: each waits here as it would for a slot, unless `goesAhead`
+ * lets it through.
  */
 export class ModelLimiter {
 	readonly max: number;
 	readonly #queue: { session: string; go: () => void }[] = [];
 	#inFlight = 0;
+	#goesAhead: ((session: string) => boolean) | undefined;
 	readonly #onWaited: (ms: number) => void;
 	readonly #board: WaitBoard | undefined;
 
@@ -255,6 +259,20 @@ export class ModelLimiter {
 		return this.#queue.length;
 	}
 
+	get draining(): boolean {
+		return this.#goesAhead !== undefined;
+	}
+
+	/** Start no new calls from now on, but those `goesAhead` allows. There's no undoing it: the process is on its way out. */
+	drain(goesAhead: (session: string) => boolean = () => false): void {
+		this.#goesAhead = goesAhead;
+	}
+
+	/** Let waiting calls go that now may: while draining, the ones `goesAhead` has come to allow. */
+	recheck(): void {
+		this.#next();
+	}
+
 	/** Where a session's waiting call is in line (1 = next), or undefined when it isn't waiting. */
 	position(session: string): number | undefined {
 		const i = this.#queue.findIndex((q) => q.session === session);
@@ -263,10 +281,12 @@ export class ModelLimiter {
 
 	/** Wait for a slot (or until `signal` aborts, so a stopped run doesn't hold its place); returns the release. */
 	async acquire(session: string, signal?: AbortSignal): Promise<() => void> {
-		if (this.max > 0 && this.#inFlight >= this.max) {
+		if (this.#mayStart(session)) this.#inFlight++;
+		else {
 			const queued = Date.now();
 			this.#board?.start("model", session, queued);
 			let stopped = false;
+			// `#next` takes the slot for the call it lets go, so a slot is never handed out twice.
 			await new Promise<void>((resolve) => {
 				const entry = { session, go: resolve };
 				this.#queue.push(entry);
@@ -274,7 +294,8 @@ export class ModelLimiter {
 					"abort",
 					() => {
 						const i = this.#queue.indexOf(entry);
-						if (i >= 0) this.#queue.splice(i, 1);
+						if (i < 0) return;
+						this.#queue.splice(i, 1);
 						stopped = true;
 						resolve();
 					},
@@ -286,14 +307,31 @@ export class ModelLimiter {
 			if (stopped) return () => {};
 			this.#onWaited(Date.now() - queued);
 		}
-		this.#inFlight++;
 		let released = false;
 		return () => {
 			if (released) return;
 			released = true;
 			this.#inFlight--;
-			this.#queue.shift()?.go();
+			this.#next();
 		};
+	}
+
+	#mayStart(session: string): boolean {
+		return (this.max === 0 || this.#inFlight < this.max) && (this.#goesAhead?.(session) ?? true);
+	}
+
+	/** Hand free slots to waiting calls in order, past the ones a drain holds. */
+	#next(): void {
+		for (let i = 0; i < this.#queue.length && (this.max === 0 || this.#inFlight < this.max); ) {
+			const entry = this.#queue[i]!;
+			if (!(this.#goesAhead?.(entry.session) ?? true)) {
+				i++;
+				continue;
+			}
+			this.#queue.splice(i, 1);
+			this.#inFlight++;
+			entry.go();
+		}
 	}
 }
 

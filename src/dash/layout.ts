@@ -15,7 +15,9 @@ export function layout(s: Snapshot, width = WIDTH, links: { bench?: boolean } = 
 	let y = 0;
 
 	grid.put(1, y, `SCOUT · ${s.host} · ${s.model}`, "head");
-	grid.putRight(width - 1, y, `up ${duration(s.now - s.startedAt)} · ${clock(s.now)}`, "dim");
+	const up = `up ${duration(s.now - s.startedAt)} · ${clock(s.now)}`;
+	grid.putRight(width - 1, y, up, "dim");
+	if (s.draining !== undefined) grid.putRight(width - 1 - up.length, y, `draining for a restart, ${duration(s.now - s.draining)} · `, "warn");
 	y += 2;
 
 	if (s.alerts.length > 0) {

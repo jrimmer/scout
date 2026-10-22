@@ -263,14 +263,19 @@ function duration(ms: number): string {
 export async function fetchRunning(dash: Config["dash"], token: string | undefined, doFetch: typeof fetch = fetch): Promise<Running> {
 	if (dash === undefined) throw new CantAsk("its dashboard is off (SCOUT_DASH_ADDR), so there's nothing to ask");
 	if (token === undefined && dash.auth !== undefined) throw new CantAsk("set SCOUT_METRICS_TOKEN, so the doctor and monitors can read /status.json behind the dashboard's login");
-	const { host, port } = /^(?<host>.*):(?<port>\d+)$/.exec(dash.addr)?.groups ?? { host: "127.0.0.1", port: "8893" };
-	const reach = host === "0.0.0.0" || host === "" || host === "::" || host === "[::]" ? "127.0.0.1" : host;
-	const response = await doFetch(`http://${reach}:${port}/status.json`, {
+	const response = await doFetch(`${dashboardUrl(dash.addr)}/status.json`, {
 		headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
 		signal: AbortSignal.timeout(10_000),
 	});
 	if (!response.ok) throw new Error(`its dashboard answered ${response.status}`);
 	return (await response.json()) as Running;
+}
+
+/** The dashboard as this host reaches it: one listening on every address answers on loopback. */
+export function dashboardUrl(addr: string): string {
+	const { host, port } = /^(?<host>.*):(?<port>\d+)$/.exec(addr)?.groups ?? { host: "127.0.0.1", port: "8893" };
+	const reach = host === "0.0.0.0" || host === "" || host === "::" || host === "[::]" ? "127.0.0.1" : host;
+	return `http://${reach}:${port}`;
 }
 
 async function gitOut(args: string[]): Promise<string> {
