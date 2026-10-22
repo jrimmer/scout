@@ -151,7 +151,8 @@ npm run doctor   # Slack, the code host, repositories, the model and the rest: â
 npm start
 ```
 
-Before the first `npm start`, the doctor's last check ("Running") fails, because there's no Scout yet to ask. Run it again once Scout is up.
+Before the first `npm start`, the doctor's last check ("Running") fails, because there's no Scout yet to ask, and so
+does "Backups", because there are no databases yet. Run it again once Scout is up.
 
 It asks the model for one short answer (a few tokens), and says what git said about a repository it can't reach.
 With Docker it doesn't check that Docker answers or that the sandbox image exists: `docker image ls scout-sandbox`
@@ -179,9 +180,14 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-`sudo systemctl enable --now scout`, then `journalctl -u scout -f` for its log. `deploy/scout.service` is the same
-with Litestream backups around it; [operations.md](operations.md) covers backups, secrets, telemetry and the
-dashboard.
+`sudo systemctl enable --now scout`, then `journalctl -u scout -f` for its log. Keep `Restart=always`: deploys
+drain Scout and count on systemd to start it again, and the doctor warns without it.
+
+That unit has no backups: if the box goes, every thread goes with it, and Scout says so (the doctor fails, the
+dashboard shows a red line, and its home channel hears about it). `deploy/scout.service` is the same with Litestream
+backups around it; use it anywhere people rely on Scout ([operations.md](operations.md#backups)). For a test install,
+`SCOUT_BACKUP=none` says no backups is on purpose. [operations.md](operations.md) also covers secrets, telemetry and
+the dashboard.
 
 ## 11. Keeping it up to date
 

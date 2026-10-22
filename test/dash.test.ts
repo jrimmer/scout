@@ -75,6 +75,17 @@ describe("dashboard layout", () => {
 		assert.match(grid.rowHtml(0), /<span class="g-warn">draining for a restart, 1m 15s · <\/span>/);
 		assert.doesNotMatch(layout(busy).text().split("\n")[0]!, /draining/);
 	});
+
+	it("keeps a line under the top one while backups are missing, dimmed when they're off on purpose", () => {
+		const missing = layout({ ...busy, backup: { status: "missing", problems: ["no Litestream copy of pi.sqlite"] } });
+		const line = missing.text().split("\n")[2]!;
+		assert.match(line, /^ ! not backed up off this machine: no Litestream copy of pi\.sqlite +docs\/operations\.md#backups$/);
+		assert.match(missing.rowHtml(2), /<span class="g-bad">! not backed up off this machine/);
+		assert.match(missing.text(), /backed up[^\n]*\n\n┌─ needs a person/, "a blank row before the panels, as under the top line");
+		const off = layout({ ...busy, backup: { status: "off", problems: [] } });
+		assert.match(off.rowHtml(2), /<span class="g-dim">backups off, on purpose \(SCOUT_BACKUP=none\)<\/span>/);
+		assert.equal(layout({ ...busy, backup: { status: "ok", problems: [] } }).text(), layout(busy).text(), "nothing to say when they're fine");
+	});
 });
 
 describe("collector", () => {
@@ -99,6 +110,7 @@ describe("collector", () => {
 			channelOf: async () => "team",
 			spend: async () => ({ "p/m": spent }),
 			alerts: () => [],
+			backup: () => ({ status: "missing", problems: ["no Litestream copy of pi.sqlite"] }),
 		});
 		await collector.collect(1_000);
 		spent = 2;
@@ -110,6 +122,7 @@ describe("collector", () => {
 		assert.deepEqual(s.history.working, [1, 1]);
 		assert.deepEqual(s.history.spendPerHour, [1]);
 		assert.equal(s.spend.total, 2);
+		assert.deepEqual(s.backup, { status: "missing", problems: ["no Litestream copy of pi.sqlite"] }, "in /status.json for monitors and the doctor");
 		threads.close();
 		pulls.close();
 		memory.close();

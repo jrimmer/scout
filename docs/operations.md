@@ -17,6 +17,10 @@ on and prints one line each, ✅, ⚠️ or ❌, with how to fix what isn't (`sr
 - the directory: readable, with people in it;
 - the MCP servers: each connects, and how many tools they offer;
 - the dashboard: not open to the network without a login;
+- backups: that Litestream is copying both databases off the machine ([Backups](#backups)), as the running Scout sees
+  its data directory, or this one's when Scout can't be asked;
+- restarts: under systemd, that the unit has `Restart=always`, which a drain for a deploy needs ([Deploying](#deploying));
+  from a shell, the unit named `scout`;
 - the running Scout, asked through its dashboard (`/status.json`, with `SCOUT_METRICS_TOKEN` when the dashboard has a login):
   - that it answers;
   - problems that need a person;
@@ -26,9 +30,10 @@ on and prints one line each, ✅, ⚠️ or ❌, with how to fix what isn't (`sr
   - sandboxes waiting for room;
   - event-loop lag.
 
-It exits 1 when anything is broken, so it can gate a deploy. Slowness is only ever a warning, with where it comes from. Two things fail:
+It exits 1 when anything is broken, so it can gate a deploy. Slowness is only ever a warning, with where it comes from. Three things about the running Scout fail:
 - Scout not answering;
-- a problem that has lasted an hour.
+- a problem that has lasted an hour;
+- its data not backed up off the machine (unless `SCOUT_BACKUP=none`).
 
 ## Monitoring
 
@@ -41,6 +46,7 @@ Scout doesn't monitor itself from the inside, since a Scout that has stopped can
 | Trends | Prometheus scraping `/metrics` (`SCOUT_METRICS_TOKEN` as a bearer token) | see below |
 
 **Useful alerts on `/metrics`:**
+- `scout_backup_ok == 0` for 30 minutes: Scout's data isn't backed up off the machine ([Backups](#backups)).
 - `scout_problems > 0` for 1 hour: something needs a person, and the dashboard says what.
 - `scout_runs_queued > 0` for 30 minutes: requests are waiting for their turn. Raise the run limits, or look at what's slow.
 - `scout_model_first_token_p90_seconds > 30`: the model is slow to start answering. That's the gateway or the provider, not Scout.
@@ -77,7 +83,7 @@ Run any time, busy or not: there's no need to wait for Scout to go quiet. `scrip
 - The dashboard's top line says it's draining. A second `kill -INT`, or `systemctl stop`, stops Scout now (still cleanly).
 
 **The unit** has to start Scout again after it stops on its own. Update yours from `deploy/scout.service`, then `systemctl daemon-reload`:
-- `Restart=always`, which the deploy script checks for.
+- `Restart=always`, which the deploy script checks for, and the doctor warns without.
 - `KillMode=mixed`, so `systemctl stop` sends SIGTERM to Litestream alone, which passes it on once. Sent to both, Scout could get it twice, and a second signal stops it at once rather than cleanly.
 
 **Signals under Litestream:** the service's main process is Litestream, which passes on only SIGINT and SIGTERM, and stops on SIGHUP. Send other signals (`-HUP`, `-USR2`) to Scout's node process, Litestream's child: `pgrep -P "$(systemctl show -p MainPID --value scout)" -f src/main.ts`.
@@ -525,11 +531,31 @@ no configuration as code (a SaaS console, say):
     "status": { "command": "node", "args": ["mcp/gatus.ts"], "env": { "GATUS_URL": "http://gatus.lan:8080" } } } }
 ```
 
-## Backups: Litestream
+## Backups
 
 Both databases (`pi.sqlite`, conversations; `scout.sqlite`, everything else) are SQLite in WAL mode.
 `deploy/litestream.yml` replicates them continuously to object storage, and `deploy/scout.service` restores them
-before start and runs Scout under Litestream.
+before start and runs Scout under Litestream. Without it, if the box goes, every thread goes with it.
+
+**Scout checks that it's backed up** (`src/backups.ts`). Litestream keeps a directory next to each database it
+replicates, `.pi.sqlite-litestream` and `.scout.sqlite-litestream` in the data directory, and writes to it within a
+second of every change. A database counts as backed up when that directory is there and has nothing older than 15
+minutes left to copy: an idle database is fine; a change Litestream hasn't copied for 15 minutes isn't. While either
+database isn't backed up:
+- `npm run doctor` and `/scout doctor` fail a "Backups" check, saying which database and why (no Litestream copy, or
+  when Litestream last copied it);
+- the dashboard keeps a red line under its top one, `/status.json` has a `backup` field, and `/metrics` has
+  `scout_backup_ok` at 0;
+- Scout says so in its home channel once a start, 20 minutes in (so Litestream starting alongside has time to write
+  first), with initiative `own` or `team`, and in the Monday report while it's still true.
+
+The check sees Litestream at work, not where its replica goes: a replica on the same disk (a path in
+`LITESTREAM_REPLICA_URL`) passes it. Litestream's `meta-path` or `meta-dir` settings move the directory, and the check
+won't find it there; leave them unset.
+
+**Test and throwaway installs:** `SCOUT_BACKUP=none` says there's no Litestream on purpose. The doctor warns instead
+of failing, the dashboard shows "backups off, on purpose" dimmed, `scout_backup_ok` stays 1, and Scout says nothing
+in Slack.
 
 To move to a new host: install Scout and Litestream, set `LITESTREAM_REPLICA_URL` and its credentials, and start the
 service. The restore runs first, and Pi Durable resumes every unfinished run where it stopped. Sandboxes are not

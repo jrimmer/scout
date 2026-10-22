@@ -3,6 +3,7 @@ import { type Initiative, parseInitiative } from "./initiative.ts";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { GatewayConfig } from "./gateway.ts";
+import type { BackupSetting } from "./backups.ts";
 
 export type CodeHostKind = "forgejo" | "github";
 
@@ -45,6 +46,8 @@ export type Config = {
 	dataDir: string;
 	/** Pi Durable from main may convert this data dir's pi.sqlite, which its release can't open afterwards. */
 	piMigrate: boolean;
+	/** Whether Litestream should be backing the data dir's databases up (backups.ts), or nothing, on purpose. */
+	backup: BackupSetting;
 	profileDir: string;
 	/** The default repository: threads in channels whose profile names no other work here. */
 	repo: RepoConfig;
@@ -261,6 +264,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		model: { provider, modelId },
 		dataDir,
 		piMigrate: env.SCOUT_PI_MIGRATE === "1",
+		backup: backupSetting(env.SCOUT_BACKUP),
 		// With a profile repository, Scout clones it into a directory of its own under the data directory; the example
 		// profile/ that ships here is not a clone, so it can't be the default.
 		profileDir: resolve(env.SCOUT_PROFILE_DIR ?? (env.SCOUT_PROFILE_REPO_URL ? join(dataDir, "profile") : "profile")),
@@ -372,6 +376,13 @@ export function useScoutsKey(sshKey: string | undefined): void {
 	if (sshKey !== undefined) {
 		process.env.GIT_SSH_COMMAND = `ssh -i '${sshKey}' -o IdentitiesOnly=yes -o IdentityAgent=none`;
 	}
+}
+
+function backupSetting(value: string | undefined): BackupSetting {
+	const v = (value ?? "").trim().toLowerCase();
+	if (v === "" || v === "litestream") return "litestream";
+	if (v === "none") return "none";
+	throw new Error(`SCOUT_BACKUP must be litestream or none (it's "${value}"). See docs/operations.md, "Backups".`);
 }
 
 /** A whole-number setting, at least `min`, with a plain message when it isn't one. */

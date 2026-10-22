@@ -12,6 +12,13 @@ A change to any of these that needs people to act is a major version. Everything
 ## Unreleased
 
 ### Added
+- **Scout says when its data isn't backed up off the machine** (`docs/operations.md#backups`). It looks for Litestream's directory beside `pi.sqlite` and `scout.sqlite` (`.pi.sqlite-litestream`) and fails a database with a change Litestream hasn't copied for 15 minutes. While either isn't backed up:
+  - the doctor fails a "Backups" check;
+  - the dashboard keeps a red line under its top one, `/status.json` has `backup`, and `/metrics` has `scout_backup_ok` at 0;
+  - the home channel hears once a start, 20 minutes in, and in the Monday report while it's still true.
+
+  `SCOUT_BACKUP=none` says it's on purpose, for test and throwaway installs: a warning, a dimmed line, and nothing in Slack.
+- **The doctor checks the service's restart policy:** under systemd, it warns unless the unit has `Restart=always`, which a drain for a deploy needs.
 - **Pi Durable's traces in the OTLP export** (`SCOUT_OTLP_ENDPOINT`): submissions, task phases and model requests (`pi.durable.*`, `pi.ai.request`), through the same exporter. `pi.ai.request` replaces Scout's own `scout.model_call`; the run's spend moves to `scout.cost_usd` on `scout.run` (`docs/operations.md`).
 - **Fallback models** (`SCOUT_FALLBACK_MODELS`, off unless set; `docs/operations.md`). After `SCOUT_FALLBACK_AFTER` failed calls in a row (default 3), a model's calls go to the first fallback that's answering, and the thread carries on instead of failing. After `SCOUT_FALLBACK_FOR` minutes (default 15), one call tries the model again. The thread says it's on the fallback, the home channel hears when a model goes down and when it's back, spend is the fallback's, and the dashboard, `/status.json` and `/metrics` show which model is answering.
 - **Deploys without waiting for a quiet moment** (`npm run deploy`, `docs/operations.md`). **Update your systemd unit from `deploy/scout.service` first:** `Restart=always` and `KillMode=mixed`.

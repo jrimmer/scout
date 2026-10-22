@@ -37,7 +37,8 @@ import { pullProfile } from "./profile.ts";
 import { weekOf } from "./pulls.ts";
 import { localDay } from "./reflect.ts";
 import { openScout, sourceReader } from "./scout.ts";
-import { countMcpTools, doctor, formatChecks } from "./doctor.ts";
+import { countMcpTools, doctor, formatChecks, restartsOf, type Unit, unitOf } from "./doctor.ts";
+import { backupGauge, backupState, describeBackup, startNotice, weekLine as backupWeekLine } from "./backups.ts";
 import { modelsFor } from "./gateway.ts";
 import { APPROVE_BUTTON, DECLINE_BUTTON, EGRESS_ALLOW, EGRESS_DECLINE, Slack } from "./slack.ts";
 import { threadKey } from "./threads.ts";
@@ -434,6 +435,7 @@ async function slashCommand(c: { user: string; channel: string; channelName: str
 					...(mcpFile === undefined ? {} : { mcp: () => countMcpTools(mcpFile) }),
 					...(directory === undefined ? {} : { directory: sourceReader(directory.source, config.codeHost, fetch) }),
 					running: () => collector.collect(),
+					restarts: () => restartsOf(ownUnit()),
 				}),
 			);
 		}
@@ -504,6 +506,19 @@ if (Number.isFinite(lastAlive)) {
 }
 const heartbeat = setInterval(() => writeFileSync(alive, String(Date.now())), MINUTE);
 writeFileSync(alive, String(Date.now()));
+
+// Whether the data is backed up off this machine (backups.ts), for the dashboard, /metrics and the doctor; and once a
+// start, after Litestream starting alongside has had its grace, a word in the home channel if it isn't.
+let backup = backupState(config.dataDir, config.backup);
+if (backup.status !== "ok") console.log(describeBackup(backup));
+let backupTold = false;
+const backupTick = setInterval(() => {
+	backup = backupState(config.dataDir, config.backup);
+	const notice = backupTold || !allows(config.initiative, "own") ? undefined : startNotice(backup, startedAt);
+	if (notice === undefined) return;
+	backupTold = true;
+	announce(notice);
+}, MINUTE);
 // The catalog prices its models; a gateway's own models cost nothing unless the prices file says otherwise.
 for (const id of config.gateway?.models ?? []) {
 	if (!scout.pricing.has(`gateway/${id}`)) console.log(`no price for gateway/${id}: budgets count it as free; set SCOUT_PRICES_FILE`);
@@ -1165,8 +1180,8 @@ const housekeeping = () => {
 		const today = new Date();
 		if (!allows(config.initiative, "team") || today.getDay() !== 1 || today.getHours() < config.reflect.hour) return;
 		const report = pulls.weeklyReport(weekOf(today), Date.now(), scout.spend.spent(0));
-		const waits = scout.capacity.weekLine();
-		const text = report === undefined || waits === undefined ? report : `${report} ${waits}`;
+		const more = [scout.capacity.weekLine(), backupWeekLine(backup)].filter((line) => line !== undefined);
+		const text = report === undefined || more.length === 0 ? report : `${report} ${more.join(" ")}`;
 		if (text !== undefined) announce(text);
 		if (config.weeklySummary) await health.watch("weekly", "posting the channels' weekly summaries failed", postChannelWeeks);
 	});
@@ -1222,6 +1237,7 @@ const collector = new Collector({
 		outages: scout.breakers?.outages() ?? [],
 	}),
 	draining: () => draining,
+	backup: () => backup,
 });
 
 // The dashboard: read-only, on its own address (loopback unless it has a password).
@@ -1255,6 +1271,7 @@ const dashboard =
 							scout_problems: { help: "Things that need a person (see the dashboard).", value: health.list().length },
 							scout_spend_week_dollars: { help: "Model spend this week.", value: scout.spend.spent(weekStart(new Date())) },
 							scout_sandbox_connections: { help: "Sandbox daemon connections open.", value: workspaces.connected },
+							scout_backup_ok: backupGauge(backup),
 							...capacityGauges(),
 						});
 					},
@@ -1301,6 +1318,7 @@ async function stop(): Promise<void> {
 	clearInterval(watchdog);
 	clearInterval(waitsTick);
 	clearInterval(heartbeat);
+	clearInterval(backupTick);
 	clearInterval(inboxTick);
 	clearInterval(scheduleTick);
 	benchChild?.kill();
@@ -1357,4 +1375,13 @@ function instanceId(dataDir: string): string {
 	const id = randomBytes(3).toString("hex");
 	writeFileSync(path, `${id}\n`);
 	return id;
+}
+
+/** The systemd unit Scout runs in, if it runs under systemd (for the doctor's restart check). */
+function ownUnit(): Unit | undefined {
+	try {
+		return unitOf(readFileSync("/proc/self/cgroup", "utf8"));
+	} catch {
+		return undefined;
+	}
 }

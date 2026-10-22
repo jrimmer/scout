@@ -1,3 +1,4 @@
+import type { Backup } from "../backups.ts";
 import type { MemoryNote } from "../memory.ts";
 import { nextTime, type Schedule } from "../schedules.ts";
 import type { PullRow, PullState, ReviewRow } from "../pulls.ts";
@@ -35,6 +36,8 @@ export type Snapshot = {
 	model: string;
 	/** Since when Scout has been draining for a restart (drain.ts), if it is. */
 	draining?: number;
+	/** Whether the databases are backed up off this machine (backups.ts). */
+	backup?: Backup;
 	alerts: { message: string; since: number }[];
 	working: { channel: string; startedAt: number; steps: number; lastStep?: string }[];
 	threadsToday: number;
@@ -98,6 +101,7 @@ export type Sources = {
 	capacity?(): CapacitySnapshot;
 	models?(): ModelsSnapshot;
 	draining?(): number | undefined;
+	backup?(): Backup;
 };
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -137,6 +141,7 @@ export class Collector {
 			host: s.host,
 			model: s.model,
 			...(draining === undefined ? {} : { draining }),
+			...(s.backup === undefined ? {} : { backup: s.backup() }),
 			alerts: s.alerts(),
 			working: await Promise.all(
 				working.map(async (w) => ({

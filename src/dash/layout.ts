@@ -1,3 +1,4 @@
+import { describeBackup } from "../backups.ts";
 import { short } from "../capacity.ts";
 import type { Snapshot } from "./collect.ts";
 import { Grid, type Style } from "./grid.ts";
@@ -19,6 +20,14 @@ export function layout(s: Snapshot, width = WIDTH, links: { bench?: boolean } = 
 	grid.putRight(width - 1, y, up, "dim");
 	if (s.draining !== undefined) grid.putRight(width - 1 - up.length, y, `draining for a restart, ${duration(s.now - s.draining)} · `, "warn");
 	y += 2;
+
+	// Standing, under the top line, for as long as it's true: a box that goes takes every thread with it.
+	if (s.backup !== undefined && s.backup.status !== "ok") {
+		const missing = s.backup.status === "missing";
+		const text = missing ? `! not backed up off this machine: ${s.backup.problems.join("; ")}` : describeBackup(s.backup);
+		drawLine(grid, 1, y, width - 2, { left: [{ text, style: missing ? "bad" : "dim" }], ...(missing ? { right: [{ text: "docs/operations.md#backups", style: "dim" }] } : {}) });
+		y += 2;
+	}
 
 	if (s.alerts.length > 0) {
 		y = panel(grid, 0, y, width, "needs a person", s.alerts.map((a) => ({ left: [{ text: `! ${a.message}`, style: "bad" }], right: [{ text: `for ${age(s.now - a.since)}`, style: "dim" }] })));
