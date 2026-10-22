@@ -5,7 +5,8 @@ setting, and [operations.md](operations.md) explains what each feature does once
 
 ## 1. What you need
 
-- A machine to run it on, always on: Node 24+, git, and (for the default sandboxes) Docker. A small VM or container
+- A machine to run it on, always on: Node 24+, git, curl and sudo (a minimal Debian image has neither curl nor sudo:
+  `apt-get install -y sudo curl git`), and (for the default sandboxes) Docker. A small VM or container
   is plenty (2 cores, 4 GB, 16 GB of disk); the work itself happens in sandboxes.
   - Node: distributions often ship an older one (Debian 12 has 18). Take 24 from NodeSource
     (`curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt-get install -y nodejs`) or the
@@ -24,7 +25,7 @@ Scout runs as a user of its own, which can use Docker. Make it, then do the rest
 sudo useradd -m -s /bin/bash -G docker scout
 sudo -iu scout
 git clone <this repository> scout && cd scout   # a read-only clone; it needs no account
-npm ci                                          # its audit warning doesn't stop anything
+npm ci                                          # its deprecation and install-scripts warnings don't stop anything
 cp .env.example .env && chmod 600 .env          # .env will hold secrets
 ```
 
@@ -107,6 +108,7 @@ and without the settings below Scout uses it as it is, with no nightly proposals
 For the learning loop, push the starter to a new, empty repository on the code host (here `team/scout-profile`):
 
 ```bash
+git config --global user.name Scout && git config --global user.email scout@example.com   # once, if Scout's user has none
 cp -r profile ~/scout-profile && cd ~/scout-profile
 git init -b main && git add . && git commit -m "Scout's profile"
 git push ssh://git@<code host>/team/scout-profile.git main

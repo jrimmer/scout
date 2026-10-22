@@ -28,7 +28,11 @@
 - [x] **CI on every push to `main` and every pull request.** It gates nothing: a pull request is tested merged with the
   latest `main`, and `main` is tested again after every push, so a red `main` is seen before a deploy.
 - [x] **No silent hangs:** a sandbox that dies under a command is noticed, and spoond 3.12.1's lost-command report is handled.
-- [ ] **An install from scratch** has followed [setup.md](setup.md) exactly, with nothing missing or wrong. Two ways to do it:
+- [x] **An install from scratch** has followed [setup.md](setup.md) exactly, with nothing missing or wrong. Two ways to do it:
   - Someone who hasn't set Scout up before.
   - The CI job that installs from a clean checkout with `npm ci`, plus `npm run doctor` against a test configuration.
-- [ ] **The issue tracker:** `now` and `next` issues are closed, or moved to `later` with a reason.
+
+  Done 2026-10-22 on a fresh Debian 12 container, twice: the first run found three hard stops (Node 24, the code
+  host's host key, the profile directory) and smaller gaps, all fixed; the second passed with three one-line gaps,
+  fixed too. Slack was checked by reading only, since a second process on the live app would take its events.
+- [x] **The issue tracker:** `now` and `next` issues are closed, or moved to `later` with a reason (2026-10-22).
