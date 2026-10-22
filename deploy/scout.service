@@ -20,10 +20,10 @@ Environment=SCOUT_DATA_DIR=/var/lib/scout/data
 ExecStartPre=/usr/bin/flock /opt/scout/.deploy.lock true
 TimeoutStartSec=15min
 # On a new host, the databases come back from Litestream's replica before Scout starts; with a database already
-# there, or no replica yet, these do nothing. They read the replica's credentials from Litestream's environment file.
-EnvironmentFile=/etc/litestream.env
-ExecStartPre=/usr/bin/litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists /var/lib/scout/data/pi.sqlite
-ExecStartPre=/usr/bin/litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists /var/lib/scout/data/scout.sqlite
+# there, or no replica yet, these do nothing. They read the replica's credentials from Litestream's environment file
+# themselves, so Scout's own environment never holds the backup keys.
+ExecStartPre=/bin/sh -c 'set -a; . /etc/litestream.env; exec /usr/bin/litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists /var/lib/scout/data/pi.sqlite'
+ExecStartPre=/bin/sh -c 'set -a; . /etc/litestream.env; exec /usr/bin/litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists /var/lib/scout/data/scout.sqlite'
 ExecStart=/usr/bin/node src/main.ts
 TimeoutStopSec=60
 # Always: a drain for a deploy (scripts/deploy.sh, SIGINT to Scout) ends with Scout stopping cleanly, and systemd

@@ -548,13 +548,15 @@ goes, every thread goes with it. To set it up:
 2. Copy `deploy/litestream.yml` to `/etc/litestream.yml` and fill in your replica: bucket, endpoint (any
    S3-compatible store; leave it out for AWS S3) and region. Its paths are Scout's data directory, `SCOUT_DATA_DIR` in
    the unit; keep the two in step. A snapshot a day is kept for a week, so a restore can go back that far.
-3. Make `/etc/litestream.env`, readable by root alone (`sudo install -m 600 /dev/null /etc/litestream.env`), with
-   `LITESTREAM_ACCESS_KEY_ID` and `LITESTREAM_SECRET_ACCESS_KEY`.
+3. Make `/etc/litestream.env`, readable by root and Scout's group alone
+   (`sudo install -m 640 -g scout /dev/null /etc/litestream.env`), with `LITESTREAM_ACCESS_KEY_ID` and
+   `LITESTREAM_SECRET_ACCESS_KEY`. Litestream runs as Scout's user, so that user holds these keys either way.
 4. Copy `deploy/litestream.service.d/scout.conf` to `/etc/systemd/system/litestream.service.d/`, so Litestream runs as
    Scout's user and reads those credentials. `systemctl daemon-reload`, then `systemctl enable --now litestream`.
 
 `deploy/scout.service` restores both databases from the replica before Scout starts, when they aren't there yet (a
-new host), so it reads `/etc/litestream.env` too. Once they are there, the restores do nothing. Litestream picks a
+new host), so those two steps read `/etc/litestream.env` too; Scout's own environment never gets the keys. Once the
+databases are there, the restores do nothing. Litestream picks a
 database up when it appears, so it doesn't matter which service starts first.
 
 **Scout checks that it's backed up** (`src/backups.ts`). Litestream keeps a directory next to each database it
