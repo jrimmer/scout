@@ -1,0 +1,25 @@
+{
+	"name": "locate-spoond-error-codes",
+	"kind": "locate",
+	"repo": "scout",
+	"ref": "5709905f6eb2836a46705840a0805ec6ef871b14",
+	"given": {
+		"ref": "7061dd1c130c5e494f31a9496ac3cdd521a421cc",
+		"paths": [
+			"test/spoond-rest.test.ts",
+			"test/fake-spoond.ts"
+		]
+	},
+	"request": "The test \"takes spoond's error code at its word, with no command to ask the lease why\" in test/spoond-rest.test.ts fails: reading a file that doesn't exist from a current spoond, which answers with a stable error code (ENOENT), still makes Scout run a shell command in the sandbox to find out why before it reports not_found. Where does that need fixing?",
+	"check": {
+		"locate": {
+			"file": "src/drivers/spoond-rest.ts",
+			"functions": [
+				"readBinaryFile",
+				"readRange",
+				"writeFile",
+				"exec"
+			]
+		}
+	}
+}

@@ -10,6 +10,7 @@
 				"test/spoond.test.ts"
 			]
 		},
-		"command": "[ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null 2>&1; node --test test/spoond.test.ts"
+		"command": "[ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null 2>&1; node --test test/spoond.test.ts",
+		"suite": "[ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null 2>&1; node --test 'test/**/*.test.ts'"
 	}
 }

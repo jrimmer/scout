@@ -5,13 +5,14 @@ import type { EvalTask, RunResult } from "./evals.ts";
 
 /**
  * A small, slow benchmark of models on Scout's own work, modelled on the public ones: SWE-bench (real fixes replayed,
- * judged by the fix's own tests, unseen while working), τ-bench (pass^k: the same task, again and again), BFCL
- * (well-formed tool calls). Each night every model runs the same tasks once (bench-cli.ts); only a summary of each
- * run is kept, for the last `KEEP_RUNS` nights, so the scores follow models and their providers as they change.
+ * judged by the fix's own tests, unseen while working, and by whether the rest of the tests still pass), SWE-rebench
+ * (tasks that change, so none gets learned), BFCL (well-formed tool calls). Each night every model runs the same
+ * tasks, drawn from the pool (bench-cli.ts); only a summary of each run is kept, for the last `KEEP_RUNS` nights, so
+ * the scores follow models and their providers as they change.
  *
- * Two charts come of it: what a model can do (capability), and what it's like to work with through our gateway
- * (operations: first tokens, speed, retries). Scores are 0 to 100 on fixed scales, not relative to the other models,
- * so a score means the same thing from week to week and a model added later compares fairly.
+ * Two charts come of it. What a model can do (capability) scores 0 to 100 on fixed scales, so a score means the same
+ * from week to week. What it's like to work with through our gateway (operations: first tokens, speed, retries) is
+ * raw measurements, charted relative to the other models: the best of them is the outer ring.
  */
 export const KEEP_RUNS = 10;
 
@@ -37,9 +38,15 @@ export type BenchRow = {
 	firstTokenP90: number;
 	/** Why the run says nothing about the model (the provider was too slow, or its calls kept failing), if so. */
 	unscored?: string;
+	/** Whether a change broke the repository's other tests, when it changed something and the task checks. */
+	regressed?: boolean;
 };
 
-export type Axis = { name: string; score: number; value: string; about: string };
+/**
+ * One spoke of a chart. Operations axes carry their measurement (`raw`, and which way is better): their `score` is
+ * set relative to the other models' (`relate`), not on a fixed scale.
+ */
+export type Axis = { name: string; score: number; value: string; about: string; raw?: number; better?: "lower" | "higher" };
 
 export type ModelScores = { model: string; runs: number; tasks: number; capability: Axis[]; operations: Axis[] };
 
@@ -86,7 +93,13 @@ export class BenchStore {
 	/** Each model's scores, best first by capability. */
 	scores(): ModelScores[] {
 		const models = [...new Set(this.rows().map((r) => r.model))];
-		return models.map((m) => score(m, this.rows(m))).sort((a, b) => total(b.capability) - total(a.capability));
+		return relate(models.map((m) => score(m, this.rows(m)))).sort((a, b) => total(b.capability) - total(a.capability));
+	}
+
+	/** When each task last ran, for any model: tonight's tasks are the ones run longest ago (bench-cli.ts). */
+	lastRuns(): Map<string, string> {
+		const rows = this.#db.prepare("SELECT task, MAX(run) AS run FROM bench GROUP BY task").all() as { task: string; run: string }[];
+		return new Map(rows.map((r) => [r.task, r.run]));
 	}
 
 	close(): void {
@@ -95,6 +108,23 @@ export class BenchStore {
 }
 
 const total = (axes: readonly Axis[]) => axes.reduce((sum, a) => sum + a.score, 0);
+
+/**
+ * Operations scores relative to each other: on each axis the best model's measurement is 100, and the rest are their
+ * share of it (for times, the best time over theirs). A model with nothing measured on an axis scores 0 there.
+ */
+export function relate(models: ModelScores[]): ModelScores[] {
+	const axes = models[0]?.operations.length ?? 0;
+	for (let i = 0; i < axes; i++) {
+		const measured = models.map((m) => m.operations[i]!).filter((a) => (a.raw ?? 0) > 0);
+		const best = measured.length === 0 ? 0 : measured[0]!.better === "lower" ? Math.min(...measured.map((a) => a.raw!)) : Math.max(...measured.map((a) => a.raw!));
+		for (const m of models) {
+			const a = m.operations[i]!;
+			a.score = !((a.raw ?? 0) > 0) || best === 0 ? 0 : Math.round(100 * (a.better === "lower" ? best / a.raw! : a.raw! / best));
+		}
+	}
+	return models;
+}
 
 /** A run's result as kept for the benchmark. */
 export function benchRow(model: string, run: string, task: EvalTask, result: RunResult): BenchRow {
@@ -118,6 +148,7 @@ export function benchRow(model: string, run: string, task: EvalTask, result: Run
 		firstTokenP50: quantile(firsts, 0.5),
 		firstTokenP90: quantile(firsts, 0.9),
 		...(result.unscored === undefined ? {} : { unscored: result.unscored }),
+		...(result.regressed === undefined ? {} : { regressed: result.regressed }),
 	};
 }
 
@@ -155,9 +186,9 @@ export function score(model: string, all: readonly BenchRow[]): ModelScores {
 	const change = rows.filter((r) => r.kind === "change");
 	const locate = rows.filter((r) => r.kind === "locate");
 	const passed = rows.filter((r) => r.pass);
-	const byTask = new Map<string, BenchRow[]>();
-	for (const r of rows) byTask.set(r.task, [...(byTask.get(r.task) ?? []), r]);
-	const always = [...byTask.values()].filter((rs) => rs.every((r) => r.pass)).length;
+	const tasks = new Set(rows.map((r) => r.task)).size;
+	const checked = rows.filter((r) => r.regressed !== undefined);
+	const kept = checked.filter((r) => r.regressed === false).length;
 	const toolCalls = rows.reduce((n, r) => n + r.toolCalls, 0);
 	const badCalls = rows.reduce((n, r) => n + r.badToolCalls, 0);
 	const cost = rows.reduce((n, r) => n + r.cost, 0);
@@ -175,21 +206,21 @@ export function score(model: string, all: readonly BenchRow[]): ModelScores {
 	return {
 		model,
 		runs,
-		tasks: byTask.size,
+		tasks,
 		capability: [
 			{ name: "Coding", score: pct(change.filter((r) => r.pass).length, change.length), value: `${change.filter((r) => r.pass).length}/${change.length}`, about: "Real fixes from Scout's history, judged by the fix's own tests, which the model doesn't see" },
 			{ name: "Reasoning (finding bugs)", score: pct(locate.filter((r) => r.pass).length, locate.length), value: `${locate.filter((r) => r.pass).length}/${locate.length}`, about: "Given a failing test, name the file and function the real fix changed" },
 			{ name: "Tool use", score: toolCalls === 0 ? 0 : 100 - pct(badCalls, toolCalls), value: `${badCalls} bad of ${toolCalls}`, about: "Tool calls with arguments that fit the tool, to tools that exist" },
-			{ name: "Consistency", score: pct(always, byTask.size), value: `${always}/${byTask.size} every time`, about: `Tasks passed in every one of the ${runs} run${runs === 1 ? "" : "s"} (pass^k)` },
+			{ name: "No regressions", score: pct(kept, checked.length), value: checked.length === 0 ? "no change to check yet" : `${kept}/${checked.length} changes`, about: "Changes that left the repository's other tests passing, as SWE-bench checks" },
 			{ name: "Cost efficiency", score: Number.isFinite(perSolved) ? logScale(perSolved, 0.01, 2) : 0, value: Number.isFinite(perSolved) ? `$${perSolved.toFixed(3)} a solved task` : "nothing solved", about: "List-price cost per solved task: $0.01 or less is 100, $2 or more is 0" },
 		],
 		operations: [
-			{ name: "First token", score: logScale(p50, 500, 60_000), value: secs(p50), about: "Median time to a model call's first token: 0.5s is 100, 60s is 0" },
-			{ name: "Slow first tokens", score: logScale(p90, 2_000, 180_000), value: secs(p90), about: "The 90th percentile of the same: 2s is 100, 3 minutes is 0" },
-			{ name: "Output speed", score: logScale(speed, 200, 5), value: `${Math.round(speed)} tokens/s`, about: "Tokens a second once answering: 200 is 100, 5 is 0" },
-			{ name: "Task time", score: logScale(taskTime, 60_000, 30 * 60_000), value: secs(taskTime), about: "Median time for a whole task: a minute is 100, 30 minutes is 0" },
-			{ name: "Call success", score: pct(calls, calls + retries), value: `${retries} retried of ${calls + retries}`, about: "Model calls that worked the first time" },
-			{ name: "Tasks not lost", score: 100 - pct(lost, all.length), value: `${lost} lost of ${all.length}`, about: "Tasks the provider didn't cut short: 90 minutes in all, or calls that kept failing. Lost ones aren't scored as the model's" },
+			{ name: "First token", score: 0, raw: p50, better: "lower", value: secs(p50), about: "Median time to a model call's first token" },
+			{ name: "Slow first tokens", score: 0, raw: p90, better: "lower", value: secs(p90), about: "The 90th percentile of the same" },
+			{ name: "Output speed", score: 0, raw: speed, better: "higher", value: `${Math.round(speed)} tokens/s`, about: "Tokens a second once answering" },
+			{ name: "Task time", score: 0, raw: taskTime, better: "lower", value: secs(taskTime), about: "Median time for a whole task" },
+			{ name: "Call success", score: 0, raw: calls + retries === 0 ? 0 : calls / (calls + retries), better: "higher", value: `${retries} retried of ${calls + retries} calls`, about: "Model calls that worked the first time" },
+			{ name: "Tasks not lost", score: 0, raw: all.length === 0 ? 0 : (all.length - lost) / all.length, better: "higher", value: `${lost} lost of ${all.length} tasks`, about: "Tasks the provider didn't cut short: 90 minutes in all, or calls that kept failing. Lost ones aren't scored as the model's" },
 		],
 	};
 }

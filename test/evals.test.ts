@@ -139,6 +139,7 @@ describe("evals", () => {
 			return git("-C", seed, "rev-parse", "HEAD");
 		};
 		writeFileSync(join(seed, "value.txt"), "1\n");
+		writeFileSync(join(seed, "keep.txt"), "kept\n");
 		const parent = commit("one");
 		mkdirSync(join(seed, "t"));
 		writeFileSync(join(seed, "value.txt"), "2\n");
@@ -155,7 +156,7 @@ describe("evals", () => {
 			SCOUT_PROFILE_DIR: join(root, "profile"),
 			SCOUT_SANDBOX_DRIVER: "local",
 		});
-		const change = parseTask({ name: "two", repo: "app", ref: parent, request: "value should be 2", check: { hidden: { ref: fix, paths: ["t/check.sh"] }, command: "sh t/check.sh" } }, "two.json");
+		const change = parseTask({ name: "two", repo: "app", ref: parent, request: "value should be 2", check: { hidden: { ref: fix, paths: ["t/check.sh"] }, command: "sh t/check.sh", suite: 'test "$(cat keep.txt)" = kept' } }, "two.json");
 		const locate = parseTask({ name: "where", kind: "locate", repo: "app", ref: parent, request: "t/check.sh fails. Where?", given: { ref: fix, paths: ["t/check.sh"] }, check: { locate: { file: "value.txt", functions: ["two"] } } }, "where.json");
 		const { repos, nameOf, fileAt } = await evalRepos(base, [change, locate], join(root, "eval-repos"));
 		assert.equal(nameOf(locate), `app@${parent.slice(0, 12)}+${fix.slice(0, 12)}`);
@@ -179,11 +180,19 @@ describe("evals", () => {
 			assert.equal(fixed.usage?.badToolCalls, 1, "a bash call without a command is malformed");
 			assert.equal(fixed.usage?.modelCalls, 3);
 			assert.equal(fixed.usage?.firstTokens.length, 3);
+			assert.equal(fixed.regressed, false, "what worked still works");
+
+			faux.setResponses([fauxAssistantMessage([fauxToolCall("bash", { command: "echo 2 > value.txt && rm keep.txt" })], { stopReason: "toolUse" }), fauxAssistantMessage("Set it to 2.")]);
+			const broke = await runTask(scout, change, nameOf(change), "candidate", context, measured, { fileAt });
+			assert.equal(broke.pass, true, "the new tests pass: that's coding, scored apart");
+			assert.equal(broke.regressed, true);
+			assert.match(broke.why, /broke the repository's tests/);
 
 			faux.setResponses([fauxAssistantMessage("Nothing to change.")]);
 			const unfixed = await runTask(scout, change, nameOf(change), "candidate", context, measured, { fileAt });
 			assert.equal(unfixed.pass, false);
 			assert.match(unfixed.why, /`sh t\/check\.sh` exited 1/);
+			assert.equal(unfixed.regressed, undefined, "no change, nothing to check");
 
 			let asked = "";
 			faux.setResponses([

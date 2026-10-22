@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,18 +6,18 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { BenchStore, benchRow } from "./bench.ts";
 import { loadConfig, useScoutsKey } from "./config.ts";
-import { evalConfig, evalRepos, fakeCodeHost, loadTasks, measures, runTask } from "./evals.ts";
+import { type EvalTask, evalConfig, evalRepos, fakeCodeHost, loadTasks, measures, runTask } from "./evals.ts";
 import { localDay } from "./reflect.ts";
 import { openScout } from "./scout.ts";
 import { resolveSecrets } from "./secrets.ts";
 
 /**
- * One night of the benchmark (bench.ts): every model in SCOUT_BENCH_MODELS runs each task in the bench directory once,
- * the way an eval runs (evals.ts: its own sandbox, a local copy of the repository, a stand-in code host), and a
+ * One night of the benchmark (bench.ts): every model in SCOUT_BENCH_MODELS runs tonight's tasks from the bench
+ * directory once (`tonight`: the same for every model), the way an eval runs (evals.ts: its own sandbox, a local copy of the repository, a stand-in code host), and a
  * summary of each run goes into the data directory's bench.sqlite. Scout starts it nightly; by hand:
  *
- *     npm run bench                  # every model, every task
- *     npm run bench -- --only ci     # tasks whose name has "ci" in it
+ *     npm run bench                  # every model, tonight's tasks
+ *     npm run bench -- --only ci     # every task whose name has "ci" in it
  */
 
 /**
@@ -28,6 +28,21 @@ import { resolveSecrets } from "./secrets.ts";
  */
 const TASK_LIMIT_MS = 30 * 60_000;
 const TASK_WALL_MS = 90 * 60_000;
+
+/** Tasks a night, by kind: enough to tell models apart, few enough that the slowest finishes by morning. */
+const PER_NIGHT = { change: 3, locate: 4 } as const;
+
+/**
+ * Tonight's tasks: of each kind, the ones run longest ago (never run first), so the pool comes round in turn and no
+ * task is learned by being there every night, as SWE-rebench keeps its tasks fresh. Ties go by a shuffle seeded with
+ * the night.
+ */
+export function tonight(tasks: readonly EvalTask[], night: string, lastRuns: ReadonlyMap<string, string>, perNight: { change: number; locate: number } = PER_NIGHT): EvalTask[] {
+	const shuffle = (name: string) => createHash("sha256").update(`${night}:${name}`).digest("hex");
+	const order = (a: EvalTask, b: EvalTask) => (lastRuns.get(a.name) ?? "").localeCompare(lastRuns.get(b.name) ?? "") || shuffle(a.name).localeCompare(shuffle(b.name));
+	const of = (kind: "change" | "locate") => tasks.filter((t) => (t.kind ?? "change") === kind).sort(order).slice(0, perNight[kind]);
+	return [...of("change"), ...of("locate")];
+}
 
 if (import.meta.main) {
 	const only = process.argv.includes("--only") ? process.argv[process.argv.indexOf("--only") + 1] : undefined;
@@ -41,13 +56,16 @@ if (import.meta.main) {
 		process.exit(2);
 	}
 	useScoutsKey(config.git.sshKey);
-	const tasks = loadTasks(config.bench.tasksDir).filter((t) => only === undefined || t.name.includes(only));
-	if (tasks.length === 0) {
+	const pool = loadTasks(config.bench.tasksDir).filter((t) => only === undefined || t.name.includes(only));
+	if (pool.length === 0) {
 		console.error(`no benchmark tasks in ${config.bench.tasksDir}${only === undefined ? "" : ` matching "${only}"`}`);
 		process.exit(2);
 	}
 	const night = localDay(new Date());
 	const store = new BenchStore(join(config.dataDir, "bench.sqlite"));
+	// Tonight's draw is made before anything runs, so every model gets the same tasks.
+	const tasks = only === undefined ? tonight(pool, night, store.lastRuns()) : pool;
+	console.log(`bench: tonight's tasks: ${tasks.map((t) => t.name).join(", ")}`);
 	const work = mkdtempSync(join(tmpdir(), "scout-bench-"));
 	const host = await fakeCodeHost();
 	let current: Awaited<ReturnType<typeof openScout>> | undefined;

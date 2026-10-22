@@ -10,6 +10,7 @@
 				"test/ci.test.ts"
 			]
 		},
-		"command": "[ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null 2>&1; node --test test/ci.test.ts"
+		"command": "[ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null 2>&1; node --test test/ci.test.ts",
+		"suite": "[ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null 2>&1; node --test $(ls test/*.test.ts | grep -vx test/dash.test.ts)"
 	}
 }

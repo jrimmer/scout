@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { request } from "node:http";
 import { describe, it } from "node:test";
-import { type BenchRow, BenchStore, benchRow, logScale, quantile, score } from "../src/bench.ts";
+import { type BenchRow, BenchStore, benchRow, logScale, quantile, relate, score } from "../src/bench.ts";
+import { tonight } from "../src/bench-cli.ts";
 import { loadConfig } from "../src/config.ts";
 import type { Collector } from "../src/dash/collect.ts";
 import { radar } from "../src/dash/bench.ts";
 import { startDashboard } from "../src/dash/server.ts";
-import { loadTasks } from "../src/evals.ts";
+import { type EvalTask, loadTasks } from "../src/evals.ts";
 import { busy } from "./fixtures/snapshot.ts";
 
 const row = (over: Partial<BenchRow> = {}): BenchRow => ({
@@ -55,24 +56,35 @@ describe("benchmark", () => {
 	it("scores what a model can do and what it's like to work with, over its runs", () => {
 		const rows = [
 			row({ task: "fix", run: "2026-10-21" }),
-			row({ task: "fix", run: "2026-10-22", pass: false, badToolCalls: 2, retries: 2 }),
+			row({ task: "fix", run: "2026-10-22", pass: false, badToolCalls: 2, retries: 2, regressed: true }),
+			row({ task: "fix2", run: "2026-10-22", regressed: false }),
 			row({ task: "where", kind: "locate", run: "2026-10-21" }),
 			row({ task: "where", kind: "locate", run: "2026-10-22" }),
 		];
 		const s = score("gateway/a", rows);
 		assert.equal(s.runs, 2);
 		const cap = Object.fromEntries(s.capability.map((a) => [a.name, a]));
-		assert.equal(cap.Coding!.score, 50);
+		assert.equal(cap.Coding!.score, 67);
 		assert.equal(cap["Reasoning (finding bugs)"]!.score, 100);
-		assert.equal(cap["Tool use"]!.score, 95, "2 bad calls in 40");
-		assert.equal(cap.Consistency!.score, 50, "one of two tasks passed every time");
-		assert.equal(cap["Cost efficiency"]!.value, "$0.067 a solved task");
+		assert.equal(cap["Tool use"]!.score, 96, "2 bad calls in 50");
+		assert.deepEqual([cap["No regressions"]!.score, cap["No regressions"]!.value], [50, "1/2 changes"], "only changes that were checked count");
+		assert.equal(cap["Cost efficiency"]!.value, "$0.063 a solved task");
 		const ops = Object.fromEntries(s.operations.map((a) => [a.name, a]));
 		assert.equal(ops["First token"]!.value, "1.0s");
 		assert.equal(ops["Output speed"]!.value, "100 tokens/s");
-		assert.equal(ops["Call success"]!.score, 94, "2 retries among 34 calls");
+		assert.equal(ops["Call success"]!.value, "2 retried of 42 calls", "raw counts");
 		assert.equal(ops["Task time"]!.value, "2.0m");
-		assert.equal(ops["Tasks not lost"]!.score, 100);
+		assert.equal(ops["Tasks not lost"]!.value, "0 lost of 5 tasks");
+		assert.equal(score("gateway/a", [row()]).capability.find((a) => a.name === "No regressions")!.value, "no change to check yet");
+	});
+
+	it("charts working with it relative to the other models, the best on each spoke at the outer ring", () => {
+		const [a, b] = relate([score("gateway/a", [row({ firstTokenP50: 1_000, outputTokens: 4_000 })]), score("gateway/b", [row({ model: "gateway/b", firstTokenP50: 4_000, outputTokens: 1_000, retries: 8 })])]);
+		const ops = (m: typeof a) => Object.fromEntries(m!.operations.map((x) => [x.name, x.score]));
+		assert.deepEqual([ops(a)["First token"], ops(b)["First token"]], [100, 25], "a quarter as fast to start");
+		assert.deepEqual([ops(a)["Output speed"], ops(b)["Output speed"]], [100, 25]);
+		assert.deepEqual([ops(a)["Call success"], ops(b)["Call success"]], [100, 50], "8 retries in 16 calls");
+		assert.equal(relate([score("gateway/a", [row()])])[0]!.operations.every((x) => x.score === 100), true, "alone, a model is its own best");
 	});
 
 	it("leaves tasks the provider cut short out of what the model can do, and counts them against working with it", () => {
@@ -80,9 +92,9 @@ describe("benchmark", () => {
 		const s = score("gateway/a", rows);
 		const cap = Object.fromEntries(s.capability.map((a) => [a.name, a]));
 		assert.equal(cap.Coding!.score, 100, "the cut-short task isn't the model's failure");
-		assert.equal(cap.Consistency!.value, "1/1 every time");
+		assert.equal(cap["Tool use"]!.value, "0 bad of 10", "the cut-short task's calls aren't counted");
 		const ops = Object.fromEntries(s.operations.map((a) => [a.name, a]));
-		assert.deepEqual([ops["Tasks not lost"]!.score, ops["Tasks not lost"]!.value], [50, "1 lost of 2"]);
+		assert.equal(ops["Tasks not lost"]!.value, "1 lost of 2 tasks");
 		assert.equal(ops["Task time"]!.value, "46.0m", "its time still counts here");
 	});
 
@@ -154,6 +166,20 @@ describe("benchmark", () => {
 			await dash.close();
 			await empty.close();
 		}
+	});
+
+	it("draws the same tasks for every model each night, the ones run longest ago, of each kind", () => {
+		const task = (name: string, kind?: "locate"): EvalTask => ({ name, repo: "r", ref: "abc1234", request: "x", ...(kind === undefined ? {} : { kind }), check: { command: "true" } });
+		const pool = [task("c1"), task("c2"), task("c3"), task("l1", "locate"), task("l2", "locate"), task("l3", "locate")];
+		const last = new Map([["c1", "2026-10-21"], ["c2", "2026-10-19"], ["l1", "2026-10-21"]]);
+		const names = tonight(pool, "2026-10-22", last, { change: 2, locate: 2 }).map((t) => t.name);
+		assert.deepEqual(names.slice(0, 2), ["c3", "c2"], "never run first, then the oldest");
+		assert.deepEqual(names.slice(2).sort(), ["l2", "l3"]);
+		assert.deepEqual(tonight(pool, "2026-10-22", last, { change: 2, locate: 2 }), tonight(pool, "2026-10-22", last, { change: 2, locate: 2 }), "the same draw for the same night");
+		const store = new BenchStore(":memory:");
+		store.record([row({ task: "c1", run: "2026-10-20" }), row({ task: "c1", run: "2026-10-21", model: "gateway/b" })]);
+		assert.deepEqual([...store.lastRuns()], [["c1", "2026-10-21"]]);
+		store.close();
 	});
 
 	it("ships tasks that load: replayed fixes judged by hidden tests, and bugs to find", () => {

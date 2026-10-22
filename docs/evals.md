@@ -77,14 +77,17 @@ Run it weekly, on a profile proposal you're unsure about, or before switching mo
 Evals answer "is this change better?". The benchmark answers "how do these models do on our work, and what are they
 like to use through our gateway?", night after night. It's **off** unless `SCOUT_BENCH_MODELS` names the models
 (`provider/model`, comma-separated); then each night after `SCOUT_BENCH_HOUR` (1 by default), Scout starts
-`npm run bench` in a process of its own, and every model runs every task in `bench/` once, as an eval runs.
+`npm run bench` in a process of its own, and every model runs the same few tasks from `bench/` once, as an eval
+runs: 3 changes and 4 bugs to find, the ones run longest ago, so the pool comes round in turn and no task gets
+learned by being there every night (SWE-rebench keeps its tasks fresh for the same reason).
 The **Benchmark** page shows the result, linked from the foot of the dashboard. `npm run bench` runs a night by hand (`--only <text>` for
-some tasks).
+every task whose name has the text).
 
 **The tasks** are real fixes from Scout's history, chosen as public benchmarks choose theirs:
 - **Replayed fixes**, as in SWE-bench: Scout starts from the commit before a fix, with a request a person would
   make. The fix's own tests are put in place only after the work (`check.hidden`), so the model can't fit its
-  change to tests it saw. It passes when they do: the new tests and the old ones in the same file.
+  change to tests it saw. It passes when they do: the new tests and the old ones in the same file. If it changed
+  anything, the repository's other tests run too (`check.suite`), as SWE-bench checks a fix broke nothing.
 - **Finding bugs** (`"kind": "locate"`): the failing test is there from the start (`given`), and the answer must
   end `LOCATION: <file> <function>`, naming the file and a function the real fix changed. Checked exactly, with no
   model judging.
@@ -94,28 +97,32 @@ some tasks).
   that, whose calls kept failing, or that never reached the model, isn't scored as the model's. It counts under
   "Tasks not lost" instead.
 - Candidates were commits with a small change to `src/` and tests in `test/`, kept only when their tests fail
-  before the fix and pass after it. Add more as JSON files in `bench/` (the fields are the eval task's).
+  before the fix and pass after it, and the rest of the tests pass before it. Add more as JSON files in `bench/`
+  (the fields are the eval task's); a bigger pool comes round less often.
 
-**The charts** score each model 0 to 100 on fixed scales, so a score means the same thing from week to week and a
-model added later compares fairly. Scores are over each model's last 10 nightly runs; only a summary of each run is
-kept (`bench.sqlite` in the data directory), and the oldest run goes as each new one comes in.
+**The charts.** What a model can do is scored 0 to 100 on fixed scales, so a score means the same thing from week to
+week and a model added later compares fairly. What it's like to work with is shown as the measurements themselves,
+charted relative to each other: on each spoke the best of the models is the outer ring, and the rest are their
+share of it. Providers change (capacity added, a bad night), so these are only ever a comparison. Both are over each
+model's last 10 nightly runs; only a summary of each run is kept (`bench.sqlite` in the data directory), and the
+oldest run goes as each new one comes in.
 
 | What it can do | Measured as |
 |---|---|
 | Coding | Replayed fixes passed |
 | Reasoning (finding bugs) | Bugs located. Not the maths and science quizzes public leaderboards call reasoning |
 | Tool use | Tool calls well formed, as in BFCL: arguments that fit, tools that exist |
-| Consistency | Tasks passed in every run, as τ-bench's pass^k |
+| No regressions | Changes that left the repository's other tests passing, as SWE-bench's pass-to-pass tests |
 | Cost efficiency | List-price cost per solved task, from `SCOUT_PRICES_FILE`: $0.01 is 100, $2 is 0 (log scale) |
 
 | Working with it | Measured as |
 |---|---|
-| First token | Median time to a model call's first token: 0.5 s is 100, 60 s is 0 |
-| Slow first tokens | Its 90th percentile: 2 s is 100, 3 minutes is 0 |
-| Output speed | Tokens a second once answering: 200 is 100, 5 is 0 |
-| Task time | Median time for a whole task: 1 minute is 100, 30 minutes is 0 |
-| Call success | Model calls that worked without a retry |
-| Tasks not lost | Tasks the provider didn't cut short: the 90-minute limit, or calls that kept failing |
+| First token | Median time to a model call's first token |
+| Slow first tokens | Its 90th percentile |
+| Output speed | Tokens a second once answering |
+| Task time | Median time for a whole task |
+| Call success | Model calls that worked without a retry, as counts |
+| Tasks not lost | Tasks the provider didn't cut short (the 90-minute limit, or calls that kept failing), as counts |
 
 It's a toy: a handful of tasks from one codebase. Read it as a comparison of models on this work, not a ranking.
 Costs come from the prices file, so a model without a price there shows as free; add list prices (OpenRouter's, or

@@ -35,7 +35,8 @@ const run = promisify(execFile);
  * A task can also replay a real commit, as SWE-bench does: start from its parent, and judge the work by the commit's
  * own tests, put in place only after the work (`check.hidden`). Or ask where a bug is, without fixing it
  * (`kind: "locate"`): the failing test is there from the start (`given`), and the answer must name the file and
- * function the commit changed.
+ * function the commit changed. A change can also name the repository's own tests (`check.suite`), to see whether it
+ * broke anything that worked: SWE-bench's other half.
  */
 export type Files = { ref: string; paths: string[] };
 
@@ -56,6 +57,11 @@ export type EvalTask = {
 		hidden?: Files;
 		/** For "locate": the file, and the functions any one of which is right. */
 		locate?: { file: string; functions: string[] };
+		/**
+		 * The repository's tests, run after a change that changed something, the hidden tests out of the way (they're
+		 * `command`'s): whether the change broke what worked. Not part of passing; the benchmark scores it apart.
+		 */
+		suite?: string;
 	};
 };
 
@@ -120,9 +126,10 @@ export type Usage = {
 
 /**
  * `unscored`: why a run says nothing about the model, so the benchmark leaves it out of what the model can do: the
- * provider kept it waiting past the wall-clock limit, or its calls kept failing.
+ * provider kept it waiting past the wall-clock limit, or its calls kept failing. `regressed`: whether a change broke the
+ * repository's tests (`check.suite`), when there was a change to run them on.
  */
-export type RunResult = { task: string; side: Side; pass: boolean; why: string; cost: number; ms: number; steps: number; timing?: Timing; usage?: Usage; unscored?: string };
+export type RunResult = { task: string; side: Side; pass: boolean; why: string; cost: number; ms: number; steps: number; timing?: Timing; usage?: Usage; unscored?: string; regressed?: boolean };
 
 /** The tasks in `dir` (`*.json`), checked; a file that isn't a task is an error that names it. */
 export function loadTasks(dir: string): EvalTask[] {
@@ -189,6 +196,7 @@ export function parseTask(raw: unknown, file: string): EvalTask {
 			...(typeof check.rubric === "string" && check.rubric.trim() !== "" ? { rubric: check.rubric } : {}),
 			...(hidden === undefined ? {} : { hidden }),
 			...(where === undefined ? {} : { locate: { file: where.file as string, functions: where.functions as string[] } }),
+			...(typeof check.suite === "string" && check.suite.trim() !== "" ? { suite: check.suite } : {}),
 		},
 	};
 	if (parsed.check.command === undefined && parsed.check.expect === undefined && parsed.check.rubric === undefined && parsed.check.locate === undefined) {
@@ -412,6 +420,7 @@ export async function runTask(
 ): Promise<RunResult> {
 	const { fileAt, limitMs, wallMs } = options;
 	let unscored: string | undefined;
+	let regressed: boolean | undefined;
 	let failedCall: string | undefined;
 	const started = Date.now();
 	const conversation = await scout.harness.createConversation(
@@ -515,6 +524,17 @@ export async function runTask(
 			const result = await env.exec(command, { onOutput: (t) => (output += t), timeout }, context);
 			return { code: result.ok ? result.value.exitCode : 1, output: result.ok ? output : `${output}${String(result.error)}` };
 		};
+		if (task.check.suite !== undefined) {
+			const { output: touched } = await sh(`git diff --name-only ${task.ref}; git ls-files --others --exclude-standard`, 60);
+			if (touched.trim() !== "") {
+				// The hidden tests are judged by `command`; here only what was there already counts.
+				const tests = (task.check.hidden?.paths ?? []).filter((p) => p.endsWith(".test.ts"));
+				if (tests.length > 0) await sh(`rm -f ${tests.map((p) => `'${p}'`).join(" ")}`, 30);
+				const { code, output } = await sh(task.check.suite, 900);
+				regressed = code !== 0;
+				if (regressed) why.push(`the change broke the repository's tests: ${output.trim().split("\n").slice(-3).join(" ").slice(0, 300)}`);
+			}
+		}
 		if (task.check.hidden !== undefined) {
 			if (fileAt === undefined) throw new Error("a task with hidden files needs fileAt");
 			const root = (await sh("pwd", 30)).output.trim();
@@ -584,7 +604,7 @@ export async function runTask(
 	usage.outputTokens = spent.output;
 	// A run that never reached a model (one that isn't set up, say) says nothing about the model.
 	if (!pass && unscored === undefined && spent.calls === 0 && steps === 0) unscored = "no model call was made";
-	return { task: task.name, side, pass, why: why.join("; ") || "passed", cost: spent.cost, ms: ended - started - checked, steps, timing, usage, ...(unscored === undefined ? {} : { unscored }) };
+	return { task: task.name, side, pass, why: why.join("; ") || "passed", cost: spent.cost, ms: ended - started - checked, steps, timing, usage, ...(unscored === undefined ? {} : { unscored }), ...(regressed === undefined ? {} : { regressed }) };
 }
 
 /** Did the work meet the task's rubric? A model call with no tools: PASS or FAIL, and one line why. */

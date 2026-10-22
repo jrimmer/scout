@@ -1,0 +1,16 @@
+{
+	"name": "spoond-idle-suspend",
+	"repo": "scout",
+	"ref": "fdba37af2f980096e3cab8283315137d5a3cc9c2",
+	"request": "Quiet sandboxes stay running for an hour before they go to sleep, which holds memory other threads could use; a spoond sandbox wakes on its next use in under a second, so sleeping sooner costs little. Make it 15 minutes. The lease Scout asks spoond for should, by default, have `idle_suspend: 900` (the `idleSuspend` option of SpoondDriver still overrides it), and Scout's own sweep of threads that went quiet should put their sandboxes to sleep after 15 minutes of inactivity rather than an hour.",
+	"check": {
+		"hidden": {
+			"ref": "0ca81de10aba33cfeb55f5ffc5d5f2aa47756f33",
+			"paths": [
+				"test/spoond.test.ts"
+			]
+		},
+		"command": "[ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null 2>&1; node --test test/spoond.test.ts",
+		"suite": "[ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null 2>&1; node --test 'test/**/*.test.ts'"
+	}
+}

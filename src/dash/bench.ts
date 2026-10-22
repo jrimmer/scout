@@ -11,14 +11,14 @@ export function benchPage(scores: readonly ModelScores[], meta: { lastRun?: stri
 		scores.length === 0
 			? `<p class="note">No runs yet. They start each night after ${String(meta.hour).padStart(2, "0")}:00, and the scores show here once a model has finished its tasks.</p>`
 			: [
-					`<p class="note">${meta.tasks} tasks from Scout's own history, run by every model once a night. Scores are over each model's last ${meta.keep} runs (the latest ${esc(meta.lastRun ?? "")}), on fixed scales, so they mean the same from week to week. A toy: few tasks, one codebase. Compare models with each other here, not with public leaderboards: "Reasoning" here is finding bugs. Tasks the provider cut short aren't scored as the model's, but a slow night still shows on the right: look at it before comparing.</p>`,
+					`<p class="note">A pool of ${meta.tasks} tasks from Scout's own history. Each night every model runs the same few of them, the ones run longest ago, so the pool comes round in turn. Results are over each model's last ${meta.keep} runs (the latest ${esc(meta.lastRun ?? "")}). What it can do is scored on fixed scales, so it means the same from week to week. Working with it is measurements, charted against each other: on each spoke the best model is the outer ring. A toy: few tasks, one codebase. Compare models with each other here, not with public leaderboards: "Reasoning" here is finding bugs. Tasks the provider cut short aren't scored as the model's, but a slow night still shows on the right: look at it before comparing.</p>`,
 					`<ol class="legend">${scores.map((s, i) => `<li class="s${i % SERIES}"><i></i>${esc(s.model)} <small>${s.runs} run${s.runs === 1 ? "" : "s"}</small></li>`).join("")}</ol>`,
 					`<section class="charts">`,
 					figure("What it can do", scores, (s) => s.capability),
 					figure("Working with it", scores, (s) => s.operations),
 					`</section>`,
 					table("What it can do", scores, (s) => s.capability),
-					table("Working with it", scores, (s) => s.operations),
+					table("Working with it", scores, (s) => s.operations, false),
 				].join("\n");
 	return `<!doctype html>
 <html lang="en">
@@ -70,17 +70,18 @@ export function radar(series: readonly Axis[][], names: readonly string[]): stri
 		.join("");
 	const shapes = series
 		.map((s, k) => {
-			const dots = s.map((a, i) => `<circle cx="${at(i, (R * a.score) / 100)[0].toFixed(1)}" cy="${at(i, (R * a.score) / 100)[1].toFixed(1)}" r="2.5"><title>${esc(`${names[k]}: ${a.name} ${a.score} (${a.value})`)}</title></circle>`).join("");
+			const dots = s.map((a, i) => `<circle cx="${at(i, (R * a.score) / 100)[0].toFixed(1)}" cy="${at(i, (R * a.score) / 100)[1].toFixed(1)}" r="2.5"><title>${esc(a.raw === undefined ? `${names[k]}: ${a.name} ${a.score} (${a.value})` : `${names[k]}: ${a.name} ${a.value}`)}</title></circle>`).join("");
 			return `<g class="s${k % SERIES}"><polygon points="${pts((i) => (R * (s[i]?.score ?? 0)) / 100)}"/>${dots}</g>`;
 		})
 		.join("");
-	return `<svg viewBox="-190 -135 380 265" role="img" aria-label="${esc(series.map((s, k) => `${names[k]}: ${s.map((a) => `${a.name} ${a.score}`).join(", ")}`).join("; "))}">${rings}${spokes}${shapes}${labels}</svg>`;
+	return `<svg viewBox="-190 -135 380 265" role="img" aria-label="${esc(series.map((s, k) => `${names[k]}: ${s.map((a) => `${a.name} ${a.raw === undefined ? a.score : a.value}`).join(", ")}`).join("; "))}">${rings}${spokes}${shapes}${labels}</svg>`;
 }
 
-function table(title: string, scores: readonly ModelScores[], axes: (s: ModelScores) => Axis[]): string {
+/** `points`: show each score with its measurement; working with it shows only the measurements. */
+function table(title: string, scores: readonly ModelScores[], axes: (s: ModelScores) => Axis[], points = true): string {
 	const first = axes(scores[0]!);
 	const head = `<tr><th>${esc(title)}</th>${scores.map((s, i) => `<th class="s${i % SERIES}">${esc(s.model)}</th>`).join("")}</tr>`;
-	const rows = first.map((a, i) => `<tr><td><b>${esc(a.name)}</b><br><small>${esc(a.about)}</small></td>${scores.map((s) => `<td><b>${axes(s)[i]!.score}</b><br><small>${esc(axes(s)[i]!.value)}</small></td>`).join("")}</tr>`);
+	const rows = first.map((a, i) => `<tr><td><b>${esc(a.name)}</b><br><small>${esc(a.about)}</small></td>${scores.map((s) => (points ? `<td><b>${axes(s)[i]!.score}</b><br><small>${esc(axes(s)[i]!.value)}</small></td>` : `<td><b>${esc(axes(s)[i]!.value)}</b></td>`)).join("")}</tr>`);
 	return `<table>${head}${rows.join("")}</table>`;
 }
 

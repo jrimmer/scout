@@ -1,0 +1,22 @@
+{
+	"name": "locate-spoond-list-files",
+	"kind": "locate",
+	"repo": "scout",
+	"ref": "c04f08d1e0c2c79445337486c168ac80acb3ef6c",
+	"given": {
+		"ref": "735aeba9440f768a2f5e188280b461e54ae97817",
+		"paths": [
+			"test/spoond-rest.test.ts",
+			"test/fake-spoond.ts"
+		]
+	},
+	"request": "The test \"lists a tree within Pi's bounds: an exact fit isn't truncated, a limit of 0 lists nothing\" in test/spoond-rest.test.ts fails: asking the spoond environment for a directory listing always answers not_supported, though the spoond in use can list a directory itself. Where does that need changing?",
+	"check": {
+		"locate": {
+			"file": "src/drivers/spoond-rest.ts",
+			"functions": [
+				"listFiles"
+			]
+		}
+	}
+}
