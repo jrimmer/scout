@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { describe, it } from "node:test";
-import { checkCodeHost, checkDashboard, checkDirectory, checkGateway, checkGitRemote, checkRunning, checkSlack, checkSpoond, fetchRunning, formatChecks, type Running } from "../src/doctor.ts";
+import { checkCodeHost, checkDashboard, checkDirectory, checkGateway, checkGitRemote, checkModel, checkProfileDir, checkRunning, checkSlack, checkSpoond, fetchRunning, formatChecks, type Running } from "../src/doctor.ts";
 
 /** A fetch that answers by URL: a status, a JSON body, and headers. */
 function answering(routes: Record<string, { status?: number; body?: unknown; headers?: Record<string, string> } | Error>): typeof fetch {
@@ -49,6 +54,49 @@ describe("doctor", () => {
 		assert.equal((await checkDirectory(async () => Promise.reject(new Error("404")))).status, "fail");
 		assert.equal((await checkGitRemote("Repository web", "git@host:o/web.git", "main", async () => "abc\trefs/heads/main\n")).status, "ok");
 		assert.equal((await checkGitRemote("Repository web", "git@host:o/web.git", "main", async () => "")).detail, "git@host:o/web.git has no main branch");
+	});
+
+	it("says why a repository can't be reached, in the remote's own words, with a hint for the cause", async () => {
+		const failing = (stderr: string) => async () => Promise.reject(Object.assign(new Error(`Command failed: ls-remote\n${stderr}`), { stderr }));
+		const hostKey = await checkGitRemote("Repository web", "ssh://git@host/o/web.git", "main", failing("Host key verification failed.\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n"));
+		assert.equal(hostKey.detail, "can't reach ssh://git@host/o/web.git (Host key verification failed.)");
+		assert.match(hostKey.fix ?? "", /ssh-keyscan/);
+		const denied = await checkGitRemote("Repository web", "ssh://git@host/o/web.git", "main", failing("git@host: Permission denied (publickey).\nfatal: Could not read from remote repository.\n"));
+		assert.match(denied.detail, /Permission denied \(publickey\)/);
+		assert.match(denied.fix ?? "", /public key to Scout's code host account/);
+		const dns = await checkGitRemote("Repository web", "ssh://git@nohost/o/web.git", "main", failing("ssh: Could not resolve hostname nohost: Name or service not known\nfatal: Could not read from remote repository.\n"));
+		assert.match(dns.fix ?? "", /reach it/);
+	});
+
+	it("fails the profile directory start-up would refuse, and passes one it can clone into", () => {
+		const root = mkdtempSync(join(tmpdir(), "scout-doctor-"));
+		const url = "ssh://git@host/o/profile.git";
+		mkdirSync(join(root, "example"));
+		writeFileSync(join(root, "example", "system.md"), "x");
+		const bad = checkProfileDir(join(root, "example"), url);
+		assert.equal(bad.status, "fail");
+		assert.match(bad.detail, /exists but is not a clone of ssh:\/\/git@host\/o\/profile.git/);
+		assert.equal(checkProfileDir(join(root, "new"), url).status, "ok");
+		mkdirSync(join(root, "clone", ".git"), { recursive: true });
+		assert.equal(checkProfileDir(join(root, "clone"), url).detail, `${join(root, "clone")} (a clone)`);
+	});
+
+	it("asks the configured model for a short answer, and says why when it won't give one", async () => {
+		const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }] });
+		const models = createModels();
+		models.setProvider(faux.provider);
+		faux.setResponses([fauxAssistantMessage("ok")]);
+		assert.deepEqual(await checkModel(models, { provider: "faux", modelId: "m" }), { name: "Model", status: "ok", detail: "faux/m answers" });
+		faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: '401 {"error":{"message":"invalid x-api-key"}}' })]);
+		const key = await checkModel(models, { provider: "faux", modelId: "m" });
+		assert.deepEqual([key.status, key.detail], ["fail", "faux/m refused the key (invalid x-api-key)"]);
+		assert.match(key.fix ?? "", /ANTHROPIC_API_KEY/);
+		faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: '404 {"error":{"message":"model: nope"}}' })]);
+		const missing = await checkModel(models, { provider: "faux", modelId: "m" });
+		assert.match(missing.detail, /wasn't found \(model: nope\)/);
+		assert.match(missing.fix ?? "", /SCOUT_MODEL/);
+		const unknown = await checkModel(models, { provider: "faux", modelId: "other" });
+		assert.equal(unknown.detail, "faux/other isn't a model Scout knows");
 	});
 
 	it("refuses a dashboard open to the network without a login", () => {

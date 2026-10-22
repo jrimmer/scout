@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { watchProfile } from "../src/profile.ts";
+import { loadConfig } from "../src/config.ts";
+import { cloneProfile, watchProfile } from "../src/profile.ts";
 
 describe("profile", () => {
 	it("reloads when the profile's files change, not when a pull only touches .git", async () => {
@@ -23,5 +24,17 @@ describe("profile", () => {
 		} finally {
 			stop();
 		}
+	});
+
+	it("clones a profile repository into the data directory unless told where, not over the example profile/", async () => {
+		const env = { SCOUT_MODEL: "faux/m", SCOUT_REPO_URL: "ssh://git@h/o/r.git", SCOUT_REPO_SLUG: "o/r", SCOUT_CODEHOST_TOKEN: "t", SCOUT_CODEHOST_API: "http://forge/api/v1", SCOUT_DATA_DIR: "/srv/scout" };
+		assert.ok(loadConfig(env).profileDir.endsWith("/profile"), "no profile repository: the profile/ directory that ships here");
+		const withRepo = { ...env, SCOUT_PROFILE_REPO_URL: "ssh://git@h/o/p.git", SCOUT_PROFILE_REPO_SLUG: "o/p" };
+		assert.equal(loadConfig(withRepo).profileDir, "/srv/scout/profile");
+		assert.equal(loadConfig({ ...withRepo, SCOUT_PROFILE_DIR: "/srv/mine" }).profileDir, "/srv/mine");
+
+		const dir = mkdtempSync(join(tmpdir(), "scout-profile-"));
+		writeFileSync(join(dir, "system.md"), "not a clone");
+		await assert.rejects(cloneProfile(dir, { gitUrl: "ssh://git@h/o/p.git", base: "main" }), /exists but is not a clone of ssh:\/\/git@h\/o\/p.git/);
 	});
 });

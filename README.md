@@ -51,7 +51,7 @@ learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
   - Schedules: "every Monday at 9, check for dependency updates". Each run is a new thread in the channel, and
     anyone there can list, change, pause or remove the channel's schedules by asking.
   - `npm run job -- "…"` for one-off work.
-- **`npm run doctor`** (or `/scout doctor`) checks every integration and says how to fix what's wrong.
+- **`npm run doctor`** (or `/scout doctor`) checks Slack, the code host, repositories, the model and the rest, and says how to fix what's wrong.
 
 ## Run it
 
@@ -62,9 +62,10 @@ Needs Node 24+, Docker, and git with access to your repositories. Give Scout its
 key, so its work is its own.
 
 ```bash
-npm install
+npm ci
 docker build -t scout-sandbox:latest sandbox    # add your repos' toolchains to sandbox/Dockerfile first
 cp .env.example .env                             # fill it in; create the Slack app from slack-manifest.yaml
+npm run doctor                                   # checks Slack, the code host, repositories and the model, and says how to fix what isn't right
 npm start
 ```
 

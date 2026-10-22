@@ -1,5 +1,6 @@
 import { loadConfig, useScoutsKey } from "./config.ts";
 import { countMcpTools, doctor, fetchRunning, formatChecks } from "./doctor.ts";
+import { modelsFor } from "./gateway.ts";
 import { sourceReader } from "./scout.ts";
 import { resolveSecrets } from "./secrets.ts";
 
@@ -19,6 +20,7 @@ useScoutsKey(config.git.sshKey);
 const mcpFile = config.mcpFile;
 const directory = config.governance.directory;
 const checks = await doctor(config, {
+	models: modelsFor(config.gateway),
 	...(mcpFile === undefined ? {} : { mcp: () => countMcpTools(mcpFile) }),
 	...(directory === undefined ? {} : { directory: sourceReader(directory.source, config.codeHost, fetch) }),
 	running: () => fetchRunning(config.dash, config.governance.metricsToken),
