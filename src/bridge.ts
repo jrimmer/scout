@@ -70,6 +70,8 @@ export type BridgeOptions = {
 	ran?: (ms: number) => void;
 	/** What a run is waiting on right now, in Scout's words (a sandbox, the model), or nothing. */
 	waitingFor?: (conversationId: number) => Promise<string | undefined>;
+	/** Whether a conversation's model calls went to a fallback model (its own is failing), in Scout's words. */
+	fallbackNotice?: (conversationId: number) => Promise<string | undefined>;
 	/** The emoji for a phase (the profile's reactions.md, or the defaults). */
 	reactionEmoji?: (phase: Phase | Ending) => string;
 	/** What a run in this conversation since `since` cost, for its reply's footer (limits.ts). */
@@ -592,6 +594,7 @@ export class Bridge {
 				for (const request of this.#requests.get(thread.conversationId) ?? []) this.#phase(request.channel, request.ts, phase);
 			},
 			behind: () => Date.now() - this.#slowAt < BEHIND_MS,
+			...(this.#options.fallbackNotice === undefined ? {} : { fallback: () => this.#options.fallbackNotice!(thread.conversationId) }),
 			...(this.#options.costNote === undefined ? {} : { cost: (since: number) => this.#options.costNote?.(thread.conversationId, since) }),
 			pacer: this.pacer,
 			onRunEnd: (answer, ts, outcome, durationMs) => {

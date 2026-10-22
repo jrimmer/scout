@@ -13,6 +13,7 @@ A change to any of these that needs people to act is a major version. Everything
 
 ### Added
 - **Pi Durable's traces in the OTLP export** (`SCOUT_OTLP_ENDPOINT`): submissions, task phases and model requests (`pi.durable.*`, `pi.ai.request`), through the same exporter. `pi.ai.request` replaces Scout's own `scout.model_call`; the run's spend moves to `scout.cost_usd` on `scout.run` (`docs/operations.md`).
+- **Fallback models** (`SCOUT_FALLBACK_MODELS`, off unless set; `docs/operations.md`). After `SCOUT_FALLBACK_AFTER` failed calls in a row (default 3), a model's calls go to the first fallback that's answering, and the thread carries on instead of failing. After `SCOUT_FALLBACK_FOR` minutes (default 15), one call tries the model again. The thread says it's on the fallback, the home channel hears when a model goes down and when it's back, spend is the fallback's, and the dashboard, `/status.json` and `/metrics` show which model is answering.
 - **Sandboxes:**
   - While a command runs, Scout checks every minute that the sandbox still answers. After five minutes without an answer it stops waiting and says the sandbox has probably crashed. Until now, a thread could wait silently for up to a day.
   - Scout reads spoond's own report of a command that never started (spoond 3.12.1), as well as checking for itself.

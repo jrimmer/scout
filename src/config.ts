@@ -63,6 +63,12 @@ export type Config = {
 	 * model runs the tasks in `tasksDir` once.
 	 */
 	bench?: { models: { provider: string; modelId: string }[]; hour: number; tasksDir: string };
+	/**
+	 * Fallback models (capacity.ts `ModelBreakers`), off unless SCOUT_FALLBACK_MODELS names some: after `after` failed
+	 * calls in a row, a model's calls go to the first of `models` that's answering, and after `minutes` one call tries
+	 * it again.
+	 */
+	fallback?: { models: { provider: string; modelId: string }[]; after: number; minutes: number };
 	/** Monitoring Scout watches for alerts to investigate (alerts.ts); none set, it watches none. */
 	alerts: { gatusUrl?: string; grafana?: { url: string; token: string }; channel?: string };
 	sandbox: SandboxConfig;
@@ -129,11 +135,20 @@ export type Config = {
 	git: { name: string; email: string; sshKey?: string };
 };
 
-/** `gateway/…` models: SCOUT_GATEWAY_MODELS (comma-separated), SCOUT_MODEL's when it is one, and the benchmark's. */
-function gatewayModels(env: NodeJS.ProcessEnv, model: string | undefined, bench: readonly { provider: string; modelId: string }[]): string[] {
+/** `gateway/…` models: SCOUT_GATEWAY_MODELS (comma-separated), SCOUT_MODEL's when it is one, the benchmark's and the fallbacks. */
+function gatewayModels(env: NodeJS.ProcessEnv, model: string | undefined, more: readonly { provider: string; modelId: string }[]): string[] {
 	const listed = (env.SCOUT_GATEWAY_MODELS ?? "").split(",").map((m) => m.trim()).filter(Boolean);
-	const benched = bench.filter((m) => m.provider === "gateway").map((m) => m.modelId);
-	return [...new Set([...(model === undefined ? [] : [model]), ...listed, ...benched])];
+	const named = more.filter((m) => m.provider === "gateway").map((m) => m.modelId);
+	return [...new Set([...(model === undefined ? [] : [model]), ...listed, ...named])];
+}
+
+/** A comma-separated list of `provider/modelId`s, with a plain message for one that isn't. */
+function modelList(env: NodeJS.ProcessEnv, name: string): { provider: string; modelId: string }[] {
+	return (env[name] ?? "").split(",").map((m) => m.trim()).filter(Boolean).map((m) => {
+		const [p, ...id] = m.split("/");
+		if (p === undefined || p === "" || id.join("/") === "") throw new Error(`${name}: "${m}" should look like provider/modelId, as SCOUT_MODEL does`);
+		return { provider: p, modelId: id.join("/") };
+	});
 }
 
 /** A JSON setting, or a plain message saying what's wrong with it. */
@@ -228,11 +243,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	if (!Number.isInteger(reflectHour) || reflectHour < 0 || reflectHour > 23) throw new Error(`SCOUT_REFLECT_HOUR should be an hour, 0 to 23, not "${env.SCOUT_REFLECT_HOUR}"`);
 	const benchHour = Number(env.SCOUT_BENCH_HOUR ?? 1);
 	if (!Number.isInteger(benchHour) || benchHour < 0 || benchHour > 23) throw new Error(`SCOUT_BENCH_HOUR should be an hour, 0 to 23, not "${env.SCOUT_BENCH_HOUR}"`);
-	const benchModels = (env.SCOUT_BENCH_MODELS ?? "").split(",").map((m) => m.trim()).filter(Boolean).map((m) => {
-		const [p, ...id] = m.split("/");
-		if (p === undefined || id.length === 0) throw new Error(`SCOUT_BENCH_MODELS: "${m}" should look like provider/modelId, as SCOUT_MODEL does`);
-		return { provider: p, modelId: id.join("/") };
-	});
+	const benchModels = modelList(env, "SCOUT_BENCH_MODELS");
+	const fallbackModels = modelList(env, "SCOUT_FALLBACK_MODELS");
+	if (fallbackModels.some((m) => m.provider === provider && m.modelId === modelId)) {
+		throw new Error(`SCOUT_FALLBACK_MODELS names SCOUT_MODEL (${provider}/${modelId}): a fallback has to be another model`);
+	}
+	const fallbackAfter = count(env, "SCOUT_FALLBACK_AFTER", 3, 1);
+	const fallbackFor = count(env, "SCOUT_FALLBACK_FOR", 15, 1);
 	if (env.SCOUT_MCP_FILE && !existsSync(resolve(env.SCOUT_MCP_FILE))) throw new Error(`SCOUT_MCP_FILE: there's no file at ${resolve(env.SCOUT_MCP_FILE)}`);
 
 	const dataDir = resolve(env.SCOUT_DATA_DIR ?? "data");
@@ -276,6 +293,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			...(env.SCOUT_REFLECT_CHANNEL?.replace(/^#/, "") ? { channel: env.SCOUT_REFLECT_CHANNEL.replace(/^#/, "") } : {}),
 		},
 		...(benchModels.length === 0 ? {} : { bench: { models: benchModels, hour: benchHour, tasksDir: resolve(env.SCOUT_BENCH_TASKS ?? join(import.meta.dirname, "..", "bench")) } }),
+		...(fallbackModels.length === 0 ? {} : { fallback: { models: fallbackModels, after: fallbackAfter, minutes: fallbackFor } }),
 		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
 		pullUpkeep: {
 			staleDays: Number(env.SCOUT_PR_STALE_DAYS ?? 14),
@@ -324,7 +342,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 						...(env.SCOUT_GATEWAY_KEY ? { key: env.SCOUT_GATEWAY_KEY } : {}),
 						...(env.SCOUT_GATEWAY_HEADERS ? { headers: jsonSetting<Record<string, string>>(env, "SCOUT_GATEWAY_HEADERS", '{"x-team": "web"}')! } : {}),
 						...(env.SCOUT_GATEWAY_OPENAI_API === "responses" ? { openaiApi: "responses" as const } : {}),
-						models: gatewayModels(env, provider === "gateway" ? modelId : undefined, benchModels),
+						models: gatewayModels(env, provider === "gateway" ? modelId : undefined, [...benchModels, ...fallbackModels]),
 					},
 				}
 			: {}),

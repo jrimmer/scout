@@ -212,6 +212,33 @@ OpenAI's chat completions API at `SCOUT_GATEWAY_URL` (the gateway's OpenAI base,
 `SCOUT_GATEWAY_MODELS` lists more for channels' profiles. spoond's
 gateway serves only OpenAI's API and needs a lease id, so it isn't a good fit for Scout's own calls.
 
+## Fallback models
+
+When a model's provider goes down, every thread on it would otherwise wait through its retries and fail.
+`SCOUT_FALLBACK_MODELS` (comma-separated `provider/modelId`s, in order of preference; off unless set) gives Scout
+somewhere else to go. A gateway model there is registered with the gateway like `SCOUT_MODEL`'s.
+
+- **Switching.** After `SCOUT_FALLBACK_AFTER` failed calls in a row (default 3) to a model, its calls go to the first
+  fallback that isn't failing too, with the same conversation. A call counts as failed when the provider answers
+  with an error or the call breaks; a stopped run or a context too long doesn't count, and any answer starts the
+  count again. Pi's retries count as calls, so a thread that hit the failures carries on with the fallback instead
+  of failing. With nothing else answering, calls keep going to the model itself.
+- **Going back.** After `SCOUT_FALLBACK_FOR` minutes (default 15), one call tries the model again: if it answers,
+  calls go back to it; if not, it gets another `SCOUT_FALLBACK_FOR` minutes.
+- **Saying so.** A thread whose calls went to the fallback says so once a run, in its progress message and with its
+  answer: "deepseek-4.1-flash isn't answering, so I'm using glm-5.3 for now." Scout's home channel hears once when
+  a model goes down (how many calls failed, the error, and what it's using instead), and once when it's back. "Back"
+  waits until it has answered for 10 minutes, so a model that comes and goes doesn't fill the channel. The home
+  channel's messages need `SCOUT_INITIATIVE` `own` or `team`; the threads say so at any level.
+- **Spend** is recorded against the model that answered, at its price, and its answers say which model gave them.
+- **The dashboard**'s capacity panel shows the model and what it falls back to, and for a failing model, which model
+  is answering instead, since when, why, and when it's tried next. `/status.json` has the same under `models`;
+  `/metrics` has `scout_models_failing` and `scout_model_on_fallback` (1 while `SCOUT_MODEL`'s calls go to a
+  fallback).
+- Evals and the nightly benchmark don't fall back: they measure their own model.
+
+What a model's failures look like is kept in memory, so a restart starts every model afresh.
+
 ## Pi Durable: stable or main
 
 Scout runs on the Pi Durable release `package.json` pins. `npm run pi -- main` builds Pi's main branch (or any branch,

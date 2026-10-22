@@ -2,9 +2,10 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
+import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 
 /**
  * Scout's capacity: how long people wait, for what, and what to tell them. Limits (on runs, model calls, sandboxes)
@@ -296,32 +297,226 @@ export class ModelLimiter {
 	}
 }
 
+/** Where a model call went: its own model, or a fallback; `probe` when it's the one call trying a failing model again. */
+export type Route = { to: string; probe: boolean };
+
+/** A model whose calls are going elsewhere, for the dashboard: since when, to which model, and why. */
+export type ModelOutage = { model: string; fallback?: string; since: number; retryAt: number; failures: number; error?: string };
+
+type BreakerState = {
+	/** Failed calls in a row, and the latest one's error. */
+	failures: number;
+	error?: string;
+	/** Failing: its calls go to a fallback until `retryAt`, when one call (the probe) tries it again. */
+	open?: { retryAt: number; probing: boolean };
+	/** When this outage started, and when it last answered again (not yet steady enough to say it's back). */
+	downSince?: number;
+	closedAt?: number;
+	/** The home channel was told it's down, and not yet that it's back. */
+	told: boolean;
+};
+
+/** A model that answered again is only said to be back after answering this long without failing again. */
+const STEADY_MS = 10 * MINUTE;
+
+/**
+ * A circuit breaker per model, for a gateway or provider that stops answering. After `after` failed calls in a row
+ * (an error, not a stop or a context too long), the model's calls go to the first of `fallbacks` that's answering,
+ * with the same context and options. After `forMs`, one call tries the model again: an answer closes the breaker, a
+ * failure opens it for another `forMs`. Pi's own retries each come through here, so a run that hit the failures
+ * carries on with the fallback instead of failing.
+ *
+ * Whoever runs Scout hears once when a model goes down and once when it's back (`say`), and "back" waits until it
+ * has answered steadily for a while, so a model that flaps doesn't fill the channel.
+ */
+export class ModelBreakers {
+	readonly fallbacks: readonly string[];
+	readonly #after: number;
+	readonly #forMs: number;
+	readonly #say: (text: string) => void;
+	readonly #now: () => number;
+	readonly #states = new Map<string, BreakerState>();
+	/** Provider sessions whose calls went to a fallback in the current outage, and from which model to which. */
+	readonly #routed = new Map<string, { from: string; to: string }>();
+
+	/** Models are `provider/modelId`. */
+	constructor(options: { fallbacks: readonly string[]; after: number; forMs: number; say?: (text: string) => void; now?: () => number }) {
+		this.fallbacks = options.fallbacks;
+		this.#after = options.after;
+		this.#forMs = options.forMs;
+		this.#say = options.say ?? (() => {});
+		this.#now = options.now ?? Date.now;
+	}
+
+	/** Where a call for `model` from provider session `session` goes now. */
+	route(model: string, session: string): Route {
+		if (this.#ready(model)) {
+			this.#routed.delete(session);
+			return this.#take(model);
+		}
+		const fallback = this.fallbacks.find((f) => f !== model && this.#ready(f));
+		// Nothing else is answering either: keep trying its own model.
+		if (fallback === undefined) return { to: model, probe: false };
+		this.#routed.set(session, { from: model, to: fallback });
+		return this.#take(fallback);
+	}
+
+	/** How a routed call ended: answered, failed (with its error), or neither (stopped, or its context was too long). */
+	settle(route: Route, outcome: "ok" | "failed" | "neither", error?: string): void {
+		const now = this.#now();
+		const model = route.to;
+		const state = this.#state(model);
+		if (route.probe && state.open !== undefined) state.open.probing = false;
+		if (outcome === "neither") return;
+		if (outcome === "ok") {
+			state.failures = 0;
+			delete state.error;
+			if (state.open !== undefined) {
+				delete state.open;
+				state.closedAt = now;
+				for (const [session, r] of this.#routed) if (r.from === model) this.#routed.delete(session);
+			}
+			if (state.closedAt !== undefined && now - state.closedAt >= STEADY_MS) {
+				if (state.told) this.#say(`${short(model)} is answering again, so I'm back on it. It was out for about ${minutes(state.closedAt - (state.downSince ?? state.closedAt))}.`);
+				state.told = false;
+				delete state.closedAt;
+				delete state.downSince;
+			}
+			return;
+		}
+		state.failures++;
+		if (error !== undefined) state.error = error;
+		if (state.open !== undefined) {
+			// The probe failed: give it another while.
+			if (route.probe) state.open.retryAt = now + this.#forMs;
+			return;
+		}
+		if (state.failures < this.#after) return;
+		// It came back and stayed up a while, though no answer since has said so: this is a new outage.
+		if (state.closedAt !== undefined && now - state.closedAt >= STEADY_MS) {
+			state.told = false;
+			delete state.downSince;
+		}
+		state.open = { retryAt: now + this.#forMs, probing: false };
+		state.downSince ??= now;
+		delete state.closedAt;
+		if (state.told) return;
+		state.told = true;
+		const fallback = this.fallbacks.find((f) => f !== model && this.#ready(f));
+		const why = `${short(model)} has failed ${state.failures} calls in a row${state.error === undefined ? "" : ` (${gist(state.error)})`}`;
+		const minutesFor = Math.round(this.#forMs / MINUTE);
+		this.#say(
+			fallback === undefined
+				? `Heads up: ${why}, and none of my fallback models are answering either. I'll keep trying.`
+				: `Heads up: ${why}, so I'm using ${short(fallback)} for now. I'll try ${short(model)} again every ${minutesFor} minute${minutesFor === 1 ? "" : "s"}.`,
+		);
+	}
+
+	/** What a thread says when its calls went to a fallback in this outage, by its provider session; else nothing. */
+	notice(session: string): string | undefined {
+		const routed = this.#routed.get(session);
+		return routed === undefined ? undefined : `${short(routed.from)} isn't answering, so I'm using ${short(routed.to)} for now.`;
+	}
+
+	/** Models whose calls are going elsewhere now, for the dashboard. */
+	outages(): ModelOutage[] {
+		return [...this.#states].flatMap(([model, state]) => {
+			if (state.open === undefined) return [];
+			const fallback = this.fallbacks.find((f) => f !== model && this.#ready(f));
+			return [
+				{
+					model,
+					...(fallback === undefined ? {} : { fallback }),
+					since: state.downSince ?? 0,
+					retryAt: state.open.retryAt,
+					failures: state.failures,
+					...(state.error === undefined ? {} : { error: gist(state.error) }),
+				},
+			];
+		});
+	}
+
+	/** Closed, or open with its time up and no call trying it yet. */
+	#ready(model: string): boolean {
+		const open = this.#states.get(model)?.open;
+		return open === undefined || (!open.probing && this.#now() >= open.retryAt);
+	}
+
+	#take(model: string): Route {
+		const open = this.#states.get(model)?.open;
+		if (open === undefined) return { to: model, probe: false };
+		open.probing = true;
+		return { to: model, probe: true };
+	}
+
+	#state(model: string): BreakerState {
+		let state = this.#states.get(model);
+		if (state === undefined) {
+			state = { failures: 0, told: false };
+			this.#states.set(model, state);
+		}
+		return state;
+	}
+}
+
+/** A model as people say it: `deepseek-4.1-flash` for `gateway/lunaroute/deepseek-4.1-flash`. */
+export function short(model: string): string {
+	return model.split("/").pop() ?? model;
+}
+
+/** An error in a few words: the gateway's own message when it sent JSON. */
+function gist(error: string): string {
+	const text = error.match(/"message"\s*:\s*"([^"]+)"/)?.[1] ?? error;
+	return text.length <= 160 ? text : `${text.slice(0, 159)}…`;
+}
+
+/** How a call ended, for its breaker: a stop or a context too long says nothing about whether the model is up. */
+function outcomeOf(message: AssistantMessage, signal: AbortSignal | undefined): "ok" | "failed" | "neither" {
+	if (signal?.aborted === true || message.stopReason === "aborted" || message.stopReason === "deferred") return "neither";
+	if (message.stopReason !== "error") return "ok";
+	return isContextOverflow(message) ? "neither" : "failed";
+}
+
 /**
  * The same models, with every streamed call taking its turn through the limiter. Everything else passes straight
  * through. A call is held before it starts, so the provider never sees more than the limit at once. Each call also
  * reports how long, once sent, it took to start answering: the first thing it says, not the provider's "started",
- * which arrives with the response's headers.
+ * which arrives with the response's headers. With `breakers`, a call for a failing model goes to a fallback; its
+ * answer is the fallback's own, so it's priced and recorded as the model that answered.
  */
-export function limitModels(models: Models, limiter: ModelLimiter, onFirstToken: (ms: number, session: string) => void = () => {}): Models {
+export function limitModels(models: Models, limiter: ModelLimiter, onFirstToken: (ms: number, session: string) => void = () => {}, breakers?: ModelBreakers): Models {
 	const limited = (model: Parameters<Models["streamSimple"]>[0], context: Parameters<Models["streamSimple"]>[1], options?: Parameters<Models["streamSimple"]>[2]) => {
 		const out = createAssistantMessageEventStream();
 		void (async () => {
 			const session = options?.sessionId ?? "unknown";
 			const release = await limiter.acquire(session, options?.signal);
 			try {
-				const sent = Date.now();
-				let started = false;
-				const inner = models.streamSimple(model, context, options);
-				for await (const event of inner) {
-					if (!started && event.type !== "start" && event.type !== "error") {
-						started = true;
-						onFirstToken(Date.now() - sent, session);
+				const route = breakers?.route(`${model.provider}/${model.id}`, session);
+				const [provider = "", ...id] = route?.to.split("/") ?? [];
+				const used = route === undefined || route.to === `${model.provider}/${model.id}` ? model : (models.getModel(provider, id.join("/")) ?? model);
+				let message: AssistantMessage;
+				let ending: AssistantMessageEvent | undefined;
+				try {
+					const sent = Date.now();
+					let started = false;
+					const inner = models.streamSimple(used, context, options);
+					for await (const event of inner) {
+						if (!started && event.type !== "start" && event.type !== "error") {
+							started = true;
+							onFirstToken(Date.now() - sent, session);
+						}
+						// The last event ends the call for whoever waits on it: held until the breaker has heard how it went.
+						if (event.type === "done" || event.type === "error") ending = event;
+						else out.push(event);
 					}
-					out.push(event);
+					message = await inner.result();
+				} catch (error) {
+					message = failure(used, error);
 				}
-				out.end(await inner.result());
-			} catch (error) {
-				out.end(failure(model, error));
+				// Before Pi hears how it ended, so its retry already goes where the breaker now says.
+				if (route !== undefined) breakers!.settle(route, outcomeOf(message, options?.signal), message.errorMessage);
+				if (ending !== undefined) out.push(ending);
+				out.end(message);
 			} finally {
 				release();
 			}

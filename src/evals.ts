@@ -389,9 +389,10 @@ export async function fakeCodeHost(): Promise<{ apiUrl: string; close: () => Pro
 /**
  * The configuration a side runs with: Scout's own, but working on the tasks' local copies, against the stand-in
  * code host, with `profileDir` as its profile (and no profile repository to pull), no MCP servers, and its own data.
+ * No fallback models either: a run measures its own model, failing or not.
  */
 export function evalConfig(base: Config, options: { repos: RepoConfig[]; profileDir: string; apiUrl: string; dataDir: string; model?: { provider: string; modelId: string } }): Config {
-	const { mcpFile: _mcp, profileRepo: _profile, ...rest } = base;
+	const { mcpFile: _mcp, profileRepo: _profile, fallback: _fallback, ...rest } = base;
 	return {
 		...rest,
 		dataDir: options.dataDir,

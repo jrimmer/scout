@@ -4,7 +4,7 @@ import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { Type } from "@earendil-works/pi-ai";
 import { type AgentChange, type ConversationId, createRegistry, defineExtension, defineTool, type Extension, Harness, ProviderDoc, type Storage } from "@earendil-works/pi-durable";
-import { Capacity, limitModels, minutes, ModelLimiter, WaitBoard } from "./capacity.ts";
+import { Capacity, limitModels, minutes, ModelBreakers, ModelLimiter, WaitBoard } from "./capacity.ts";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createCodeHostExtension, type OpenedPull } from "./codehost.ts";
 import type { Config, RepoConfig } from "./config.ts";
@@ -20,6 +20,7 @@ import { codeSearchExtension } from "./codesearch.ts";
 import { Approaches, approachesExtension, type ApproachesOptions, chooseApproach } from "./approaches.ts";
 import { egressExtension } from "./egress.ts";
 import { Images } from "./images.ts";
+import { allows } from "./initiative.ts";
 import { DEFAULT_EMOJI, type Ending, type Phase } from "./reactions.ts";
 import { CODEOWNERS_PATHS, type Owners, ownersOf, parseCodeOwners, recentOwners } from "./owners.ts";
 import { Schedules, schedulesExtension } from "./schedules.ts";
@@ -130,10 +131,26 @@ export async function openScout(options: ScoutOptions) {
 	// Model calls take turns: at most SCOUT_MAX_MODEL_CALLS at once, so a busy moment queues instead of overrunning the
 	// gateway, and each run can say it's waiting.
 	const modelLimiter = new ModelLimiter({ max: config.capacity.maxModelCalls, board, onWaited: (ms) => capacity.waited("model", ms) });
-	const models = limitModels(options.models ?? modelsFor(config.gateway), modelLimiter, (ms, session) => {
-		capacity.firstToken(ms);
-		options.modelStarted?.(session, ms);
-	});
+	const catalog = options.models ?? modelsFor(config.gateway);
+	// A model that keeps failing hands its calls to a fallback until it answers again (SCOUT_FALLBACK_MODELS). Saying so
+	// in the home channel is looking after its own work (initiative.ts); the threads say so whatever the level.
+	const { fallback } = config;
+	for (const m of fallback?.models ?? []) {
+		if (catalog.getModel(m.provider, m.modelId) === undefined) throw new Error(`SCOUT_FALLBACK_MODELS: there's no model ${m.provider}/${m.modelId} (a model only the gateway knows is gateway/<its name>)`);
+	}
+	const breakers =
+		fallback === undefined
+			? undefined
+			: new ModelBreakers({ fallbacks: fallback.models.map((m) => `${m.provider}/${m.modelId}`), after: fallback.after, forMs: fallback.minutes * 60_000, ...(allows(config.initiative, "own") ? { say: announce } : {}) });
+	const models = limitModels(
+		catalog,
+		modelLimiter,
+		(ms, session) => {
+			capacity.firstToken(ms);
+			options.modelStarted?.(session, ms);
+		},
+		breakers,
+	);
 
 	// What Scout knows. With a profile repo, the directory is a clone kept pulled, so merged changes just arrive.
 	if (config.profileRepo !== undefined) await cloneProfile(config.profileDir, config.profileRepo);
@@ -538,6 +555,14 @@ export async function openScout(options: ScoutOptions) {
 		capacity,
 		board,
 		modelLimiter,
+		/** The fallback models' breakers, when SCOUT_FALLBACK_MODELS names some. */
+		breakers,
+		/** What a thread says when its model calls went to a fallback model in this outage, or nothing. */
+		fallbackNotice: async (conversationId: number): Promise<string | undefined> => {
+			if (breakers === undefined) return undefined;
+			const provider = await harness?.snapshot(ProviderDoc, conversationId as ConversationId, context).catch(() => undefined);
+			return provider === undefined ? undefined : breakers.notice(provider.sessionId);
+		},
 		/** What a run is waiting on right now, in Scout's words, or nothing: a sandbox on a full host, or the model. */
 		waitingFor: async (conversationId: number): Promise<string | undefined> => {
 			const now = Date.now();

@@ -74,6 +74,8 @@ type Run = {
 	gaveUp?: string;
 	/** What it's waiting on right now (a sandbox, the model), said in Scout's voice; it outranks `status` while it lasts. */
 	waiting?: string;
+	/** Its model calls went to a fallback model, in Scout's words: said once, and kept with its answer. */
+	fallback?: string;
 	note?: string;
 	text?: string;
 	error?: string;
@@ -100,6 +102,7 @@ export class ThreadView {
 	readonly #onPhase: (phase: Phase) => void;
 	readonly #onSlow: () => void;
 	readonly #wait: (ms: number) => Promise<void>;
+	readonly #fallback: (() => Promise<string | undefined>) | undefined;
 	#resumeTs: string | undefined;
 	#run: Run | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
@@ -126,10 +129,13 @@ export class ThreadView {
 		onSlow?: () => void;
 		/** What the run is doing now (thinking, reading, testing…), for the request's reaction (reactions.ts). */
 		onPhase?: (phase: Phase) => void;
+		/** Whether the thread's model calls went to a fallback model (its own is failing), in Scout's words. */
+		fallback?: () => Promise<string | undefined>;
 		now?: () => number;
 		wait?: (ms: number) => Promise<void>;
 	}) {
 		this.#wait = options.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+		this.#fallback = options.fallback;
 		this.#cost = options.cost;
 		this.#pacer = options.pacer;
 		this.#mood = options.behind;
@@ -214,6 +220,7 @@ export class ThreadView {
 				return;
 			case "message_end": {
 				if (this.#run === undefined) return;
+				if (event.entry.model?.some((m) => m.role === "assistant") === true) this.#checkFallback(this.#run);
 				// A model call that failed ends the run without an answer; without this the reply would read "Done."
 				const failure = assistantError(event.entry.model);
 				if (failure !== undefined) this.#run.error = `the model didn't answer (${failure})`;
@@ -308,6 +315,22 @@ export class ThreadView {
 			this.#schedule();
 		}
 		return false;
+	}
+
+	/**
+	 * After a model call, once a run: if it went to a fallback model, say so. Asked in the run's queue, so the answer,
+	 * queued after it, says so too.
+	 */
+	#checkFallback(run: Run): void {
+		const fallback = this.#fallback;
+		if (fallback === undefined || run.fallback !== undefined) return;
+		this.#enqueue(async () => {
+			if (run.fallback !== undefined) return;
+			const text = await fallback().catch(() => undefined);
+			if (text === undefined) return;
+			run.fallback = text;
+			if (this.#run === run) this.#schedule();
+		});
 	}
 
 	#moved(): void {
@@ -447,10 +470,11 @@ export class ThreadView {
 	}
 }
 
-export function progressMessage(run: Pick<Run, "startedAt" | "steps" | "note" | "status" | "waiting">, now: number): ChatMessage {
+export function progressMessage(run: Pick<Run, "startedAt" | "steps" | "note" | "status" | "waiting" | "fallback">, now: number): ChatMessage {
 	const lines = [`_Working… ${duration(now - run.startedAt)}_`];
 	const status = run.waiting ?? run.status;
 	if (status !== undefined) lines.push(`_${status}_`);
+	if (run.fallback !== undefined) lines.push(`_${run.fallback}_`);
 	if (run.note !== undefined) lines.push("", quote(clip(run.note, 600)));
 	const hidden = run.steps.length - VISIBLE_STEPS;
 	if (run.steps.length > 0) lines.push("");
@@ -461,7 +485,7 @@ export function progressMessage(run: Pick<Run, "startedAt" | "steps" | "note" | 
 }
 
 export function finalMessage(
-	run: Pick<Run, "startedAt" | "steps" | "text" | "error" | "stoppedBy" | "notes" | "gaveUp"> & { cost?: string; recovered?: boolean },
+	run: Pick<Run, "startedAt" | "steps" | "text" | "error" | "stoppedBy" | "notes" | "gaveUp" | "fallback"> & { cost?: string; recovered?: boolean },
 	now: number,
 ): ChatMessage {
 	const answer =
@@ -497,6 +521,7 @@ export function finalMessage(
 							],
 						},
 					]),
+			...(run.fallback === undefined ? [] : [{ type: "context", elements: [{ type: "mrkdwn", text: run.fallback }] }]),
 			{ type: "context", elements: [{ type: "mrkdwn", text: footer }] },
 		],
 	};
