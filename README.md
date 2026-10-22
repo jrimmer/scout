@@ -2,7 +2,8 @@
 
 A coding teammate that lives in Slack and works only in public. Mention `@Scout` in a public channel and it reads
 the code, runs tests, makes the change, and opens a pull request, in a thread anyone can follow, join, redirect, and
-learn from. Modelled on Shopify's River; see [docs/design.md](docs/design.md).
+learn from. The idea is Shopify's River (see [Credit](#credit)); [docs/design.md](docs/design.md) says what Scout takes
+from it.
 
 - **Multiplayer threads.** One Slack thread is one durable conversation
   ([Pi Durable](https://earendil.com/posts/pi-durable/)).
@@ -90,6 +91,14 @@ npm run job -- "what to do"                # one task, no Slack
 CI runs the type check, the tests and the Docker tests on every pull request, merged with the latest `main`, and on
 `main` after every push (`.forgejo/workflows/ci.yml`).
 [docs/releasing.md](docs/releasing.md) says how a release is made, and what 1.0 waits on.
+
+## Credit
+
+The concept is Shopify's: **River**, the coding agent Shopify's people work with in public Slack channels, so
+everyone learns from watching everyone else's sessions. Tobi Lütke described it in
+["Learning on the Shop floor"](https://x.com/tobi/status/2053121182044451016), and Shopify Engineering in
+["Under the River"](https://shopify.engineering/under-the-river). Scout is an independent, open-source take on that
+idea for teams outside Shopify; it isn't affiliated with or endorsed by Shopify.
 
 ## License
 
