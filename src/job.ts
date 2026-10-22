@@ -106,7 +106,6 @@ if (import.meta.main) {
 	await scout.close();
 	rmSync(dataDir, { recursive: true, force: true });
 	if (result.problem !== undefined) console.error(`Scout couldn't finish: ${result.problem}`);
-	if (result.problem !== undefined) console.error(`Scout couldn't finish: ${result.problem}`);
 	console.log(result.answer);
 	for (const url of result.pullRequests) console.log(url);
 	process.exit(result.ok ? 0 : 1);
