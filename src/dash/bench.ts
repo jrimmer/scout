@@ -32,7 +32,7 @@ export function benchPage(scores: readonly ModelScores[], meta: { lastRun?: stri
 <body><main class="bench">
 <h1>Benchmark</h1>
 ${body}
-${footer("/", "Dashboard")}
+${footer("/", "dashboard")}
 </main></body>
 </html>
 `;

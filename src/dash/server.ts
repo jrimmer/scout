@@ -5,7 +5,7 @@ import { isIP } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ModelScores } from "../bench.ts";
-import { benchPage, footer } from "./bench.ts";
+import { benchPage } from "./bench.ts";
 import type { Collector } from "./collect.ts";
 import type { Grid } from "./grid.ts";
 import { layout } from "./layout.ts";
@@ -43,11 +43,12 @@ export async function startDashboard(options: DashOptions): Promise<{ port: numb
 		throw new Error(`the dashboard on ${options.addr} needs SCOUT_DASH_USER and SCOUT_DASH_PASSWORD_HASH (or a loopback address)`);
 	}
 	const clients = new Set<{ res: ServerResponse; rows: string[] }>();
-	let current: Grid = layout(await options.collector.collect());
+	const links = { bench: options.bench !== undefined };
+	let current: Grid = layout(await options.collector.collect(), undefined, links);
 
 	const tick = setInterval(async () => {
 		try {
-			current = layout(await options.collector.collect());
+			current = layout(await options.collector.collect(), undefined, links);
 		} catch (error) {
 			console.error("dashboard collect failed:", error);
 			return;
@@ -85,7 +86,7 @@ export async function startDashboard(options: DashOptions): Promise<{ port: numb
 			return res.end();
 		}
 		if (req.method !== "GET") return reply(res, 405, "text/plain", "read-only");
-		if (path === "/") return reply(res, 200, "text/html; charset=utf-8", page(current, options.bench !== undefined));
+		if (path === "/") return reply(res, 200, "text/html; charset=utf-8", page(current));
 		if (path === "/bench" && options.bench !== undefined) {
 			const { scores, ...meta } = options.bench();
 			return reply(res, 200, "text/html; charset=utf-8", benchPage(scores, meta));
@@ -124,7 +125,7 @@ const HEADERS = {
 	"referrer-policy": "no-referrer",
 };
 
-function page(grid: Grid, bench: boolean): string {
+function page(grid: Grid): string {
 	return `<!doctype html>
 <html lang="en">
 <head>
@@ -135,7 +136,7 @@ function page(grid: Grid, bench: boolean): string {
 <link rel="stylesheet" href="/static/dash.css">
 <script defer src="/static/dash.js"></script>
 </head>
-<body><main><pre id="grid" class="grid">${grid.html()}</pre>${bench ? footer("/bench", "Benchmark") : ""}</main></body>
+<body><main><pre id="grid" class="grid">${grid.html()}</pre></main></body>
 </html>
 `;
 }

@@ -24,6 +24,8 @@ pre.grid > span.gr { display: block; white-space: pre; }
 .g-state { color: var(--state); }
 .g-id { color: var(--id); }
 .g-spark { color: var(--spark); }
+pre.grid a { text-decoration: none; }
+pre.grid a:hover { color: var(--title); }
 
 /* The footer link between the dashboard and the Benchmark page (dash/bench.ts), whose radar charts use the same
    palette, one class per model. */

@@ -7,8 +7,8 @@ type Line = { left: Seg[]; right?: Seg[] } | "rule" | { meter: { label: string; 
 
 export const WIDTH = 104;
 
-/** The whole dashboard for one snapshot. */
-export function layout(s: Snapshot, width = WIDTH): Grid {
+/** The whole dashboard for one snapshot; `links.bench` adds the Benchmark page to the last line. */
+export function layout(s: Snapshot, width = WIDTH, links: { bench?: boolean } = {}): Grid {
 	const grid = new Grid(width);
 	const half = Math.floor(width / 2);
 	let y = 0;
@@ -29,7 +29,8 @@ export function layout(s: Snapshot, width = WIDTH): Grid {
 	if (s.reviews.latest.length > 0) y = panel(grid, 0, y, width, "pull request reviews", reviewLines(s));
 	if (s.schedules.length > 0) y = panel(grid, 0, y, width, "schedules", scheduleLines(s));
 
-	grid.put(1, y, "scout · read-only", "dim");
+	const x = 1 + grid.put(1, y, "scout · read-only", "dim");
+	if (links.bench === true) grid.link(x + grid.put(x, y, " · ", "dim"), y, "benchmark", "/bench", "dim");
 	grid.putRight(width - 1, y, `updated ${clock(s.now)}`, "dim");
 	return grid;
 }

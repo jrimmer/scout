@@ -130,25 +130,28 @@ describe("benchmark", () => {
 		const collector = { collect: async () => busy } as unknown as Collector;
 		const off = await startDashboard({ addr: "127.0.0.1:0", collector });
 		assert.equal((await get(off.port, "/bench")).status, 404);
-		assert.doesNotMatch((await get(off.port, "/")).body, /Benchmark/);
+		assert.doesNotMatch((await get(off.port, "/")).body, /benchmark/i);
 		await off.close();
 
 		const scores = [score("gateway/a", [row()]), score("gateway/b", [row({ model: "gateway/b", pass: false })])];
 		const dash = await startDashboard({ addr: "127.0.0.1:0", collector, bench: () => ({ scores, lastRun: "2026-10-22", keep: 10, hour: 1, tasks: 7 }) });
-		const home = (await get(dash.port, "/")).body;
-		assert.match(home, /<\/pre><footer class="links"><a href="\/bench">Benchmark<\/a><\/footer>/, "a footer link, under the grid");
-		assert.doesNotMatch(home, /<nav|>Now</);
-		const page = (await get(dash.port, "/bench")).body;
-		assert.match(page, /7 tasks from Scout's own history/);
-		assert.match(page, /<footer class="links"><a href="\/">Dashboard<\/a><\/footer>/);
-		assert.match(page, /<figcaption>What it can do<\/figcaption>/);
-		assert.match(page, /<figcaption>Working with it<\/figcaption>/);
-		assert.match(page, /<li class="s1"><i><\/i>gateway\/b/);
-		assert.doesNotMatch(page, /<script|style=/, "nothing the dashboard's content security policy would block");
 		const empty = await startDashboard({ addr: "127.0.0.1:0", collector, bench: () => ({ scores: [], keep: 10, hour: 1, tasks: 7 }) });
-		assert.match((await get(empty.port, "/bench")).body, /No runs yet\. They start each night after 01:00/);
-		await dash.close();
-		await empty.close();
+		try {
+			const home = (await get(dash.port, "/")).body;
+			assert.match(home, /<span class="g-dim">scout · read-only · <\/span><a href="\/bench" class="g-dim">benchmark<\/a>/, "in the grid's last line, styled like it");
+			assert.doesNotMatch(home, /<nav|<footer/);
+			const page = (await get(dash.port, "/bench")).body;
+			assert.match(page, /7 tasks from Scout's own history/);
+			assert.match(page, /<footer class="links"><a href="\/">dashboard<\/a><\/footer>/);
+			assert.match(page, /<figcaption>What it can do<\/figcaption>/);
+			assert.match(page, /<figcaption>Working with it<\/figcaption>/);
+			assert.match(page, /<li class="s1"><i><\/i>gateway\/b/);
+			assert.doesNotMatch(page, /<script|style=/, "nothing the dashboard's content security policy would block");
+			assert.match((await get(empty.port, "/bench")).body, /No runs yet\. They start each night after 01:00/);
+		} finally {
+			await dash.close();
+			await empty.close();
+		}
 	});
 
 	it("ships tasks that load: replayed fixes judged by hidden tests, and bugs to find", () => {

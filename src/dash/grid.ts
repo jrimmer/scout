@@ -5,7 +5,8 @@
  */
 export type Style = "" | "head" | "frame" | "title" | "dim" | "text" | "ok" | "warn" | "bad" | "state" | "id" | "spark";
 
-type Cell = { ch: string; style: Style };
+/** `href`: the cell is part of a link (to another of the dashboard's pages). */
+type Cell = { ch: string; style: Style; href?: string };
 
 const SPARKS = "▁▂▃▄▅▆▇█";
 
@@ -45,6 +46,14 @@ export class Grid {
 		const shown = chars.length > limit ? [...chars.slice(0, Math.max(0, limit - 1)), "…"] : chars;
 		shown.forEach((ch, i) => (row[x + i] = { ch, style }));
 		return shown.length;
+	}
+
+	/** Write text from (x, y) as a link to `href`, in `style` like any other text. Returns the cells written. */
+	link(x: number, y: number, text: string, href: string, style: Style = "text"): number {
+		const written = this.put(x, y, text, style);
+		const row = this.#row(y);
+		for (let i = x; i < x + written; i++) row[i] = { ...row[i]!, href };
+		return written;
 	}
 
 	/** Write text so it ends at column `right` (exclusive). */
@@ -93,21 +102,24 @@ export class Grid {
 		return this.#rows.map((row) => row.map((c) => c.ch).join("").trimEnd()).join("\n");
 	}
 
-	/** One row as HTML: runs of one style become one span. */
+	/** One row as HTML: runs of one style become one span, and a link's run one `<a>`. */
 	rowHtml(y: number): string {
 		const row = this.#rows[y] ?? [];
 		let html = "";
 		let style: Style | undefined;
+		let href: string | undefined;
 		let run = "";
 		const flush = () => {
 			if (run === "") return;
-			html += style === "" ? escape(run) : `<span class="g-${style}">${escape(run)}</span>`;
+			const cls = style === "" ? "" : ` class="g-${style}"`;
+			html += href !== undefined ? `<a href="${escape(href)}"${cls}>${escape(run)}</a>` : style === "" ? escape(run) : `<span${cls}>${escape(run)}</span>`;
 			run = "";
 		};
 		for (const cell of row) {
-			if (cell.style !== style) {
+			if (cell.style !== style || cell.href !== href) {
 				flush();
 				style = cell.style;
+				href = cell.href;
 			}
 			run += cell.ch;
 		}
@@ -122,5 +134,5 @@ export class Grid {
 }
 
 function escape(text: string): string {
-	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }

@@ -23,6 +23,14 @@ describe("grid", () => {
 		);
 	});
 
+	it("links a run of cells, in its style, without moving anything", () => {
+		const grid = new Grid(30);
+		const x = 1 + grid.put(1, 0, "scout · ", "dim");
+		grid.link(x, 0, "benchmark", "/bench", "dim");
+		assert.equal(grid.text(), " scout · benchmark");
+		assert.equal(grid.rowHtml(0), ' <span class="g-dim">scout · </span><a href="/bench" class="g-dim">benchmark</a>            ');
+	});
+
 	it("keeps wide characters from breaking rows, and escapes HTML", () => {
 		const grid = new Grid(12);
 		grid.put(0, 0, "a🚩b<i>", "bad");
