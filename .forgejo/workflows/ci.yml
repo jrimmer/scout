@@ -1,4 +1,5 @@
-# Type checks and tests on every push to main and every pull request, on Scout's own runner (a fresh spoond microVM per job).
+# Type checks and tests on every push to main and every pull request, on Scout's own runner: a fresh spoond microVM
+# per job, from the snapshot Scout's sandboxes start from, so passing here and in Scout's sandbox mean the same.
 # Nothing waits on it: a pull request is tested merged with the latest main, and main is tested again after each push,
 # so whoever merges or deploys can see whether main builds before and after.
 name: ci
@@ -22,8 +23,11 @@ jobs:
           git log --oneline -1
       - name: Node
         run: |
-          file=$(curl -fsSL "https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt" | awk '/linux-x64.tar.xz$/ {print $2}')
-          curl -fsSL "https://nodejs.org/dist/latest-v24.x/$file" | tar -xJ -C /usr/local --strip-components=1
+          # The runner starts jobs from Scout's sandbox snapshot (scout/node24), which has Node; a plain image doesn't.
+          if ! node --version 2>/dev/null | grep -q '^v24\.'; then
+            file=$(curl -fsSL "https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt" | awk '/linux-x64.tar.xz$/ {print $2}')
+            curl -fsSL "https://nodejs.org/dist/latest-v24.x/$file" | tar -xJ -C /usr/local --strip-components=1
+          fi
           node --version
       - run: npm ci --no-audit --no-fund
       - run: npm run check
@@ -42,8 +46,11 @@ jobs:
           git log --oneline -1
       - name: Node and Docker
         run: |
-          file=$(curl -fsSL "https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt" | awk '/linux-x64.tar.xz$/ {print $2}')
-          curl -fsSL "https://nodejs.org/dist/latest-v24.x/$file" | tar -xJ -C /usr/local --strip-components=1
+          # The runner starts jobs from Scout's sandbox snapshot (scout/node24), which has Node; a plain image doesn't.
+          if ! node --version 2>/dev/null | grep -q '^v24\.'; then
+            file=$(curl -fsSL "https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt" | awk '/linux-x64.tar.xz$/ {print $2}')
+            curl -fsSL "https://nodejs.org/dist/latest-v24.x/$file" | tar -xJ -C /usr/local --strip-components=1
+          fi
           apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io >/dev/null
           (dockerd >/tmp/dockerd.log 2>&1 &)
           for i in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
