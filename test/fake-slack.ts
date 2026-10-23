@@ -17,7 +17,10 @@ export const TEAM_CHANNEL = "C0TEAM0001";
 export const SECRET_CHANNEL = "C0SECRET01";
 export const ELSEWHERE_CHANNEL = "C0ELSE0001";
 
-export type Call = { method: string; args: Record<string, unknown>; token: string };
+/** `failed`: Slack was down for it (`down`), so it had no effect. */
+export type Call = { method: string; args: Record<string, unknown>; token: string; failed?: true };
+/** A message people wrote in a channel, which `conversations.history` and `conversations.replies` read back. */
+export type Written = { channel: string; user: string; text: string; ts: string; thread_ts?: string };
 /** An answer: Slack's JSON body (it always has `ok`), or a raw HTTP answer (a 429 with Retry-After, say). */
 export type Answer = Record<string, unknown> | { status: number; headers?: Record<string, string>; body?: Record<string, unknown> };
 type Channel = { id: string; name: string; is_channel: boolean; is_private: boolean; is_member: boolean; is_im?: boolean };
@@ -58,6 +61,10 @@ export async function fakeSlack() {
 	const stalls = new Map<string, number[]>();
 	/** While each lasts, calls to its methods (every method, without any) fail. */
 	const outages: { until: number; methods: string[] | undefined; status: number; hang: boolean }[] = [];
+	/** What people wrote (`wrote`), for reading back; Scout's own posts aren't in it. */
+	const history: Written[] = [];
+	/** The app's scopes, as auth.test reports them; tests add to it before Scout starts (`canvases:write`, say). */
+	const scopes = [...SCOPES];
 	const channels = new Map<string, Channel>([
 		[TEAM_CHANNEL, { id: TEAM_CHANNEL, name: "team", is_channel: true, is_private: false, is_member: true }],
 		[SECRET_CHANNEL, { id: SECRET_CHANNEL, name: "secret", is_channel: true, is_private: true, is_member: true }],
@@ -99,6 +106,18 @@ export async function fakeSlack() {
 				return { ok: true, files: [{ id: "F0FILE0001" }] };
 			case "conversations.canvases.create":
 				return { ok: true, canvas_id: "F0CANVAS01" };
+			case "users.conversations":
+				return { ok: true, channels: [...channels.values()].filter((c) => c.is_channel && !c.is_private && c.is_member), response_metadata: { next_cursor: "" } };
+			case "conversations.history": {
+				// Top-level messages only, newest first, as Slack answers.
+				const top = history.filter((m) => m.channel === args.channel && (m.thread_ts === undefined || m.thread_ts === m.ts));
+				return { ok: true, messages: within(top, args).sort((a, b) => Number(b.ts) - Number(a.ts)).slice(0, Number(args.limit ?? 100)).map(slackMessage), has_more: false };
+			}
+			case "conversations.replies": {
+				// The thread's first message, then its replies, oldest first.
+				const thread = history.filter((m) => m.channel === args.channel && (m.ts === args.ts || m.thread_ts === args.ts));
+				return { ok: true, messages: within(thread, args).sort((a, b) => Number(a.ts) - Number(b.ts)).slice(0, Number(args.limit ?? 100)).map(slackMessage), has_more: false };
+			}
 			default:
 				return { ok: true };
 		}
@@ -132,11 +151,13 @@ export async function fakeSlack() {
 		}
 		const method = url.pathname.replace(/^\/api\//, "");
 		const args = parseArgs(raw, String(req.headers["content-type"] ?? ""));
-		calls.push({ method, args, token: String(req.headers.authorization ?? "").replace(/^Bearer /, "") });
+		const call: Call = { method, args, token: String(req.headers.authorization ?? "").replace(/^Bearer /, "") };
+		calls.push(call);
 		const stall = stalls.get(method)?.shift();
 		if (stall !== undefined) await new Promise((resolve) => setTimeout(resolve, stall));
 		if (res.destroyed) return;
 		const outage = outages.find((o) => Date.now() < o.until && (o.methods === undefined || o.methods.includes(method)));
+		if (outage !== undefined) call.failed = true;
 		if (outage?.hang === true) {
 			// No answer at all until it's over, then the connection drops: what a client sees as a timeout.
 			await new Promise((resolve) => setTimeout(resolve, Math.max(0, outage.until - Date.now())));
@@ -153,7 +174,7 @@ export async function fakeSlack() {
 			res.writeHead(a.status, { "content-type": "application/json", ...a.headers }).end(JSON.stringify(a.body ?? { ok: false }));
 			return;
 		}
-		res.writeHead(200, { "content-type": "application/json", ...(method === "auth.test" ? { "x-oauth-scopes": SCOPES.join(",") } : {}) }).end(JSON.stringify(answer));
+		res.writeHead(200, { "content-type": "application/json", ...(method === "auth.test" ? { "x-oauth-scopes": scopes.join(",") } : {}) }).end(JSON.stringify(answer));
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const address = server.address();
@@ -170,6 +191,10 @@ export async function fakeSlack() {
 		uploads,
 		channels,
 		users,
+		scopes,
+		history,
+		/** Someone wrote this in a channel (a reply, with `thread_ts`); Scout learns of it only by reading history. */
+		wrote: (message: Written) => void history.push(message),
 		/** Calls to one method, in order. */
 		called: (method: string) => calls.filter((c) => c.method === method),
 		/** Answer the next call(s) to `method` with these, then go back to the default. */
@@ -198,13 +223,26 @@ export async function fakeSlack() {
 		close: async (apps = 1) => {
 			const deadline = Date.now() + 5000;
 			while ((calls.filter((c) => c.method === "auth.test").length < apps || inFlight > 0) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
-			server.closeAllConnections();
-			return new Promise<void>((resolve) => server.close(() => resolve()));
+			// A call Scout makes just after (a run's ending reaction, after its answer) is still answered: refused, Slack's
+			// client would try it again for five minutes and hold the test's process open. Unref'd, the server doesn't.
+			server.unref();
+			server.closeIdleConnections();
 		},
 	};
 }
 
 export type FakeSlack = Awaited<ReturnType<typeof fakeSlack>>;
+
+/** Messages after `oldest` (exclusive) and up to `latest` (inclusive with `inclusive`), as Slack filters them. */
+function within(messages: Written[], args: Record<string, unknown>): Written[] {
+	const oldest = args.oldest === undefined ? -Infinity : Number(args.oldest);
+	const latest = args.latest === undefined ? Infinity : Number(args.latest);
+	return messages.filter((m) => Number(m.ts) > oldest && (Number(m.ts) < latest || (args.inclusive === true && Number(m.ts) === latest)));
+}
+
+function slackMessage(m: Written): Record<string, unknown> {
+	return { type: "message", user: m.user, text: m.text, ts: m.ts, ...(m.thread_ts === undefined ? {} : { thread_ts: m.thread_ts }) };
+}
 
 /**
  * WebClient sends form fields, with objects and arrays as JSON strings and booleans as `true`/`false`; this undoes
