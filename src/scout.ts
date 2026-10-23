@@ -32,7 +32,7 @@ import { cloneProfile, loadProfile, type Profile, profileExtension, watchProfile
 import { Pulls } from "./pulls.ts";
 import { Reflector, reflectionExtensions } from "./reflect.ts";
 import { type Alert, type AlertPolicy, alertMatches, DEFAULT_RESPONDER_INSTRUCTIONS } from "./alerts.ts";
-import { DEFAULT_PULL_REVIEW_INSTRUCTIONS, reviewAsSubtask, reviewEnv, reviewExtension } from "./review.ts";
+import { DEFAULT_PULL_REVIEW_INSTRUCTIONS, reviewAsSubtask, reviewEnv, reviewExtension, wholeDiff } from "./review.ts";
 import { searchExtension, ThreadSearch } from "./search.ts";
 import { rememberSecrets } from "./scan.ts";
 import { secretValues } from "./secrets.ts";
@@ -350,6 +350,8 @@ export async function openScout(options: ScoutOptions) {
 						workspace: { sandbox: api.conversationId },
 						prompt: [`# ${change.title}`, change.body, "```", change.stat, "```", "```diff", change.diff, "```"].join("\n\n"),
 						requestId: `review:${change.sha}`,
+						// One round of reading when the whole change is in the prompt; a cut diff leaves the rest to read.
+						oneRound: wholeDiff(change.diff),
 					},
 					ctx,
 				);

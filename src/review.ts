@@ -6,6 +6,7 @@ import {
 	type AgentChange,
 	configure,
 	defineExtension,
+	defineTool,
 	type EnvTarget,
 	type ToolExecutionApi,
 	section,
@@ -31,6 +32,15 @@ export const DEFAULT_REVIEW_INSTRUCTIONS =
 	"each with the file and what to do.";
 
 const DIFF_BUDGET = 60_000;
+const DIFF_CUT = `(… diff cut at ${DIFF_BUDGET} characters)`;
+
+/** Whether `diffOf` gave the whole diff, so a reviewer has all of the change in front of it. */
+export const wholeDiff = (diff: string): boolean => !diff.endsWith(DIFF_CUT);
+
+/** Appended to a one-round review's prompt (`reviewAsSubtask`'s `oneRound`). */
+export const ONE_ROUND =
+	"You get one round of reading: ask for every file you need at once (they're read together), or none if the diff " +
+	"is enough. After that round you answer with what you have.";
 
 /** Reviewing someone else's pull request, when the profile has no `reviewer.md`. */
 export const DEFAULT_PULL_REVIEW_INSTRUCTIONS =
@@ -46,8 +56,29 @@ export const DEFAULT_PULL_REVIEW_INSTRUCTIONS =
 export function reviewExtension(instructions: () => string | undefined, fallback = DEFAULT_REVIEW_INSTRUCTIONS, name = "review") {
 	return defineExtension({
 		name,
-		tools: [createReadTool()],
+		tools: [reviewRead()],
 		sections: [section("review", () => instructions() ?? fallback, { tag: false })],
+	});
+}
+
+/**
+ * The reviewer reads files. In a one-round review (`ReviewDoc.oneRound`) the model is offered no tools once a round of
+ * reads is done, so its next answer is the review. With a slow gateway a review's time is its sequential model calls:
+ * a reviewer left to explore made 2 to 6, re-reading files the diff already showed; one round makes 2, or 1.
+ */
+function reviewRead() {
+	const read = createReadTool();
+	return defineTool({
+		...read,
+		execute: async (args, api, context) => {
+			try {
+				return await read.execute(args, api, context);
+			} finally {
+				if ((await api.snapshot(ReviewDoc, api.conversationId, context))?.oneRound === true) {
+					await api.commit((tx) => configure(tx, api.conversationId, { modelTools: [] }), context);
+				}
+			}
+		},
 	});
 }
 
@@ -133,11 +164,17 @@ export function changedLines(diff: string): Map<string, Set<number>> {
 
 /**
  * Run a review in a conversation the calling tool owns, so stopping the tool stops the review. `agent` picks the
- * reviewer's model and extensions.
+ * reviewer's model and extensions. `oneRound`: the reviewer reads in one round, then answers (see `reviewRead`).
  */
 export async function reviewAsSubtask(
 	api: ToolExecutionApi,
-	options: { agent: AgentChange; workspace: { sandbox: number } | { root: string; cwd: string }; prompt: string; requestId: string },
+	options: {
+		agent: AgentChange;
+		workspace: { sandbox: number } | { root: string; cwd: string };
+		prompt: string;
+		requestId: string;
+		oneRound?: boolean;
+	},
 	context: Context,
 ): Promise<Review> {
 	const childId = await api.commit(async (tx) => {
@@ -146,6 +183,7 @@ export async function reviewAsSubtask(
 		const created = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
 		await configure(tx, created.id, { ...options.agent, tools: null, modelTools: null });
 		const doc = await tx.doc(ReviewDoc, created.id);
+		if (options.oneRound === true) doc.oneRound = true;
 		if ("sandbox" in options.workspace) doc.sandbox = options.workspace.sandbox;
 		else {
 			doc.root = options.workspace.root;
@@ -155,7 +193,8 @@ export async function reviewAsSubtask(
 	}, context);
 	const child = await api.conversation(childId, context);
 	if (child === undefined) throw new Error("the review conversation disappeared");
-	const submission = await child.submit({ type: "input", content: options.prompt, requestId: options.requestId }, context);
+	const input = options.oneRound === true ? `${options.prompt}\n\n${ONE_ROUND}` : options.prompt;
+	const submission = await child.submit({ type: "input", content: input, requestId: options.requestId }, context);
 	const settled = await submission.wait(context);
 	if (settled.status !== "done" || settled.type !== "input") throw new Error("the self-review did not finish");
 	const answer = await api.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
@@ -185,6 +224,6 @@ export async function diffOf(mirrorPath: string, from: string, to: string): Prom
 		}, 0);
 	const stat = (await git("diff", "--stat", range)).trim();
 	const full = await git("diff", range);
-	const diff = full.length <= DIFF_BUDGET ? full : `${full.slice(0, DIFF_BUDGET)}\n(… diff cut at ${DIFF_BUDGET} characters)`;
+	const diff = full.length <= DIFF_BUDGET ? full : `${full.slice(0, DIFF_BUDGET)}\n${DIFF_CUT}`;
 	return { stat, diff, lines };
 }

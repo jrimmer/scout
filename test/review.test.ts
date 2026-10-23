@@ -5,16 +5,36 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { type FauxResponseFactory, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
 import { createRegistry, defineExtension, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { createWriteTool } from "@earendil-works/pi-durable/tools";
 import { createCodeHostExtension } from "../src/codehost.ts";
-import { parseReview, reviewAsSubtask, reviewEnv, reviewExtension } from "../src/review.ts";
+import { ONE_ROUND, parseReview, reviewAsSubtask, reviewEnv, reviewExtension, wholeDiff } from "../src/review.ts";
 import { ConfinedEnv, Mirror } from "../src/sandbox.ts";
 import { tempDir } from "./helpers.ts";
 
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
 const toolUse = { stopReason: "toolUse" } as const;
+
+/**
+ * A reviewer that explores, as the production model did: each turn it reads the next batch of files while it is offered
+ * the read tool (the changed file and the code it touches together first, then one more at a time), and answers once it
+ * has read them all or can't read any more. `calls` counts its model calls; `offered`, the tools each one was offered.
+ */
+function exploringReviewer(rounds: string[][]) {
+	const seen = { calls: 0, offered: [] as string[][] };
+	let round = 0;
+	const step: FauxResponseFactory = (transcript) => {
+		seen.calls++;
+		const tools = getCurrentTools(transcript.messages).map((t) => t.name);
+		seen.offered.push(tools);
+		const paths = rounds[round++];
+		if (paths !== undefined && tools.includes("read")) return fauxAssistantMessage(paths.map((path) => fauxToolCall("read", { path })), toolUse);
+		return fauxAssistantMessage("APPROVE\nRead what it touches; fine.");
+	};
+	return { seen, step };
+}
 
 async function setup(options: { maxChangedLines?: number }) {
 	const root = tempDir("scout-review-");
@@ -48,7 +68,14 @@ async function setup(options: { maxChangedLines?: number }) {
 		selfReview: (change, api, ctx) =>
 			reviewAsSubtask(
 				api,
-				{ agent: { model, extensions: [reviewer] }, workspace: { root: work, cwd: join(work, "repo") }, prompt: change.diff, requestId: `review:${change.sha}` },
+				{
+					agent: { model, extensions: [reviewer] },
+					workspace: { root: work, cwd: join(work, "repo") },
+					prompt: change.diff,
+					requestId: `review:${change.sha}`,
+					// As scout.ts: one round of reading when the whole diff is in the prompt.
+					oneRound: wholeDiff(change.diff),
+				},
 				ctx,
 			),
 		fetch: async (_url, init) => {
@@ -129,6 +156,49 @@ describe("self-review", () => {
 		await (await thread.submit({ type: "input", content: "add b" }, context)).wait(context);
 		assert.equal(bodies.length, 1);
 		assert.match(bodies[0]!, /The name is what the issue asks for\.[\s\S]*Opened over my own self-review's objections/);
+		await harness.close(context);
+	});
+
+	it("reads in one round, then answers: two model calls where an exploring reviewer made four", async () => {
+		const { faux, harness, thread, bodies } = await setup({});
+		const reviewer = exploringReviewer([["b.txt", "a.txt"], ["a.txt"], ["b.txt"]]);
+		let prompt = "";
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("write", { path: "b.txt", content: "b\n" })], toolUse),
+			fauxAssistantMessage([fauxToolCall("open_pull_request", { title: "Add b", body: "Adds b." })], toolUse),
+			(transcript, ...rest) => {
+				prompt = JSON.stringify(transcript);
+				return reviewer.step(transcript, ...rest);
+			},
+			reviewer.step,
+			fauxAssistantMessage("Opened."),
+		]);
+		await (await thread.submit({ type: "input", content: "add b" }, context)).wait(context);
+
+		assert.equal(reviewer.seen.calls, 2, "one round of reads, then the review");
+		assert.deepEqual(reviewer.seen.offered, [["read"], []], "no tools once the round is read, so the next answer is the review");
+		assert.ok(prompt.includes(JSON.stringify(ONE_ROUND).slice(1, -1)), "the reviewer is told it reads once");
+		assert.match(bodies[0]!, /Scout's self-review<\/summary>\n\nAPPROVE/);
+		assert.equal(faux.getPendingResponseCount(), 0);
+		await harness.close(context);
+	});
+
+	it("reads as long as it likes when the diff is too big to show whole", async () => {
+		const { faux, harness, thread, bodies } = await setup({});
+		const reviewer = exploringReviewer([["big.txt", "a.txt"], ["a.txt"], ["big.txt"]]);
+		const big = `${"x".repeat(99)}\n`.repeat(700); // 70,000 characters: past what the review's prompt shows
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("write", { path: "big.txt", content: big })], toolUse),
+			fauxAssistantMessage([fauxToolCall("open_pull_request", { title: "Add big", body: "Adds big." })], toolUse),
+			...Array.from({ length: 4 }, () => reviewer.step),
+			fauxAssistantMessage("Opened."),
+		]);
+		await (await thread.submit({ type: "input", content: "add big" }, context)).wait(context);
+
+		assert.equal(reviewer.seen.calls, 4, "three rounds of reads, then the review");
+		assert.ok(reviewer.seen.offered.every((tools) => tools.includes("read")));
+		assert.equal(bodies.length, 1);
+		assert.equal(faux.getPendingResponseCount(), 0);
 		await harness.close(context);
 	});
 

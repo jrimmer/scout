@@ -29,9 +29,9 @@ export const ReflectionDoc = defineDoc<{ day: string; root: string }>({
 
 /**
  * Marks a reviewer conversation, and the workspace it reads: a thread's sandbox (`sandbox`, that conversation's id), or
- * a checkout on this host (`root` and `cwd`).
+ * a checkout on this host (`root` and `cwd`). `oneRound`: it reads in one round, then answers (review.ts).
  */
-export const ReviewDoc = defineDoc<{ root: string; cwd: string; sandbox?: number }>({
+export const ReviewDoc = defineDoc<{ root: string; cwd: string; sandbox?: number; oneRound?: boolean }>({
 	kind: "scout.review",
 	version: 1,
 	scope: "conversation",

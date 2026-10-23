@@ -62,7 +62,8 @@ the damage:
   repositories Scout works on.
 - **The self-review is a second look, not a gate.** Scout reviews its own change before opening a pull request and
   fixes what it agrees with, but it may disagree and open the pull request anyway, saying so in the description. Text
-  that talks the model into that gets past it. It catches slop, not attacks.
+  that talks the model into that gets past it. It catches slop, not attacks. To keep it quick, it reads the diff and
+  one round of other files, then answers; the credential scan above runs on every push whatever the review does.
 - **MCP results are redacted** for credentials before the model sees them, the same way as errors in threads, the
   audit trail and the search index: common token shapes, and the values of Scout's own secrets (`SCOUT_GATEWAY_KEY`,
   the code host and Slack tokens, the spoond and metrics tokens, Litestream's keys, the MCP servers' `${NAME}`
