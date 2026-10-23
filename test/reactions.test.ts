@@ -25,7 +25,7 @@ function harness() {
 }
 
 describe("the request's reaction follows the work", () => {
-	it("shows a phase once it has lasted, keeps it long enough to read, and skips the flickers in between", async () => {
+	it("shows thinking once it has lasted, keeps each phase long enough to read, and skips the flickers in between", async () => {
 		const { status, calls, at } = harness();
 		status.set("C", "1", "picked");
 		await at(1_500);
@@ -33,13 +33,36 @@ describe("the request's reaction follows the work", () => {
 		status.set("C", "1", "thinking");
 		await at(2_000);
 		assert.deepEqual(calls, ["+eyes@1"], "not yet: 👀 has been up under 3 s, and thinking under 1.5 s");
+		status.set("C", "1", "thinking");
 		status.set("C", "1", "reading");
-		status.set("C", "1", "thinking"); // a sub-second tool call: never shown
+		status.set("C", "1", "editing");
 		await at(4_600);
-		assert.deepEqual(calls, ["+eyes@1", "+brain@1", "-eyes@1"], "one reaction at a time: the old one goes");
-		status.set("C", "1", "testing");
+		assert.deepEqual(calls, ["+eyes@1", "+pencil2@1", "-eyes@1"], "one reaction at a time, the latest step");
+		status.set("C", "1", "thinking");
+		await at(5_000);
 		await at(7_700);
+		assert.deepEqual(calls.slice(-2), ["+brain@1", "-pencil2@1"]);
+		status.set("C", "1", "testing");
+		await at(10_700);
 		assert.deepEqual(calls.slice(-2), ["+test_tube@1", "-brain@1"]);
+	});
+
+	it("shows a step that took a fraction of a second, between two long stretches of thinking", async () => {
+		// Behind a slow model a run is long thinking with quick reads and edits between: showing only what lasted
+		// 1.5 s left the reaction on 🧠 the whole run.
+		const { status, calls, at } = harness();
+		status.set("C", "1", "thinking");
+		await at(2_000);
+		assert.deepEqual(calls, ["+brain@1"]);
+		status.set("C", "1", "reading");
+		status.set("C", "1", "thinking"); // the read took 200 ms
+		await at(20_000);
+		assert.deepEqual(calls, ["+brain@1", "+book@1", "-brain@1"], "the read shows, though it's over");
+		await at(22_999);
+		assert.equal(calls.length, 3, "and stays long enough to be seen");
+		await at(23_000);
+		assert.deepEqual(calls.slice(-2), ["+brain@1", "-book@1"], "then back to thinking");
+		assert.equal(status.pending, 0);
 	});
 
 	it("shows how a run ended at once, and lets nothing after it overwrite that", async () => {

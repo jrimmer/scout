@@ -3,8 +3,11 @@
  * reading, ✏️ editing, 🧪 testing… and at the end ✅, ⚠️, ✋, or 🙋 when it's waiting on someone. One reaction at a time
  * per request, Scout's own (it never touches anyone else's).
  *
- * Phases flip every few seconds during a run, so they're smoothed: a phase shows once it has lasted `debounceMs`,
- * stays at least `minDwellMs` so it can be read, and the end of a run shows at once. Every change in the workspace goes
+ * Phases flip every few seconds during a run, so they're smoothed. Thinking shows once it has lasted `debounceMs`, so
+ * the model's quick turns between steps don't flicker. A step (reading, editing, testing…) shows even if it took a
+ * fraction of a second, since behind a slow model a run is long thinking between quick steps, and a reaction that only
+ * showed what lasted would sit on 🧠 the whole run; the latest step not yet shown waits its turn. Whatever shows stays
+ * at least `minDwellMs` so it can be read, and the end of a run shows at once. Every change in the workspace goes
  * through one pace (`spacingMs` apart), and only the latest wanted phase of each message is sent, so a busy channel
  * sees fewer changes, never rate-limit errors.
  */
@@ -71,7 +74,17 @@ export function toolPhase(toolName: string, args: Record<string, unknown>): Phas
 	return "tool";
 }
 
-type Entry = { channel: string; ts: string; shown?: string; shownAt: number; want?: string; wantSince: number; ending: boolean };
+type Entry = {
+	channel: string;
+	ts: string;
+	shown?: string;
+	shownAt: number;
+	want?: string;
+	wantSince: number;
+	/** The latest step not shown yet: it shows before the thinking that followed it. */
+	step?: string;
+	ending: boolean;
+};
 
 export class StatusReactions {
 	readonly #react: (channel: string, ts: string, name: string, on: boolean) => Promise<void>;
@@ -107,21 +120,22 @@ export class StatusReactions {
 
 	/** The request in message `ts` is now in `phase`. */
 	set(channel: string, ts: string, phase: Phase): void {
-		this.#want(channel, ts, this.#emoji(phase), false);
+		this.#want(channel, ts, this.#emoji(phase), false, phase !== "thinking");
 	}
 
 	/** Its run ended: show how, as soon as the pace allows, and stop following it. */
 	finish(channel: string, ts: string, ending: Ending): void {
-		this.#want(channel, ts, this.#emoji(ending), true);
+		this.#want(channel, ts, this.#emoji(ending), true, false);
 	}
 
-	#want(channel: string, ts: string, emoji: string, ending: boolean): void {
+	#want(channel: string, ts: string, emoji: string, ending: boolean, step: boolean): void {
 		const key = `${channel}:${ts}`;
 		const now = this.#now();
 		const entry = this.#entries.get(key) ?? { channel, ts, shownAt: Number.NEGATIVE_INFINITY, wantSince: now, ending: false };
 		if (entry.ending && !ending) return;
 		if (entry.want !== emoji) entry.wantSince = now;
 		entry.want = emoji;
+		entry.step = step ? emoji : ending ? undefined : entry.step;
 		entry.ending = ending;
 		this.#entries.set(key, entry);
 		this.#schedule(0);
@@ -136,12 +150,17 @@ export class StatusReactions {
 			let next = Number.POSITIVE_INFINITY;
 			let chosen: [string, Entry] | undefined;
 			for (const [key, e] of this.#entries) {
-				if (e.want === e.shown) {
+				if (e.step === e.shown) e.step = undefined;
+				if ((e.step ?? e.want) === e.shown) {
 					// An ended request is remembered a minute, so a late phase can't replace its ending.
 					if (e.ending && now - e.shownAt > 60_000) this.#entries.delete(key);
 					continue;
 				}
-				const ready = e.ending ? now : Math.max(e.wantSince + this.#debounceMs, e.shownAt + this.#minDwellMs);
+				const ready = e.ending
+					? now
+					: e.step !== undefined
+						? e.shownAt + this.#minDwellMs
+						: Math.max(e.wantSince + this.#debounceMs, e.shownAt + this.#minDwellMs);
 				if (ready <= now && (chosen === undefined || e.ending)) chosen = [key, e];
 				else next = Math.min(next, ready);
 			}
@@ -150,7 +169,8 @@ export class StatusReactions {
 				if (pace > now) next = Math.min(next, pace);
 				else {
 					const [key, e] = chosen;
-					const want = e.want!;
+					const want = (e.step ?? e.want)!;
+					e.step = undefined;
 					const old = e.shown;
 					this.#lastCall = now;
 					e.shown = want;

@@ -9,6 +9,14 @@ Scout follows [semantic versioning](https://semver.org). The public interface is
 
 A change to any of these that needs people to act is a major version. Everything else is minor or a patch.
 
+## Unreleased
+
+### Fixed
+- **A request's reaction shows Scout's steps again behind a slow model.** A phase showed only once it had lasted 1.5 s.
+  When the model takes many seconds to start answering, a run is long thinking with quick reads and edits between, so
+  the reaction sat on 🧠 the whole run. Steps now show even when they were over in a moment, each for at least 3 s;
+  thinking still waits 1.5 s, so quick turns between steps don't flicker.
+
 ## 1.0.1 (2026-10-22)
 
 Nothing to do when upgrading from 1.0.0.

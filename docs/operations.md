@@ -263,8 +263,9 @@ either way.
   (`reactions:write`; `src/reactions.ts`): 👀 picked up, ⏳ queued, 🧠 thinking, 📖 reading, ✏️ editing, 💻 a command,
   🧪 testing, 🏗️ building, 📊 checking monitoring or CI, 🔀 opening the pull request, 🗜️ tidying its memory, 🐢 taking
   longer, ⚖️ trying approaches; at the end ✅ answered, ⚠️ a problem, ✋ stopped, 🙋 waiting on someone. One reaction
-  at a time, Scout's own. Smoothed so it doesn't flicker: a phase shows once it has lasted 1.5 s and stays at least
-  3 s; the ending shows at once and nothing overwrites it. Changes across the workspace go out at most every 1.5 s,
+  at a time, Scout's own. Smoothed so it doesn't flicker: thinking shows once it has lasted 1.5 s; a step shows even if
+  it was over in a moment (behind a slow model, a run is long thinking between quick steps); whatever shows stays at
+  least 3 s; the ending shows at once and nothing overwrites it. Changes across the workspace go out at most every 1.5 s,
   only the latest per message, so a busy channel sees fewer changes rather than Slack rate limits. The profile's
   `reactions.md` renames any emoji; `SCOUT_STATUS_REACTIONS=off` goes back to just 👀, then ✅ or ⚠️.
 - **🔍 to ask for a look.** A 🔍 on any message in a public channel Scout is in starts a thread on it: "look into
