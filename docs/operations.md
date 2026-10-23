@@ -45,6 +45,21 @@ Scout doesn't monitor itself from the inside, since a Scout that has stopped can
 | Is it keeping up? | `npm run doctor` on a schedule (cron, a systemd timer, a CI job), every 15–60 minutes | it exits 1. The output says what's wrong and how to fix it |
 | Trends | Prometheus scraping `/metrics` (`SCOUT_METRICS_TOKEN` as a bearer token) | see below |
 
+**What the metrics token opens.** `SCOUT_METRICS_TOKEN` opens `/metrics`, and `/status.json` only as far as the
+doctor and monitors need: uptime, what's working (channel, start, step count), capacity, backups, which model is
+answering, and problems (with anything that looks like a credential redacted). The whole snapshot at `/status.json`
+(notes, schedules, threads, each run's last step) takes the dashboard's login. A scrape credential is often kept less
+carefully than others, so it doesn't read conversations.
+
+**The dashboard speaks plain HTTP.** On loopback (the default, `127.0.0.1:8893`) it needs no login, and answers only
+requests addressed to `localhost`, `127.0.0.1` or `[::1]`, so a web page can't read it by pointing its own name at
+your machine. To view it from elsewhere, use an SSH tunnel (`ssh -L 8893:127.0.0.1:8893 scout-host`). Off loopback it
+needs a login (`SCOUT_DASH_USER`, `SCOUT_DASH_PASSWORD_HASH`), and that login and the metrics token cross the network
+in the clear with every request: put the dashboard behind a reverse proxy that speaks TLS, or keep it on a private
+network (a VPN such as WireGuard or Tailscale), never on an open one. A proxy in front of a loopback dashboard with no
+login must send a loopback `Host`; better, give it a login. Live views are capped at 20 at once, and one that stops
+reading is let go.
+
 **Useful alerts on `/metrics`:**
 - `scout_backup_ok == 0` for 30 minutes: Scout's data isn't backed up off the machine ([Backups](#backups)).
 - `scout_problems > 0` for 1 hour: something needs a person, and the dashboard says what.
@@ -610,7 +625,8 @@ restart.
   longer emits its own. Pi's metrics are not exported over OTLP; `/metrics` (below) is Scout's own.
 - **Metrics**: Prometheus text at `/metrics` on the dashboard's listener: model requests, tokens, spend, tool calls,
   runs, and gauges for working threads, open pull requests, unreviewed notes, problems, this week's spend and open
-  sandbox connections, and the capacity gauges (below). With `SCOUT_METRICS_TOKEN` it takes that bearer token; otherwise the dashboard's login.
+  sandbox connections, and the capacity gauges (below). With `SCOUT_METRICS_TOKEN` it takes that bearer token; otherwise the dashboard's login
+  ([what the token opens](#monitoring)).
 
 ## Who may ask for work
 

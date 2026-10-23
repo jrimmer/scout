@@ -141,7 +141,8 @@ export async function fakeSlack() {
 		}
 		if (url.pathname.startsWith("/files/")) {
 			// A private file: only with the bot's token, as Slack serves url_private.
-			if (req.headers.authorization !== "Bearer xoxb-test") res.writeHead(403).end();
+			if (url.pathname === "/files/moved") res.writeHead(302, { location: url.searchParams.get("to") ?? "/" }).end();
+			else if (req.headers.authorization !== "Bearer xoxb-test") res.writeHead(403).end();
 			else res.writeHead(200).end("file contents");
 			return;
 		}

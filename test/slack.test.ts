@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import type { IncomingMessage } from "../src/bridge.ts";
 import { Slack, type SlackHandlers } from "../src/slack.ts";
@@ -551,10 +553,31 @@ describe("slack", () => {
 		});
 
 		it("downloads private files with its token, and says when Slack won't hand one over", async () => {
-			assert.equal(new TextDecoder().decode(await slack.download(`${fake.filesUrl}build.log`)), "file contents");
+			assert.equal(new TextDecoder().decode(await slack.download(`${fake.filesUrl}build.log`, 1024)), "file contents");
 			const other = new Slack({ botToken: "xoxb-other", appToken: "xapp-test" }, { receiver: fake.receiver, apiUrl: fake.apiUrl });
 			apps++;
-			await assert.rejects(other.download(`${fake.filesUrl}build.log`), /Slack answered 403/);
+			await assert.rejects(other.download(`${fake.filesUrl}build.log`, 1024), /Slack answered 403/);
+		});
+
+		it("sends its token only to Slack's file host, and reads no more than the limit", async () => {
+			// A remote file's url_private is whatever the app that shared it said: here, somewhere that isn't Slack.
+			const seen: (string | undefined)[] = [];
+			const elsewhere = createServer((req, res) => {
+				seen.push(req.headers.authorization);
+				res.end("stolen");
+			});
+			await new Promise<void>((resolve) => elsewhere.listen(0, "127.0.0.1", resolve));
+			const there = `http://127.0.0.1:${(elsewhere.address() as AddressInfo).port}/x`;
+			try {
+				await assert.rejects(slack.download(there, 1024), /not a Slack file URL/);
+				await assert.rejects(slack.download("https://attacker.example/files-pri/T0/F0/x", 1024), /not a Slack file URL/);
+				await assert.rejects(slack.download("http://files.slack.com/files-pri/T0/F0/x", 1024), /not a Slack file URL/, "https only");
+				await assert.rejects(slack.download(`${fake.filesUrl}moved?to=${encodeURIComponent(there)}`, 1024), /away from Slack/);
+				assert.deepEqual(seen, [], "nothing was asked of the other host");
+			} finally {
+				elsewhere.close();
+			}
+			await assert.rejects(slack.download(`${fake.filesUrl}build.log`, 5), /over 5 bytes/);
 		});
 
 		it("offers a public channel to someone who wrote directly", () => {

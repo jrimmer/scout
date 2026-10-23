@@ -80,8 +80,8 @@ export type BridgeOptions = {
 	repoFor?: (channelName: string, text?: string) => string;
 	/** A channel's own model, if its profile names one; otherwise `agent`'s. */
 	modelFor?: (channelName: string) => { provider: string; modelId: string } | undefined;
-	/** Download a shared file (Slack needs the bot's token for that). */
-	download?: (url: string) => Promise<Uint8Array>;
+	/** Download a shared file, up to `limit` bytes (Slack needs the bot's token for that). */
+	download?: (url: string, limit: number) => Promise<Uint8Array>;
 	/** Put a shared file where the thread's tools can read it; returns its path there. */
 	saveAttachment?: (conversationId: number, name: string, bytes: Uint8Array) => Promise<string>;
 	/**
@@ -451,7 +451,7 @@ export class Bridge {
 				notes.push(`(attached ${file.name}, ${Math.round(file.size / 1024 / 1024)} MB: too big to open)`);
 			} else {
 				try {
-					const bytes = await download(file.url);
+					const bytes = await download(file.url, limit);
 					if (image) {
 						images.push({ type: "image", data: Buffer.from(bytes).toString("base64"), mimeType: file.mimetype });
 						notes.push(`(attached image ${file.name})`);

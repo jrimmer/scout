@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { request } from "node:http";
+import { connect } from "node:net";
 import { describe, it } from "node:test";
-import { Collector } from "../src/dash/collect.ts";
+import { Collector, type Snapshot } from "../src/dash/collect.ts";
 import { Grid } from "../src/dash/grid.ts";
 import { layout } from "../src/dash/layout.ts";
 import { hashPassword, startDashboard, verifyPassword } from "../src/dash/server.ts";
+import { checkRunning, type Running } from "../src/doctor.ts";
 import { Memory } from "../src/memory.ts";
 import { Pulls } from "../src/pulls.ts";
 import { Threads, threadKey } from "../src/threads.ts";
@@ -176,11 +178,12 @@ function stream(port: number, headers: Record<string, string>, opened: () => voi
 }
 
 describe("dashboard server", () => {
-	it("checks passwords against scrypt hashes", () => {
+	it("checks passwords against scrypt hashes", async () => {
 		const hash = hashPassword("hunter2");
-		assert.equal(verifyPassword("hunter2", hash), true);
-		assert.equal(verifyPassword("hunter3", hash), false);
-		assert.equal(verifyPassword("hunter2", "plain"), false);
+		assert.equal(await verifyPassword("hunter2", hash), true);
+		assert.equal(await verifyPassword("hunter3", hash), false);
+		assert.equal(await verifyPassword("hunter2", "plain"), false);
+		assert.equal(await verifyPassword("hunter2", "scrypt$AAAA$"), false);
 	});
 
 	it("refuses to listen beyond loopback without a password", async () => {
@@ -215,8 +218,9 @@ describe("dashboard server", () => {
 		await dash.close();
 	});
 
-	it("gives monitors the snapshot as JSON with the metrics token, and nobody else", async () => {
-		const collector = { collect: async () => busy } as unknown as Collector;
+	it("gives monitors what the doctor reads with the metrics token, the whole snapshot only with the login", async () => {
+		const snapshot = { ...busy, alerts: [{ message: "gateway said: bad key sk-ant-api03-abcdefghijklmnopqrstuvwxyz", since: busy.now }] };
+		const collector = { collect: async () => snapshot } as unknown as Collector;
 		const dash = await startDashboard({
 			addr: "127.0.0.1:0",
 			auth: { user: "ops", passwordHash: hashPassword("pw") },
@@ -227,8 +231,94 @@ describe("dashboard server", () => {
 		assert.equal((await get(dash.port, "/status.json", { authorization: "Bearer nope" })).status, 401);
 		const status = await get(dash.port, "/status.json", { authorization: "Bearer tok" });
 		assert.equal(status.status, 200);
-		assert.equal((JSON.parse(status.body) as { threadsToday: number }).threadsToday, busy.threadsToday);
+		const running = JSON.parse(status.body) as Running & Partial<Snapshot>;
+		assert.deepEqual(checkRunning(running).map((c) => c.status), ["ok", "warn"], "enough for the doctor's Running check");
+		assert.equal(running.working.length, busy.working.length);
+		assert.equal(running.alerts[0]?.message, "gateway said: bad key [redacted Anthropic key]");
+		assert.equal(running.learning, undefined, "no memory notes");
+		assert.equal(running.schedules, undefined, "no schedule tasks");
+		assert.equal(running.threads, undefined);
+		assert.doesNotMatch(status.body, /lastStep/, "no thread steps");
+		const login = { authorization: `Basic ${Buffer.from("ops:pw").toString("base64")}` };
+		const full = await get(dash.port, "/status.json", login);
+		assert.equal((JSON.parse(full.body) as Snapshot).learning.notes.length, busy.learning.notes.length);
 		assert.equal((await get(dash.port, "/metrics", { authorization: "Bearer tok" })).body, "scout_runs_total 1\n");
+		assert.equal((await get(dash.port, "/metrics", login)).status, 401, "the token is the only way to the metrics when there is one");
+		await dash.close();
+	});
+
+	it("survives requests for names that aren't its files, and answers a failure with a 500", async () => {
+		const collector = { collect: async () => busy } as unknown as Collector;
+		const dash = await startDashboard({
+			addr: "127.0.0.1:0",
+			collector,
+			bench: () => {
+				throw new Error("no scores");
+			},
+		});
+		for (const name of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+			assert.equal((await get(dash.port, `/static/${name}`)).status, 404, name);
+		}
+		assert.equal((await get(dash.port, "/bench")).status, 500);
+		assert.equal((await get(dash.port, "/healthz")).body, "ok", "still up");
+		await dash.close();
+	});
+
+	it("without a login, answers only to loopback names, so a rebound web page can't read it", async () => {
+		const collector = { collect: async () => busy } as unknown as Collector;
+		const dash = await startDashboard({ addr: "127.0.0.1:0", collector, metrics: { render: async () => "" } });
+		for (const host of ["rebind.attacker.example:8893", "rebind.attacker.example", "127.0.0.1.attacker.example"]) {
+			assert.equal((await get(dash.port, "/status.json", { host })).status, 403, host);
+			assert.equal((await get(dash.port, "/", { host })).status, 403, host);
+		}
+		for (const host of ["localhost:8893", "127.0.0.1", "[::1]:8893", "LOCALHOST"]) {
+			assert.equal((await get(dash.port, "/", { host })).status, 200, host);
+		}
+		assert.equal((await get(dash.port, "/healthz", { host: "rebind.attacker.example" })).body, "ok");
+		await dash.close();
+	});
+
+	it("checks one login at a time without stalling, and remembers the one that passed", async () => {
+		const collector = { collect: async () => busy } as unknown as Collector;
+		const dash = await startDashboard({ addr: "127.0.0.1:0", auth: { user: "ops", passwordHash: hashPassword("pw") }, collector });
+		const good = { authorization: `Basic ${Buffer.from("ops:pw").toString("base64")}` };
+		const bad = (n: number) => ({ authorization: `Basic ${Buffer.from(`ops:guess${n}`).toString("base64")}` });
+		assert.equal((await get(dash.port, "/", good)).status, 200);
+		// A burst of bad logins: one is checked, the rest turned away at once; the logged-in browser isn't held up by them.
+		const answers = await Promise.all([...Array.from({ length: 10 }, (_, n) => get(dash.port, "/", bad(n))), get(dash.port, "/", good)]);
+		const statuses = answers.map((a) => a.status);
+		assert.equal(statuses.at(-1), 200);
+		assert.ok(statuses.slice(0, -1).every((s) => s === 401 || s === 429), String(statuses));
+		assert.ok(statuses.includes(429), `some turned away: ${statuses}`);
+		assert.equal((await get(dash.port, "/", bad(99))).status, 401);
+		await dash.close();
+	});
+
+	it("caps live views, and lets go of one that stops reading", async () => {
+		let n = 0;
+		// Grids of two heights, so every tick sends a whole grid.
+		const tall = { ...busy, alerts: Array.from({ length: 10 }, (_, i) => ({ message: `alert ${i}`, since: busy.now })) };
+		const collector = { collect: async () => (++n % 2 === 0 ? busy : tall) } as unknown as Collector;
+		const dash = await startDashboard({ addr: "127.0.0.1:0", collector, intervalMs: 1 });
+		const stuck = connect(dash.port, "127.0.0.1");
+		const closed = new Promise<void>((resolve) => stuck.on("close", () => resolve()));
+		stuck.write("GET /stream HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+		stuck.pause();
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+		// Reading again, it finds the stream has ended rather than going on forever.
+		stuck.resume();
+		const timeout = new Promise<string>((resolve) => setTimeout(() => resolve("still open"), 5000).unref());
+		assert.equal(await Promise.race([closed.then(() => "closed"), timeout]), "closed");
+		stuck.destroy();
+
+		const open: { destroy: () => void }[] = [];
+		for (let i = 0; i < 20; i++) {
+			const req = request({ host: "127.0.0.1", port: dash.port, path: "/stream" });
+			await new Promise<void>((resolve, reject) => req.on("response", () => resolve()).on("error", reject).end());
+			open.push(req);
+		}
+		assert.equal((await get(dash.port, "/stream")).status, 503);
+		for (const req of open) req.destroy();
 		await dash.close();
 	});
 });

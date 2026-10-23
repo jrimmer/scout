@@ -1,5 +1,6 @@
 import type { AgentEvent } from "@earendil-works/pi-durable";
 import { type Phase, toolPhase } from "./reactions.ts";
+import { redact } from "./scan.ts";
 
 /** Where Scout's replies go. The Slack client in production, a fake in tests. */
 export interface ChatSurface {
@@ -496,10 +497,10 @@ export function finalMessage(
 			: run.text === undefined
 				? run.error === undefined
 					? "Done."
-					: `I ran into a problem and stopped: ${clip(run.error, 500)}`
+					: `I ran into a problem and stopped: ${clip(redact(run.error), 500)}`
 				: run.error === undefined
 					? run.text
-					: `${run.text}\n\n_Then I ran into a problem and stopped: ${clip(run.error, 500)}_`;
+					: `${run.text}\n\n_Then I ran into a problem and stopped: ${clip(redact(run.error), 500)}_`;
 	const steps = run.steps.length;
 	const footer = run.recovered
 		? "Finished while I was restarting."

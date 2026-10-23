@@ -27,6 +27,15 @@ describe("render", () => {
 		assert.doesNotMatch(JSON.stringify(finalMessage({ startedAt: 0, steps: [], text: "Done." }, 1000).blocks), /Noted/);
 	});
 
+	it("takes anything that looks like a credential out of an error before the thread sees it", () => {
+		const error = "the model didn't answer (401: invalid x-api-key sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123)";
+		for (const run of [{ startedAt: 0, steps: [], error }, { startedAt: 0, steps: [], text: "Half done.", error }]) {
+			const message = finalMessage(run, 1000);
+			assert.doesNotMatch(message.text + JSON.stringify(message.blocks), /sk-ant-/);
+			assert.match(message.text, /invalid x-api-key \[redacted Anthropic key\]/);
+		}
+	});
+
 	it("puts what the run cost in the footer, after its steps and time", () => {
 		const message = finalMessage({ startedAt: 0, steps: ["`bash npm test`"], text: "Done.", cost: "$0.03 · $12.40 of $100 this week" }, 130_000);
 		assert.match(JSON.stringify(message.blocks), /1 step · 2m 10s · \$0\.03 · \$12\.40 of \$100 this week/);
