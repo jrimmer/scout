@@ -66,13 +66,22 @@ export class Approvals {
 				given_until INTEGER
 			);
 		`);
+		// Which server's change is waiting, so an Approve button can check the right approvers (added after 1.0's first data).
+		const columns = this.#db.prepare("PRAGMA table_info(approvals)").all() as { name: string }[];
+		if (!columns.some((c) => c.name === "asked_for")) this.#db.exec("ALTER TABLE approvals ADD COLUMN asked_for TEXT");
 	}
 
-	/** A change in this thread waited for approval: the answer Scout gives next is where people can react 👍. */
-	ask(conversationId: number): void {
+	/** A change to `server` in this thread waited for approval: the answer Scout gives next is where people can react 👍. */
+	ask(conversationId: number, server?: string): void {
 		this.#db
-			.prepare("INSERT INTO approvals (conversation_id, asked) VALUES (?, 1) ON CONFLICT DO UPDATE SET asked = 1")
-			.run(conversationId);
+			.prepare("INSERT INTO approvals (conversation_id, asked, asked_for) VALUES (?, 1, ?) ON CONFLICT DO UPDATE SET asked = 1, asked_for = excluded.asked_for")
+			.run(conversationId, server ?? null);
+	}
+
+	/** The server whose change the conversation's latest request for approval is for, if known. */
+	askedFor(conversationId: number): string | undefined {
+		const row = this.#db.prepare("SELECT asked_for FROM approvals WHERE conversation_id = ?").get(conversationId) as { asked_for: string | null } | undefined;
+		return row?.asked_for ?? undefined;
 	}
 
 	/** A run ended with its answer in message `ts`: that's where a 👍 approves if the run asked, else nowhere. */
@@ -219,7 +228,7 @@ export async function mcpExtension(
 					execute: async (args, api, context) => {
 						const approver = gated ? approvals?.by(api.conversationId) : undefined;
 						if (gated && approver === undefined) {
-							approvals?.ask(api.conversationId);
+							approvals?.ask(api.conversationId, connection.name);
 							throw new Error(
 								`${tool.name} changes ${connection.name}, so it needs a person's approval first. Say exactly what you'll change and why, ask the people in this thread to reply "approve" or react 👍 to your answer, and call it again once someone has. An approval covers this one change, for 15 minutes; each further change needs its own.`,
 							);

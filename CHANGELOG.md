@@ -64,6 +64,8 @@ A change to any of these that needs people to act is a major version. Everything
   - update Scout's unit from `deploy/scout.service`: `ExecStart=/usr/bin/node src/main.ts`, no `KillMode=mixed`, and the restores reading `-config /etc/litestream.yml` and the keys from `/etc/litestream.env` (mode 640, Scout's group), which Scout's own environment no longer gets.
 
 ### Fixed
+- **Approve buttons:** someone who isn't among a change's approvers could press Approve and see "Approved by" them, though the change was then refused. The button now checks the approvers for the waiting change first and says who can.
+- **Queue notice:** "I'm working on 1 things already" now reads "1 thing".
 - **Starting with a token Slack refuses:** `npm start` crashed with a stack trace. It now says which token was refused (`SLACK_BOT_TOKEN` or `SLACK_APP_TOKEN`) and to run `npm run doctor`, and exits 1. A setting Scout already words an error for (a missing or malformed one in `.env`) prints just that message too; a real bug keeps its stack.
 - **`npm run job` with a repository it can't reach:** it printed the whole stack of the failed `git clone` before "Scout couldn't finish". It now prints that line alone, with git's own words in it.
 - **The doctor, on a server it can't reach:** "can't reach <address> (fetch failed)" now has a hint from the cause: nothing listening at that port, a host name that doesn't resolve, https against a server that serves http (or the reverse), an untrusted certificate, a timeout.

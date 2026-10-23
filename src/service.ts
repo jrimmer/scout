@@ -464,6 +464,10 @@ export async function startService(options: ServiceOptions) {
 		const channelName = await channelOf(d.conversationId);
 		const ts = (Date.now() / 1000).toFixed(6);
 		if (d.approve) {
+			// Only the approvers for the waiting change: anyone else's press doesn't count, and the button stays.
+			const server = scout.approvals.askedFor(d.conversationId);
+			const refused = server === undefined ? undefined : await scout.refuseApprover(d.user, server);
+			if (refused !== undefined) return `<@${d.user}> can't approve this one: ${refused}`;
 			await bridge.onMessage({ channel: thread.channel, channelType: "channel", channelName, user: d.user, text: "approve", ts, threadTs: thread.threadTs });
 			return scout.approvals.by(d.conversationId) === d.user ? `👍 Approved by <@${d.user}>.` : `<@${d.user}> can't approve this one; the thread says why.`;
 		}

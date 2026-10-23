@@ -195,42 +195,24 @@ describe("e2e: approvals", () => {
 		});
 	});
 
-	it("does not make the change when someone who isn't an admin presses Approve, and the thread says who can", async () => {
+	// The button checks the approvers for the waiting change before anything else, as the tool would: a non-admin's
+	// press doesn't reach the thread, and the button itself says who can.
+	it("does not make the change when someone who isn't an admin presses Approve, and the button says who can", async () => {
 		await withGrafana(async (e2e, written) => {
 			const told: string[] = [];
-			const { ts, conversationId } = await askForChange(e2e, told);
-			e2e.faux.setResponses([writeRules(), remember(told, "Bob's approval doesn't count here: someone in admins has to approve.")]);
-			await press(e2e, "approve", conversationId, BOB);
-			await saidSoon(e2e, "Bob's approval doesn't count here");
-			await ended(e2e, 2);
+			const { conversationId } = await askForChange(e2e, told);
+			const replaced = await press(e2e, "approve", conversationId, BOB);
+			assert.doesNotMatch(String(replaced.text), /Approved by/);
+			assert.match(String(replaced.text), /can't approve this one: changes to grafana need someone in admins\./);
 			await idle(e2e);
 			assert.deepEqual(written, [], "nothing was changed");
-			assert.match(told[1] ?? "", /The approval doesn't cover this: changes to grafana need someone in admins\./);
 
 			// An admin can still approve afterwards, and then it goes through.
 			e2e.faux.setResponses([writeRules(), remember(told, "Done, with Ann's approval.")]);
-			await say(e2e, ts, ANN, "approve");
+			const approved = await press(e2e, "approve", conversationId, ANN);
+			assert.match(String(approved.text), /Approved by/);
 			await saidSoon(e2e, "Done, with Ann's approval.");
-			await ended(e2e, 3);
 			assert.deepEqual(written, ["rules"]);
-		});
-	});
-
-	// BUG (reported with this suite): the button's reply is decided by `approvals.by(...) === user`, which is true for
-	// anyone, because the grant is recorded before the roles are checked (service.ts decide). So a non-admin who
-	// presses Approve is told "👍 Approved by <@them>." even though the change then refuses. The check that matters
-	// (refuseApprover) runs only when the tool is called. The message should say it can't count, as it does for a
-	// refused "approve" reply in the thread.
-	it("tells a non-admin who presses Approve that it doesn't count, on the button itself", { todo: "the button says 'Approved by' for anyone: service.ts decide() grants before checking roles" }, async () => {
-		await withGrafana(async (e2e) => {
-			const { conversationId } = await askForChange(e2e);
-			e2e.faux.setResponses([writeRules(), fauxAssistantMessage("Not approved.")]);
-			const replaced = await press(e2e, "approve", conversationId, BOB);
-			await saidSoon(e2e, "Not approved.");
-			await ended(e2e, 2);
-			await idle(e2e);
-			// Last, so that a failure here leaves nothing running: the buttons say what happened to Bob's approval.
-			assert.doesNotMatch(String(replaced.text), /Approved by/);
 		});
 	});
 

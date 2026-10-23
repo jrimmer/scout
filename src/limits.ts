@@ -157,7 +157,7 @@ export class Limits implements Observer {
 		}
 		const { total: maxTotal, perChannel } = this.config.concurrency ?? {};
 		if (maxTotal !== undefined && working.length >= maxTotal) {
-			return { ok: false, wait: true, reason: `I'm working on ${working.length} things already. I'll start on this as soon as one finishes.` };
+			return { ok: false, wait: true, reason: `I'm working on ${working.length} thing${working.length === 1 ? "" : "s"} already. I'll start on this as soon as one finishes.` };
 		}
 		const here = working.filter((w) => w.channel === channel).length;
 		if (perChannel !== undefined && here >= perChannel) {
