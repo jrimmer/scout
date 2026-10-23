@@ -177,9 +177,15 @@ export class Threads {
 		this.#db.prepare("UPDATE threads SET runs = runs + 1 WHERE conversation_id = ?").run(conversationId);
 	}
 
-	/** Threads with activity no reflection has read yet. */
+	/**
+	 * Threads with activity no reflection has read yet. A reflection's own announcement thread isn't one: reading it
+	 * would start a reflection on a quiet day about nothing but the last one.
+	 */
 	unreflected(): ThreadRow[] {
-		return this.#db.prepare("SELECT * FROM threads WHERE last_activity > reflected_activity").all().map(toThread);
+		return this.#db
+			.prepare("SELECT * FROM threads WHERE last_activity > reflected_activity AND conversation_id NOT IN (SELECT conversation_id FROM reflections)")
+			.all()
+			.map(toThread);
 	}
 
 	reflection(day: string): { conversationId: number; threads: string[] } | undefined {

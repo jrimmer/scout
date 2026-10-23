@@ -64,6 +64,7 @@ A change to any of these that needs people to act is a major version. Everything
   - update Scout's unit from `deploy/scout.service`: `ExecStart=/usr/bin/node src/main.ts`, no `KillMode=mixed`, and the restores reading `-config /etc/litestream.yml` and the keys from `/etc/litestream.env` (mode 640, Scout's group), which Scout's own environment no longer gets.
 
 ### Fixed
+- **Reflection:** the day after a proposal, a quiet day still started a reflection, about nothing but Scout's own announcement of the last one. Its announcement thread no longer counts as new activity.
 - **Approve buttons:** someone who isn't among a change's approvers could press Approve and see "Approved by" them, though the change was then refused. The button now checks the approvers for the waiting change first and says who can.
 - **Queue notice:** "I'm working on 1 things already" now reads "1 thing".
 - **Starting with a token Slack refuses:** `npm start` crashed with a stack trace. It now says which token was refused (`SLACK_BOT_TOKEN` or `SLACK_APP_TOKEN`) and to run `npm run doctor`, and exits 1. A setting Scout already words an error for (a missing or malformed one in `.env`) prints just that message too; a real bug keeps its stack.

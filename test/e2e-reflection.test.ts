@@ -301,11 +301,10 @@ describe("end to end: the nightly reflection", () => {
 		}
 	});
 
-	// BUG: the announcement thread (bridge.adopt in service.ts's reflectionProposed) is inserted into `threads` after
-	// `Reflector.run` marked the threads it read as reflected, so it counts as "a thread with new activity" the next
-	// night: the day after any proposal, a day on which nobody said anything still starts a reflection, whose only input
-	// is Scout's own announcement. It costs a model run and leaves the quiet day looking busy; it should be skipped.
-	it("does not start another reflection the next day for its own announcement", { todo: "the announcement thread counts as new activity" }, async () => {
+	// The announcement thread (bridge.adopt in service.ts's reflectionProposed) is a thread like any other, added after
+	// the reflection marked what it read: it mustn't count as new activity the next night, or a quiet day after any
+	// proposal starts a reflection about nothing but Scout's own announcement (threads.ts unreflected).
+	it("does not start another reflection the next day for its own announcement", async () => {
 		const r = await start({ hour: 0 });
 		const { e2e, clock } = r;
 		const seen = { digest: "" };
