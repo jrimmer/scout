@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { request } from "node:http";
 import { describe, it } from "node:test";
 import { type BenchRow, BenchStore, benchRow, logScale, quantile, relate, score } from "../src/bench.ts";
@@ -150,21 +151,25 @@ describe("benchmark", () => {
 		const scores = [score("gateway/a", [row()]), score("gateway/b", [row({ model: "gateway/b", pass: false })])];
 		const dash = await startDashboard({ addr: "127.0.0.1:0", collector, bench: () => ({ scores, lastRun: "2026-10-22", keep: 10, hour: 1, tasks: 7 }) });
 		const empty = await startDashboard({ addr: "127.0.0.1:0", collector, bench: () => ({ scores: [], keep: 10, hour: 1, tasks: 7 }) });
+		const none = await startDashboard({ addr: "127.0.0.1:0", collector, bench: () => ({ scores: [], keep: 10, hour: 1, tasks: 0 }) });
 		try {
 			const home = (await get(dash.port, "/")).body;
 			assert.match(home, /<span class="g-dim">scout · read-only · <\/span><a href="\/bench" class="g-dim">benchmark<\/a>/, "in the grid's last line, styled like it");
 			assert.doesNotMatch(home, /<nav|<footer/);
 			const page = (await get(dash.port, "/bench")).body;
-			assert.match(page, /7 tasks from Scout's own history/);
+			assert.match(page, /the same pool of 7 tasks taken from this team's own work/);
+			assert.doesNotMatch(page, /Scout's own history/);
 			assert.match(page, /<footer class="links"><a href="\/">dashboard<\/a><\/footer>/);
 			assert.match(page, /<figcaption>What it can do<\/figcaption>/);
 			assert.match(page, /<figcaption>Working with it<\/figcaption>/);
 			assert.match(page, /<li class="s1"><i><\/i>gateway\/b/);
 			assert.doesNotMatch(page, /<script|style=/, "nothing the dashboard's content security policy would block");
 			assert.match((await get(empty.port, "/bench")).body, /No runs yet\. They start each night after 01:00/);
+			assert.match((await get(none.port, "/bench")).body, /No tasks yet\. The benchmark's tasks come from this team's own work/);
 		} finally {
 			await dash.close();
 			await empty.close();
+			await none.close();
 		}
 	});
 
@@ -182,12 +187,12 @@ describe("benchmark", () => {
 		store.close();
 	});
 
-	it("ships tasks that load: replayed fixes judged by hidden tests, and bugs to find", () => {
-		const tasks = loadTasks(new URL("../bench", import.meta.url).pathname);
-		assert.ok(tasks.length >= 5);
-		for (const t of tasks) {
-			if (t.kind === "locate") assert.ok(t.given !== undefined && t.check.locate !== undefined, t.name);
-			else assert.ok(t.check.hidden !== undefined && t.check.command !== undefined, t.name);
-		}
+	it("keeps its tasks with the install, since they're the team's private work, and ships none of Scout's own", () => {
+		assert.ok(!existsSync(new URL("../bench", import.meta.url).pathname), "no tasks in Scout's repository");
+		const base = { SCOUT_REPO_URL: "x", SCOUT_REPO_SLUG: "o/r", SCOUT_CODEHOST_TOKEN: "t", SCOUT_CODEHOST_API: "http://f/api/v1" };
+		const config = loadConfig({ ...base, SCOUT_DATA_DIR: "/srv/scout", SCOUT_BENCH_MODELS: "gateway/a" });
+		assert.equal(config.bench?.tasksDir, "/srv/scout/bench");
+		assert.equal(loadConfig({ ...base, SCOUT_BENCH_MODELS: "gateway/a", SCOUT_BENCH_TASKS: "/elsewhere" }).bench?.tasksDir, "/elsewhere");
+		assert.deepEqual(loadTasks("/srv/scout/no-such-dir"), [], "no tasks yet is an empty pool");
 	});
 });

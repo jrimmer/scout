@@ -9,9 +9,13 @@ import type { Axis, ModelScores } from "../bench.ts";
 export function benchPage(scores: readonly ModelScores[], meta: { lastRun?: string; keep: number; hour: number; tasks: number }): string {
 	const body =
 		scores.length === 0
-			? `<p class="note">No runs yet. They start each night after ${String(meta.hour).padStart(2, "0")}:00, and the scores show here once a model has finished its tasks.</p>`
+			? meta.tasks === 0
+				? `<p class="note">No tasks yet. The benchmark's tasks come from this team's own work, fixes that were merged and ones where someone had to correct Scout, kept with this install (docs/evals.md). Runs start the night after there are some.</p>`
+				: `<p class="note">No runs yet. They start each night after ${String(meta.hour).padStart(2, "0")}:00, and the scores show here once a model has finished its tasks.</p>`
 			: [
-					`<p class="note">A pool of ${meta.tasks} tasks from Scout's own history. Each night every model runs the same few of them, the ones run longest ago, so the pool comes round in turn. Results are over each model's last ${meta.keep} runs (the latest ${esc(meta.lastRun ?? "")}). What it can do is scored on fixed scales, so it means the same from week to week. Working with it is measurements, charted against each other: on each spoke the best model is the outer ring. A toy: few tasks, one codebase. Compare models with each other here, not with public leaderboards: "Reasoning" here is finding bugs. Tasks the provider cut short aren't scored as the model's, but a slow night still shows on the right: look at it before comparing.</p>`,
+					`<p class="note">Every model works through the same pool of ${meta.tasks} tasks taken from this team's own work: fixes that were merged, and ones where someone had to correct Scout. Each night every model runs the same handful, working through the pool a few at a time. Scores cover each model's last ${meta.keep} runs (the latest on ${esc(meta.lastRun ?? "")}).</p>`,
+					`<p class="note">What it can do is scored on fixed scales, so a score means the same from one week to the next. Working with it shows measurements scaled against the other models: on each spoke, the outer ring is the best model.</p>`,
+					`<p class="note">This is a small benchmark (a few tasks, one team's code), so compare these models with each other, not with public leaderboards. "Reasoning" here means finding bugs. If a provider cuts a task short, the model isn't scored on it, but the slow night still shows in Working with it, so check that chart before comparing.</p>`,
 					`<ol class="legend">${scores.map((s, i) => `<li class="s${i % SERIES}"><i></i>${esc(s.model)} <small>${s.runs} run${s.runs === 1 ? "" : "s"}</small></li>`).join("")}</ol>`,
 					`<section class="charts">`,
 					figure("What it can do", scores, (s) => s.capability),

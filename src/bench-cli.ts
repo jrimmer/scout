@@ -58,8 +58,13 @@ if (import.meta.main) {
 	useScoutsKey(config.git.sshKey);
 	const pool = loadTasks(config.bench.tasksDir).filter((t) => only === undefined || t.name.includes(only));
 	if (pool.length === 0) {
-		console.error(`no benchmark tasks in ${config.bench.tasksDir}${only === undefined ? "" : ` matching "${only}"`}`);
-		process.exit(2);
+		// No tasks yet is a quiet night, not a failure; a filter that matches nothing is a mistake.
+		if (only !== undefined) {
+			console.error(`no benchmark tasks in ${config.bench.tasksDir} matching "${only}"`);
+			process.exit(2);
+		}
+		console.log(`bench: no tasks in ${config.bench.tasksDir} yet, so no runs tonight`);
+		process.exit(0);
 	}
 	const night = localDay(new Date());
 	const store = new BenchStore(join(config.dataDir, "bench.sqlite"));

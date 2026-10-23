@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { EvalTask, RunResult } from "./evals.ts";
 
 /**
- * A small, slow benchmark of models on Scout's own work, modelled on the public ones: SWE-bench (real fixes replayed,
+ * A small, slow benchmark of models on the deployed team's own work, modelled on the public ones: SWE-bench (real fixes replayed,
  * judged by the fix's own tests, unseen while working, and by whether the rest of the tests still pass), SWE-rebench
  * (tasks that change, so none gets learned), BFCL (well-formed tool calls). Each night every model runs the same
  * tasks, drawn from the pool (bench-cli.ts); only a summary of each run is kept, for the last `KEEP_RUNS` nights, so

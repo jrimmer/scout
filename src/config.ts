@@ -64,7 +64,8 @@ export type Config = {
 	reflect: { hour: number; channel?: string };
 	/**
 	 * The nightly benchmark (bench.ts), off unless SCOUT_BENCH_MODELS names models: each night after `hour`, every
-	 * model runs the tasks in `tasksDir` once.
+	 * model runs the tasks in `tasksDir` once. They come from the team's own repositories, so they live with the install
+	 * (the data directory's bench/ by default), never in Scout's repository.
 	 */
 	bench?: { models: { provider: string; modelId: string }[]; hour: number; tasksDir: string };
 	/**
@@ -321,7 +322,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			// A name, with or without `#` (in an env file an unquoted `#` starts a comment, so `scout` is the safe spelling).
 			...(env.SCOUT_REFLECT_CHANNEL?.replace(/^#/, "") ? { channel: env.SCOUT_REFLECT_CHANNEL.replace(/^#/, "") } : {}),
 		},
-		...(benchModels.length === 0 ? {} : { bench: { models: benchModels, hour: benchHour, tasksDir: resolve(env.SCOUT_BENCH_TASKS ?? join(import.meta.dirname, "..", "bench")) } }),
+		...(benchModels.length === 0 ? {} : { bench: { models: benchModels, hour: benchHour, tasksDir: resolve(env.SCOUT_BENCH_TASKS ?? join(dataDir, "bench")) } }),
 		...(fallbackModels.length === 0 ? {} : { fallback: { models: fallbackModels, after: fallbackAfter, minutes: fallbackFor } }),
 		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
 		pullUpkeep: {

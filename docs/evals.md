@@ -72,18 +72,23 @@ count first and won't start past `--max-runs` (default 60) without `--yes`. Runs
 
 Run it weekly, on a profile proposal you're unsure about, or before switching models; not on every nightly change.
 
-## The benchmark: models compared on Scout's own work
+## The benchmark: models compared on the team's own work
 
 Evals answer "is this change better?". The benchmark answers "how do these models do on our work, and what are they
 like to use through our gateway?", night after night. It's **off** unless `SCOUT_BENCH_MODELS` names the models
 (`provider/model`, comma-separated); then each night after `SCOUT_BENCH_HOUR` (1 by default), Scout starts
-`npm run bench` in a process of its own, and every model runs the same few tasks from `bench/` once, as an eval
+`npm run bench` in a process of its own, and every model runs the same few tasks from the pool once, as an eval
 runs: 3 changes and 4 bugs to find, the ones run longest ago, so the pool comes round in turn and no task gets
 learned by being there every night (SWE-rebench keeps its tasks fresh for the same reason).
 The **Benchmark** page shows the result, linked from the foot of the dashboard. `npm run bench` runs a night by hand (`--only <text>` for
 every task whose name has the text).
 
-**The tasks** are real fixes from Scout's history, chosen as public benchmarks choose theirs:
+**The tasks** come from the work of the team Scout is deployed with, never from Scout's own code: fixes that were
+merged into the team's repositories, and threads where someone had to correct Scout, with the corrected outcome as the
+check. They're the team's private code, so they live with the install, as JSON files in the data directory's `bench/`
+(`SCOUT_BENCH_TASKS` names another directory), never in Scout's repository. The Benchmark page shows only the models'
+scores and how many tasks there are, never a task's name, request or code. With no tasks yet, there are no runs and
+the page says so. They're chosen as public benchmarks choose theirs:
 - **Replayed fixes**, as in SWE-bench: Scout starts from the commit before a fix, with a request a person would
   make. The fix's own tests are put in place only after the work (`check.hidden`), so the model can't fit its
   change to tests it saw. It passes when they do: the new tests and the old ones in the same file. If it changed
@@ -96,9 +101,9 @@ every task whose name has the text).
   doesn't read as a slow model. And 90 minutes in all, so a slow night can't run into the day: a task cut short by
   that, whose calls kept failing, or that never reached the model, isn't scored as the model's. It counts under
   "Tasks not lost" instead.
-- Candidates were commits with a small change to `src/` and tests in `test/`, kept only when their tests fail
-  before the fix and pass after it, and the rest of the tests pass before it. Add more as JSON files in `bench/`
-  (the fields are the eval task's); a bigger pool comes round less often.
+- A candidate is a merged change with a small fix and its tests, kept only when its tests fail before the fix and
+  pass after it, and the rest of the tests pass before it. Each is a JSON file with the eval task's fields; `repo`
+  names one of the team's repositories. A bigger pool comes round less often.
 
 **The charts.** What a model can do is scored 0 to 100 on fixed scales, so a score means the same thing from week to
 week and a model added later compares fairly. What it's like to work with is shown as the measurements themselves,
@@ -124,7 +129,7 @@ oldest run goes as each new one comes in.
 | Call success | Model calls that worked without a retry, as counts |
 | Tasks not lost | Tasks the provider didn't cut short (the 90-minute limit, or calls that kept failing), as counts |
 
-It's a toy: a handful of tasks from one codebase. Read it as a comparison of models on this work, not a ranking.
+It's small: a few tasks, one team's code. Read it as a comparison of models on this work, not a ranking.
 Costs come from the prices file, so a model without a price there shows as free; add list prices (OpenRouter's, or
 the gateway's own catalog) for every model you compare. The nights cost about a task's worth of model calls per
 model per task, a few dollars a week for three models at today's prices.

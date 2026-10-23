@@ -11,6 +11,12 @@ A change to any of these that needs people to act is a major version. Everything
 
 ## Unreleased
 
+### Changed
+- **The benchmark runs on the team's own work, not Scout's.** Its tasks come from the repositories of the team Scout
+  is deployed with, so they're private: they live with the install (the data directory's `bench/`, or
+  `SCOUT_BENCH_TASKS`), and the tasks from Scout's own history are gone. With no tasks yet, a night runs nothing and
+  the Benchmark page says so. The page's note says where the tasks come from and now spans the page's full width.
+
 ### Fixed
 - **A request's reaction shows Scout's steps again behind a slow model.** A phase showed only once it had lasted 1.5 s.
   When the model takes many seconds to start answering, a run is long thinking with quick reads and edits between, so
