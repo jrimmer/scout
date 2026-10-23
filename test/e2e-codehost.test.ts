@@ -336,7 +336,9 @@ describe("end to end: work asked on the code host", () => {
 			await until(() => commentsBy(e2e, number, "scout").length === 1, 20_000, "the pointer comment");
 			// A slow code host: the copied answer is still on its way when Scout stops.
 			e2e.host.slow("POST", /\/issues\/\d+\/comments$/, 1_500);
-			await until(() => e2e.said().some((t) => t.includes("Tag main, then run the deploy script.")), 20_000, "the answer in Slack");
+			// Wait for the copy itself to reach the host (and sit in its hold), not for the answer in Slack: Scout posts that a
+			// moment before it starts the copy, and stopping in between is a different case than the one under test.
+			await until(() => e2e.host.arrived("POST", /\/issues\/\d+\/comments$/).length === 2, 20_000, "the copy on its way to the issue");
 			// Stop at once, as a drain or SIGTERM would right after an answer: the copy to the issue still lands.
 			await e2e.service.close();
 			assert.equal(commentsBy(e2e, number, "scout").length, 2, "the pointer and the copied answer");

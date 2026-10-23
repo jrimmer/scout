@@ -44,6 +44,8 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 	const deleted: string[] = [];
 	/** Calls to answer with an error instead, while `left` lasts (`fail`, below). */
 	const faults: { method: string; path: RegExp; status: number; left: number }[] = [];
+	/** Every request as it arrives, before any `slow` hold: what `arrived` counts. */
+	const arrivals: { method: string; path: string }[] = [];
 	/** Calls to hold before they take effect, while `left` lasts (`slow`, below). */
 	const delays: { method: string; path: RegExp; ms: number; left: number }[] = [];
 	let ids = 1000;
@@ -221,6 +223,7 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 		const raw = await read(req);
 		const body = raw === "" ? {} : (JSON.parse(raw) as Record<string, unknown>);
 		const method = req.method ?? "GET";
+		arrivals.push({ method, path });
 		const delay = delays.find((d) => d.left > 0 && d.method === method && d.path.test(path));
 		if (delay !== undefined) {
 			delay.left--;
@@ -244,6 +247,8 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 		calls,
 		reactions,
 		deleted,
+		/** Requests that have reached the host, including ones still held by `slow` (`called` has only the ones it has handled). */
+		arrived: (method: string, path: RegExp) => arrivals.filter((c) => c.method === method && path.test(c.path)),
 		/** Calls with this method whose path matches. */
 		called: (method: string, path: RegExp) => calls.filter((c) => c.method === method && path.test(c.path)),
 		/** A repository (made if new): public unless said otherwise; `git` is its bare repository on disk. */
