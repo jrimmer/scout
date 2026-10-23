@@ -103,7 +103,8 @@ describe("end to end: Scout reviews pull requests it is asked to review", () => 
 
 			assert.match(seen, /\+line two/, "the reviewer saw the diff");
 			const [review] = hostReviews(e2e, number);
-			assert.equal(review?.state, "REQUEST_CHANGES");
+			assert.equal(review?.state, "COMMENT", "Scout's review never counts towards branch protection");
+			assert.match(review?.body ?? "", /^I'd change these before merging\./);
 			assert.equal(review?.commit_id, sha, "the review is of the commit it read");
 			assert.match(review?.body ?? "", /second line is not what the README promises/);
 			assert.match(review?.body ?? "", /ask me about it in #team/);
@@ -121,19 +122,19 @@ describe("end to end: Scout reviews pull requests it is asked to review", () => 
 		}
 	});
 
-	it("approves a pull request that needs nothing, with no comments on lines", async () => {
+	it("says a pull request that needs nothing looks good, without approving it, and with no comments on lines", async () => {
 		const e2e = await startScout(START);
 		try {
 			branch(e2e, "feature", { "README.md": README }, "Add two lines");
 			const number = e2e.host.pull(SLUG, { title: "Add two lines", head: "feature", author: "ann", reviewers: ["scout"] });
 			e2e.faux.setResponses([fauxAssistantMessage("APPROVE\nSmall and clear.")]);
 			await e2e.service.tick.housekeeping();
-			await until(() => hostReviews(e2e, number).length === 1 && posted(e2e, /I approved/), 20_000, "the review and its summary");
+			await until(() => hostReviews(e2e, number).length === 1 && posted(e2e, /I found nothing blocking in/), 20_000, "the review and its summary");
 			const [review] = hostReviews(e2e, number);
-			assert.equal(review?.state, "APPROVED");
-			assert.match(review?.body ?? "", /Small and clear\./);
+			assert.equal(review?.state, "COMMENT", "not an approval, which would count towards branch protection");
+			assert.match(review?.body ?? "", /^Looks good to me\.\n\nSmall and clear\./);
 			assert.deepEqual(e2e.host.get(SLUG, number)?.lines, []);
-			assert.match(String(e2e.slack.called("chat.postMessage").find((p) => /I approved/.test(String(p.args.text)))?.args.text), /I approved <.*\|Add two lines> by ann\./);
+			assert.match(String(e2e.slack.called("chat.postMessage").find((p) => /I found nothing blocking in/.test(String(p.args.text)))?.args.text), /I found nothing blocking in <.*\|Add two lines> by ann\./);
 		} finally {
 			await finish(e2e);
 		}
@@ -238,9 +239,9 @@ describe("end to end: Scout reviews pull requests it is asked to review", () => 
 			const second = branch(e2e, "feature", { "README.md": `# app\n${README}` }, "Add a heading");
 			e2e.faux.setResponses([fauxAssistantMessage("APPROVE\nThe heading is there.")]);
 			await e2e.service.tick.housekeeping();
-			await until(() => hostReviews(e2e, number).length === 2 && posted(e2e, /I approved/), 20_000, "the second review");
+			await until(() => hostReviews(e2e, number).length === 2 && posted(e2e, /I found nothing blocking in/), 20_000, "the second review");
 			const reviews = hostReviews(e2e, number);
-			assert.deepEqual(reviews.map((r) => r.state), ["REQUEST_CHANGES", "APPROVED"]);
+			assert.deepEqual(reviews.map((r) => r.state), ["COMMENT", "COMMENT"]);
 			assert.equal(reviews[1]?.commit_id, second, "of the new commit");
 			assert.equal(e2e.faux.getPendingResponseCount(), 0);
 		} finally {
@@ -257,8 +258,8 @@ describe("end to end: Scout reviews pull requests it is asked to review", () => 
 			const number = e2e.host.pull(SLUG, { title: "A fork's change", head: "patch-1", fork: "carol/app", author: "carol", reviewers: ["scout"] });
 			e2e.faux.setResponses([fauxAssistantMessage("APPROVE\nFine.")]);
 			await e2e.service.tick.housekeeping();
-			await until(() => hostReviews(e2e, number).length === 1 && posted(e2e, /I approved/), 20_000, "the review");
-			const ts = tsOfPost(e2e, /I approved/);
+			await until(() => hostReviews(e2e, number).length === 1 && posted(e2e, /I found nothing blocking in/), 20_000, "the review");
+			const ts = tsOfPost(e2e, /I found nothing blocking in/);
 			const scout = e2e.service.scout;
 			await until(() => scout.threads.get(threadKey(TEAM_CHANNEL, ts)) !== undefined, 20_000, "the review's thread");
 

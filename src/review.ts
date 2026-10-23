@@ -167,7 +167,10 @@ export async function reviewAsSubtask(
 	return parseReview(text);
 }
 
-/** What `to` changes against `from` (refs or commits), from the host-owned mirror. */
+/**
+ * What `to` changes against `from` (refs or commits), from the host-owned mirror, cut to what a reviewer reads. Not
+ * for the credential check, which reads everything a push carries (codehost.ts `secretsInPush`).
+ */
 export async function diffOf(mirrorPath: string, from: string, to: string): Promise<{ stat: string; diff: string; lines: number }> {
 	const range = `${from}...${to}`;
 	const git = async (...args: string[]) =>

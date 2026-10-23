@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, useScoutsKey } from "./config.ts";
-import { resolveSecrets, rotate } from "./secrets.ts";
+import { rememberSecrets } from "./scan.ts";
+import { resolveSecrets, rotate, secretValues } from "./secrets.ts";
 import { type Signal, startService } from "./service.ts";
 import { ConfigError, refusedToken, startupProblem } from "./startup.ts";
 
@@ -30,7 +31,15 @@ if (config.sandbox.network === "none") {
 }
 
 // Everything else is the service (service.ts), the same one the end-to-end tests start.
-service = await startService({ config, rotateSecrets: () => rotate(secretSources) });
+service = await startService({
+	config,
+	rotateSecrets: async () => {
+		const changed = await rotate(secretSources);
+		// New values are redacted too; the old ones stay redacted.
+		rememberSecrets(secretValues(process.env, config.mcpFile));
+		return changed;
+	},
+});
 const running = service;
 
 // `kill -INT <pid>` drains for a restart and then stops; SIGTERM, or a second SIGINT, stops now. `kill -USR2 <pid>`

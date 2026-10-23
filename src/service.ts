@@ -191,7 +191,8 @@ export async function startService(options: ServiceOptions) {
 
 	// Asked for a review in the code host, Scout reviews there, then says so in the repository's channel, where the thread
 	// knows the review and anyone can ask about it.
-	const VERDICTS = { approve: "approved", changes: "asked for changes on", comment: "commented on" } as const;
+	// Scout's review is a comment whatever it thinks (automation.ts): "approved" would say it counts, which it doesn't.
+	const VERDICTS = { approve: "found nothing blocking in", changes: "asked for changes on", comment: "commented on" } as const;
 	const pullReviewer = new PullReviewer({
 		scout,
 		config,

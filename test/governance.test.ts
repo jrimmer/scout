@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, it } from "node:test";
@@ -14,8 +15,8 @@ import { observeExtension } from "../src/observe.ts";
 import { Permissions } from "../src/permissions.ts";
 import { Pricing } from "../src/pricing.ts";
 import { applyRetention } from "../src/retention.ts";
-import { findSecrets, redact, secretsInDiff } from "../src/scan.ts";
-import { resolveSecrets, rotate } from "../src/secrets.ts";
+import { findSecrets, redact, rememberSecrets } from "../src/scan.ts";
+import { resolveSecrets, rotate, secretValues } from "../src/secrets.ts";
 import { Counters, Tracer } from "../src/telemetry.ts";
 import { Threads, threadKey } from "../src/threads.ts";
 import { tempDir } from "./helpers.ts";
@@ -57,9 +58,85 @@ describe("credential scanning", () => {
 		assert.equal(redact(`token ${gh} here`), "token [redacted GitHub token] here");
 	});
 
-	it("names the file a diff adds a credential to, ignoring removed lines", () => {
-		const diff = ["+++ b/config/prod.env", `+AWS_KEY=${aws}`, `-OLD=${gh}`, "+++ b/README.md", "+fine"].join("\n");
-		assert.deepEqual(secretsInDiff(diff), [{ file: "config/prod.env", kind: "AWS access key" }]);
+	it("redacts the tokens Scout itself holds, and the common ones", () => {
+		const hex = "0123456789abcdef0123456789abcdef01234567";
+		const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl";
+		const shapes: [text: string, kind: string][] = [
+			["xapp-1-A0123456789-1234567890123-abcdef0123456789", "Slack token"],
+			["xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOp", "Slack token"],
+			["xoxp-123456789012-1234567890123-AbCdEfGh", "Slack token"],
+			["xoxa-2-123456789012-AbCdEfGhIj", "Slack token"],
+			["xoxr-123456789012-AbCdEfGhIj", "Slack token"],
+			["xoxe.xoxp-1-Mi0yLTEyMzQ1Njc4OTAx", "Slack token"],
+			["xoxe-1-My0xLTEyMzQ1Njc4OTAx", "Slack token"],
+			[`FORGEJO_TOKEN=${hex}`, "Forgejo/Gitea token"],
+			[`{"token": "${hex}"}`, "Forgejo/Gitea token"],
+			[`Authorization: token ${hex}`, "Forgejo/Gitea token"],
+			["glsa_abcdefghijklmnopqrstuvwxyz012345_abcdef12", "Grafana token"],
+			["glc_eyJvIjoiMTIzNDU2IiwibiI6InN0YWNrIiwiayI6ImFiYyJ9", "Grafana token"],
+			[jwt, "JWT"],
+			["Authorization: Bearer abc.def-ghi_jkl012345", "authorization header"],
+			["authorization: Basic dXNlcjpwYXNzd29yZA==", "authorization header"],
+			["curl -H 'Bearer 0123456789abcdefXYZ'", "bearer token"],
+			[`AWS_ACCESS_KEY_ID=${aws}`, "AWS access key"],
+			[`aws_secret_access_key = ${"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}`, "AWS secret key"],
+			[gh, "GitHub token"],
+			[`gho_${"b".repeat(36)}`, "GitHub token"],
+			[`ghs_${"c".repeat(36)}`, "GitHub token"],
+			[`github_pat_${"d".repeat(82)}`, "GitHub token"],
+		];
+		for (const [text, kind] of shapes) {
+			assert.ok(findSecrets(text).some((f) => f.kind === kind), `${text} is a ${kind}`);
+			assert.ok(redact(`see ${text} here`).includes("[redacted "), `${text} is redacted`);
+			assert.ok(!redact(`see ${text} here`).includes(text), `${text} is gone`);
+		}
+		// A private key goes whole, not only its first line.
+		const key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAA\n-----END OPENSSH PRIVATE KEY-----";
+		assert.equal(redact(`key:\n${key}\nafter`), "key:\n[redacted private key]\nafter");
+		// Base64 of a token is found by what it decodes to.
+		assert.deepEqual(findSecrets(Buffer.from(gh).toString("base64")), [{ kind: "GitHub token (base64)" }]);
+	});
+
+	it("leaves commit hashes and ordinary hex alone", () => {
+		const sha = "0123456789abcdef0123456789abcdef01234567";
+		for (const text of [
+			sha,
+			`commit ${sha}`,
+			`Merge ${sha.slice(0, 7)} into main (${sha})`,
+			`https://forge.example/acme/app/commit/${sha}`,
+			`sha256:${"ab".repeat(32)}`,
+			"color: #ff00aa; id=deadbeef",
+			"Bearer tokens are how the gateway authenticates.",
+		]) {
+			assert.equal(redact(text), text, text);
+			assert.deepEqual(findSecrets(text), [], text);
+		}
+	});
+
+	it("redacts the secrets Scout loaded by value, whatever their shape", () => {
+		const gateway = "sk-gw-0123456789abcdefghij";
+		assert.equal(redact(`key ${gateway}`), `key ${gateway}`, "not a shape anything knows");
+		rememberSecrets([gateway, "short", undefined]);
+		assert.equal(redact(`the gateway said no to ${gateway}`), "the gateway said no to [redacted configured secret]");
+		assert.deepEqual(findSecrets(`GATEWAY=${gateway}`), [{ kind: "configured secret" }]);
+		assert.equal(redact("short and sweet"), "short and sweet", "too short to tell from ordinary words");
+	});
+
+	it("collects the values of the secrets in the environment, the OTLP headers and the MCP file's variables", () => {
+		const path = join(tempDir("scout-secrets-"), "mcp.json");
+		writeFileSync(path, JSON.stringify({ servers: { wh: { command: "wh", env: { TOKEN: "${WAREHOUSE_TOKEN}" } } } }));
+		const values = secretValues(
+			{
+				SCOUT_CODEHOST_TOKEN: "forge-token-1",
+				LITESTREAM_SECRET_ACCESS_KEY: "litestream-secret",
+				WAREHOUSE_TOKEN: "warehouse-secret",
+				SCOUT_OTLP_HEADERS: '{"authorization": "Bearer otlp-secret"}',
+				HOME: "/home/scout",
+			},
+			path,
+		);
+		for (const value of ["forge-token-1", "litestream-secret", "warehouse-secret", "Bearer otlp-secret", "otlp-secret"]) assert.ok(values.includes(value), value);
+		assert.ok(!values.includes("/home/scout"), "only secrets");
 	});
 });
 

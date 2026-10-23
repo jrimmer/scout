@@ -40,8 +40,23 @@ the damage:
 - **The sandbox** holds nothing worth stealing and reaches only what its egress list allows; exfiltration needs a
   host on that list.
 - **Approvals** gate tool writes and network access; Scout's own requests are never enough.
-- **Pull requests** are reviewed by people before anything reaches a base branch, and Scout reviews its own diff
-  first (including for things that look like credentials, which it refuses to push).
+- **Pull requests** are reviewed by people before anything reaches a base branch. Scout's reviews of other people's
+  pull requests are always comments, never approvals or requests for changes, so they never count towards what
+  branch protection asks for, whatever a pull request's text talks the reviewer into.
+- **Credentials in a push.** Before pushing, the host scans everything the push would publish that the code host
+  doesn't have yet: every new commit (not only the net diff), each commit's message, every added line however big
+  the change, files git calls binary, base64 that decodes to a credential, and the pull request's title and
+  description. A match refuses the push, naming the commit, the file and the kind of credential, never its value. This
+  scan is the control. It knows common token shapes and the exact values of Scout's own secrets; a credential it has
+  no pattern for, or one encoded some other way (reversed, split across lines), gets through, so keep secrets out of
+  repositories Scout works on.
+- **The self-review is a second look, not a gate.** Scout reviews its own change before opening a pull request and
+  fixes what it agrees with, but it may disagree and open the pull request anyway, saying so in the description. Text
+  that talks the model into that gets past it. It catches slop, not attacks.
+- **MCP results are redacted** for credentials before the model sees them, the same way as errors in threads, the
+  audit trail and the search index: common token shapes, and the values of Scout's own secrets (`SCOUT_GATEWAY_KEY`,
+  the code host and Slack tokens, the spoond and metrics tokens, Litestream's keys, the MCP servers' `${NAME}`
+  values). Redaction is pattern matching too: a read-only MCP server still shouldn't hand out credentials.
 - **Notes Scout keeps** are shown with its answers so people can object, expire unless reviewed, and are framed to
   the model as hints, never instructions.
 

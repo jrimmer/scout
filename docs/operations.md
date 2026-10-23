@@ -315,8 +315,10 @@ refuses converted data and says so.
 
 Request a review from Scout's code host account on a pull request in a configured repository, and Scout reviews it
 like a colleague would: the profile's `reviewer.md`, the channel's instructions for that repository, read-only files
-and the MCP tools (CI logs). It posts a real review (approve, request changes, or comment) with comments on the lines
-the diff shows, then reviews each new push until the pull request closes. Its own pull requests are skipped (they had
+and the MCP tools (CI logs). It posts a review with comments on the lines the diff shows, then reviews each new push
+until the pull request closes. The review is always a comment, with the verdict in its first line ("Looks good to
+me." or "I'd change these before merging."): it never approves or requests changes, so it never counts towards the
+approvals branch protection requires, and a person still has to. Its own pull requests are skipped (they had
 their self-review). The channel whose profile names the repository gets a short summary, in a thread where anyone can
 ask Scout about its review, or to fix what it flagged: that thread's sandbox has the pull request's branch, and a fix
 opens as a pull request into it, so the author merges it or not (Scout never pushes to someone else's branch). A pull

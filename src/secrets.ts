@@ -1,5 +1,6 @@
 import { ConfigError } from "./startup.ts";
 import { execFile } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -89,3 +90,22 @@ export const SECRETS = new Set([
 	"LITESTREAM_ACCESS_KEY_ID",
 	"LITESTREAM_SECRET_ACCESS_KEY",
 ]);
+
+/**
+ * The values of the secrets Scout loaded, for `rememberSecrets` (scan.ts) to redact by value: the variables above,
+ * the OTLP headers' values, and every variable the MCP file names with `${NAME}`.
+ */
+export function secretValues(env: NodeJS.ProcessEnv = process.env, mcpFile?: string): string[] {
+	const names = new Set(SECRETS);
+	if (mcpFile !== undefined && existsSync(mcpFile)) {
+		for (const [, name] of readFileSync(mcpFile, "utf8").matchAll(/\$\{(\w+)\}/g)) names.add(name!);
+	}
+	const values = [...names].flatMap((name) => env[name] ?? []);
+	try {
+		const headers = Object.values(JSON.parse(env.SCOUT_OTLP_HEADERS ?? "{}") as Record<string, unknown>).filter((v) => typeof v === "string");
+		values.push(...headers, ...headers.map((h) => h.replace(/^(?:bearer|basic|token)\s+/i, "")));
+	} catch {
+		// Not JSON: the setting itself says so at start-up.
+	}
+	return values;
+}

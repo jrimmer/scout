@@ -6,6 +6,7 @@ import { type ConversationId, MemoryStorage, watchEvents } from "@earendil-works
 import { loadConfig, useScoutsKey } from "./config.ts";
 import { ThreadDoc } from "./docs.ts";
 import { describeStep } from "./render.ts";
+import { redact } from "./scan.ts";
 import { openScout, type Scout } from "./scout.ts";
 import { resolveSecrets } from "./secrets.ts";
 import { startupProblem } from "./startup.ts";
@@ -77,7 +78,7 @@ export async function runJob(
 export function reportLine(error: unknown): string {
 	const stderr = (error as { stderr?: unknown } | null)?.stderr;
 	const text = typeof stderr === "string" && stderr.trim() !== "" ? stderr : error instanceof Error ? error.message : String(error);
-	return text.trim().split("\n")[0]!.replace(/^fatal: /, "").slice(0, 300);
+	return redact(text.trim().split("\n")[0]!.replace(/^fatal: /, "")).slice(0, 300);
 }
 
 if (import.meta.main) {

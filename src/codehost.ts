@@ -1,4 +1,5 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -9,7 +10,7 @@ import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-wo
 import type { CodeHostKind } from "./config.ts";
 import { ReviewsDoc } from "./docs.ts";
 import { diffOf, type Review } from "./review.ts";
-import { secretsInDiff } from "./scan.ts";
+import { findSecrets } from "./scan.ts";
 import type { Mirror } from "./sandbox.ts";
 
 const run = promisify(execFile);
@@ -124,14 +125,21 @@ export function createCodeHostExtension(options: CodeHostOptions) {
 			const ahead = await git(["-C", mirror.path, "rev-list", "--count", `refs/heads/${base}..${outgoing}`]);
 			if (ahead === "0") throw new Error(`No changes on ${branch} beyond ${base} yet.`);
 
-			const { stat, diff, lines } = await diffOf(mirror.path, `refs/heads/${base}`, outgoing);
-			const leaked = secretsInDiff(diff);
+			// The control on what's published: everything the push carries, not the diff the self-review reads.
+			const leaked = [
+				...(await secretsInPush(mirror.path, outgoing)).map((f) =>
+					f.file === undefined ? `${f.kind} in the message of commit ${f.commit}` : `${f.kind} in ${f.file} (commit ${f.commit})`,
+				),
+				...findSecrets(`${args.title}\n${args.body}`).map((f) => `${f.kind} in the pull request's title or description`),
+			];
 			if (leaked.length > 0) {
 				throw new Error(
-					`This change adds what looks like a credential: ${leaked.map((l) => `${l.kind} in ${l.file}`).join(", ")}. ` +
-						"Take it out (and out of the branch's history), then try again. If it's a placeholder, make it obviously fake.",
+					`This change adds what looks like a credential: ${[...new Set(leaked)].join(", ")}. Take it out, and out of the ` +
+						"branch's history: every commit is pushed, so a later commit that removes it isn't enough. Then try again. " +
+						"If it's a placeholder, make it obviously fake.",
 				);
 			}
+			const { stat, diff, lines } = await diffOf(mirror.path, `refs/heads/${base}`, outgoing);
 			const max = options.maxChangedLines;
 			if (max !== undefined && lines > max) {
 				throw new Error(
@@ -221,6 +229,94 @@ async function bringIn(target: PullTarget, published: string, list: string): Pro
 	return merged
 		? `${said}\n\nI merged their commits into your files. Read what changed, adjust your work to fit if it needs to, and call open_pull_request again. In your reply, say whose work you built on.`
 		: `${said}\n\nTheir changes conflict with yours, and I can't merge them here. Leave the pull request as it is, and say in your reply what conflicts, so a person can sort it out.`;
+}
+
+/** Where a push would publish a credential: in a file a commit adds it to, or in a commit's message. Never the value. */
+export type PushFinding = { commit: string; kind: string; file?: string };
+
+/**
+ * What looks like a credential in anything a push of `tip` would publish that the code host doesn't have yet (its
+ * branches, as the mirror has them): each new commit's message, and each line each commit adds. git's own output is
+ * streamed and read to the end, so nothing hides past a size limit, in a commit a later one undoes, or in a file git
+ * calls binary (read as text: a token is a printable run either way). A merge counts what it adds itself (`--cc`);
+ * what it brings in is in the commits it merges, or already on the code host. Runs on the host, before the push.
+ */
+export async function secretsInPush(repo: string, tip: string): Promise<PushFinding[]> {
+	const found = new Map<string, PushFinding>();
+	const note = (commit: string, text: string, file?: string) => {
+		for (const { kind } of findSecrets(text)) found.set(`${commit}\0${file ?? ""}\0${kind}`, { commit, kind, ...(file === undefined ? {} : { file }) });
+	};
+	const range = [tip, "--not", "--branches"];
+	let commit = "";
+	await eachLine(["-C", repo, "log", "--no-color", "--format=%x00%h%n%B", ...range], (line) => {
+		if (line.startsWith("\0")) commit = line.slice(1);
+		else note(commit, line);
+	});
+	// Lines of content always start with a column per parent (`+`, `-` or space), so git's own lines can't be faked.
+	let file = "";
+	let header = true;
+	let columns = 1;
+	let adding = false;
+	const log = ["log", "--no-color", "--format=%x00%h", "--cc", "--text", "--no-renames", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"];
+	await eachLine(["-C", repo, "-c", "core.quotePath=false", ...log, ...range], (line, continued) => {
+		if (continued) {
+			if (adding) note(commit, line, file);
+			return;
+		}
+		adding = false;
+		if (line.startsWith("\0")) {
+			commit = line.slice(1);
+			header = true;
+		} else if (/^diff --(?:git|cc|combined) /.test(line)) {
+			header = true;
+			file = "";
+		} else if (header && line.startsWith("+++ ")) {
+			file = line.slice(4).replace(/^b\//, "");
+		} else if (/^@@+ /.test(line)) {
+			header = false;
+			columns = /^@+/.exec(line)![0].length - 1;
+		} else if (!header && line.startsWith("+".repeat(columns))) {
+			adding = true;
+			note(commit, line.slice(columns), file);
+		}
+	});
+	return [...found.values()];
+}
+
+/** A line longer than this is read in pieces (a minified file, a binary), each overlapping the last. */
+const LONG_LINE = 1024 * 1024;
+const OVERLAP = 4096;
+
+/** Run git, handing each line of its output to `onLine` as it comes, byte for byte (latin1), however much there is. */
+async function eachLine(args: string[], onLine: (line: string, continued: boolean) => void): Promise<void> {
+	const child = spawn("git", args, { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, stdio: ["ignore", "pipe", "pipe"] });
+	const closed = once(child, "close");
+	let stderr = "";
+	child.stderr.setEncoding("utf8");
+	child.stderr.on("data", (chunk: string) => {
+		if (stderr.length < 2000) stderr += chunk;
+	});
+	child.stdout.setEncoding("latin1");
+	let pending = "";
+	let continued = false;
+	for await (const chunk of child.stdout as AsyncIterable<string>) {
+		pending += chunk;
+		let start = 0;
+		for (let end = pending.indexOf("\n"); end !== -1; end = pending.indexOf("\n", start)) {
+			onLine(pending.slice(start, end), continued);
+			continued = false;
+			start = end + 1;
+		}
+		pending = pending.slice(start);
+		if (pending.length > LONG_LINE) {
+			onLine(pending, continued);
+			continued = true;
+			pending = pending.slice(-OVERLAP);
+		}
+	}
+	if (pending !== "") onLine(pending, continued);
+	const [code] = (await closed) as [number | null];
+	if (code !== 0) throw new Error(`Couldn't check the commits for credentials: ${stderr.trim() || `git exited ${code}`}`);
 }
 
 async function tip(repo: string, ref: string): Promise<string | undefined> {

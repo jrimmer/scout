@@ -105,6 +105,37 @@ describe("MCP tools", () => {
 		await Promise.all(connections.map((c) => c.client.close()));
 	});
 
+	it("takes credentials out of what a tool returns, and of its errors, before the model sees them", async () => {
+		const token = `ghp_${"e".repeat(36)}`;
+		const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl";
+		const logs = () => {
+			const server = new McpServer({ name: "ci", version: "1" });
+			server.registerTool("job_log", { description: "A job's log", inputSchema: { failed: z.boolean() }, annotations: { readOnlyHint: true } }, async ({ failed }) =>
+				failed
+					? { content: [{ type: "text", text: `401 for token ${token}` }], isError: true }
+					: { content: [{ type: "text", text: `step 1 ok\ncurl -H "Authorization: Bearer ${jwt}" https://api\nusing ${token}` }] },
+			);
+			return server;
+		};
+		const connections = await connectMcp({ servers: { ci: { command: "unused" } } }, () => {
+			const [client, server] = InMemoryTransport.createLinkedPair();
+			void logs().connect(server);
+			return client;
+		});
+		const tool = (await mcpExtension(connections)).tools![0]!;
+		const result = await tool.execute({ failed: false }, { conversationId: 1 } as never, context);
+		const text = (result.output![0] as { text: string }).text;
+		assert.match(text, /step 1 ok/);
+		assert.match(text, /Authorization: Bearer \[redacted JWT\]/);
+		assert.match(text, /using \[redacted GitHub token\]/);
+		assert.doesNotMatch(text, /ghp_e|eyJhbGci/);
+		await assert.rejects(tool.execute({ failed: true }, { conversationId: 1 } as never, context), (error: Error) => {
+			assert.match(error.message, /401 for token \[redacted GitHub token\]/);
+			return true;
+		});
+		await Promise.all(connections.map((c) => c.client.close()));
+	});
+
 	it("keeps tools that change things out by default, asks for approval, or allows them, as configured", async () => {
 		const dashboards = () => {
 			const server = new McpServer({ name: "grafana", version: "1" });

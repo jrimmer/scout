@@ -59,14 +59,14 @@ one-off:   job.ts ─▶ the same agent, no Slack, nothing kept
 | `src/permissions.ts` | Only people who can change a repository may ask for work in it. |
 | `src/secrets.ts`, `src/scan.ts` | Secret references and rotation; credential scanning and redaction. |
 | `src/retention.ts` | What quiet threads leave behind, deleted after a while. |
-| `src/codehost.ts` | `open_pull_request`, run on the host with host credentials, after a size check and self-review. |
+| `src/codehost.ts` | `open_pull_request`, run on the host with host credentials, after a credential scan of everything pushed, a size check and self-review. |
 | `src/review.ts` | Reviewers: conversations that can only read. Scout's own change before a pull request (`review.md`), and other people's when asked (`reviewer.md`). |
 | `src/profile.ts` | `profile/` as an extension, reloaded on change; kept pulled when it's a repository. |
 | `src/reflect.ts` | The nightly learning loop: digest the day's threads and notes, propose profile changes. |
 | `src/memory.ts` | `remember` and `forget`; notes retire when the reflection's proposal that covers them merges. |
 | `src/search.ts` | Full-text search over what was said in Scout's threads. |
 | `src/pulls.ts` | Every pull request Scout opens and what became of it; the weekly merge rate. |
-| `src/automation.ts` | Pull requests that request Scout's review get one (a real review, line comments), then one per new push; the repository's channel hears about it. |
+| `src/automation.ts` | Pull requests that request Scout's review get one (a comment review with line comments, never an approval), then one per new push; the repository's channel hears about it. |
 | `src/mcp.ts` | MCP servers' tools, run on the host, optionally per channel. |
 | `src/dash/` | The read-only dashboard: a character grid (after spoond's), live over SSE, row by row. |
 | `src/health.ts` | What needs a person: background jobs that keep failing. |

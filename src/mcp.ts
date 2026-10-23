@@ -8,6 +8,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { Type } from "@earendil-works/pi-ai";
 import { type ConversationId, defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { ThreadDoc } from "./docs.ts";
+import { redact } from "./scan.ts";
 
 /**
  * Tools beyond code: the data warehouse, production traces, CI, whatever a team has an MCP server for. River reads
@@ -248,9 +249,12 @@ export async function mcpExtension(
 							context.abortSignal === undefined ? {} : { signal: context.abortSignal },
 						);
 						const content = (result.content ?? []) as { type: string; text?: string; data?: string; mimeType?: string }[];
-						const text = content
-							.map((block) => (block.type === "text" ? (block.text ?? "") : `[${block.type}${block.mimeType ? ` ${block.mimeType}` : ""}]`))
-							.join("\n");
+						// A read tool can hand back a token (a log line, a row): the model never sees one.
+						const text = redact(
+							content
+								.map((block) => (block.type === "text" ? (block.text ?? "") : `[${block.type}${block.mimeType ? ` ${block.mimeType}` : ""}]`))
+								.join("\n"),
+						);
 						const clipped = text.length <= OUTPUT_LIMIT ? text : `${text.slice(0, OUTPUT_LIMIT)}\n(… cut at ${OUTPUT_LIMIT} characters)`;
 						if (result.isError === true) throw new Error(clipped || `${tool.name} failed`);
 						return { output: [{ type: "text", text: clipped }] };

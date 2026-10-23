@@ -13,7 +13,8 @@ import type { Scout } from "./scout.ts";
  * request with its own profile (`reviewer.md`), then again at each new push until the pull request closes. Aquifer runs
  * review this way, as a profile on the same session model as River.
  *
- * The answer becomes a real review (approve, request changes, or comment) with comments on the lines the diff shows.
+ * The answer becomes a review with comments on the lines the diff shows. It's always a comment review, its verdict in
+ * words ("Looks good to me", "I'd change these before merging"): Scout's review never counts as an approval.
  * `onReview` then tells the repository's channel, where people can ask Scout about it in public.
  *
  * Scout polls instead of taking webhooks, because it has no public address (Socket Mode). Each review is a durable
@@ -182,11 +183,13 @@ export class PullReviewer {
 	async #post(row: ReviewRow, review: PullReview, channel: string | undefined): Promise<void> {
 		const github = this.#config.codeHost.kind === "github";
 		const footer = `_Reviewed at \`${row.sha.slice(0, 7)}\`${channel === undefined ? "" : `; ask me about it in #${channel}`}. I review each new push until this closes._`;
+		// Always a comment, with the verdict in words: an approval (or a request for changes) from Scout's account would
+		// count towards what branch protection asks for, and a pull request's own text could talk the reviewer into it.
+		// People decide what lands.
+		const verdict = { approve: "Looks good to me.", changes: "I'd change these before merging.", comment: "" }[review.verdict];
 		const body = (comments: PullReview["comments"]) =>
-			[review.body || (review.verdict === "approve" ? "Looks good to me." : ""), ...comments.map((c) => `**${c.path}:${c.line}**: ${c.body}`), footer]
-				.filter(Boolean)
-				.join("\n\n");
-		const event = { approve: github ? "APPROVE" : "APPROVED", changes: "REQUEST_CHANGES", comment: "COMMENT" }[review.verdict];
+			[verdict, review.body, ...comments.map((c) => `**${c.path}:${c.line}**: ${c.body}`), footer].filter(Boolean).join("\n\n");
+		const event = "COMMENT";
 		const lineComments = review.comments.map((c) =>
 			github ? { path: c.path, line: c.line, side: "RIGHT", body: c.body } : { path: c.path, new_position: c.line, old_position: 0, body: c.body },
 		);

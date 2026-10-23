@@ -83,10 +83,10 @@ describe("pull request review, when asked", () => {
 		await until(() => reviews.length === 1 && announced.length === 1);
 		const first = reviews[0]!;
 		assert.equal(first.path, "/api/v1/repos/o/r/pulls/4/reviews");
-		assert.equal(first.body.event, "REQUEST_CHANGES");
+		assert.equal(first.body.event, "COMMENT", "never a request for changes: people decide what lands");
 		assert.equal(first.body.commit_id, head);
 		assert.deepEqual(first.body.comments, [{ path: "b.txt", new_position: 1, old_position: 0, body: "Name this better." }]);
-		assert.match(first.body.body, /^b\.txt needs a test\.\n\n\*\*a\.txt:1\*\*: Unrelated/);
+		assert.match(first.body.body, /^I'd change these before merging\.\n\nb\.txt needs a test\.\n\n\*\*a\.txt:1\*\*: Unrelated/);
 		assert.match(first.body.body, /ask me about it in #team/);
 		assert.match(prompt, /Review strictly\./);
 		assert.match(prompt, /We care about tests\./);
@@ -105,7 +105,7 @@ describe("pull request review, when asked", () => {
 		await reviewer.poll();
 		assert.deepEqual(scout.pulls.unpostedReviews(), []);
 		assert.equal(reviews.length, 2);
-		assert.equal(reviews[1]!.body.event, "APPROVED");
+		assert.equal(reviews[1]!.body.event, "COMMENT", "never an approval: it would count towards branch protection");
 		assert.match(reviews[1]!.body.body, /^Looks good to me\./);
 		await scout.close();
 	});

@@ -1,6 +1,7 @@
 import { App, LogLevel, type Receiver, webApi } from "@slack/bolt";
 import type { IncomingMessage, SharedFile } from "./bridge.ts";
 import type { ChatMessage, ChatSurface } from "./render.ts";
+import { redact } from "./scan.ts";
 
 /** Message subtypes that are still people talking; every other subtype (edits, joins, bots) is ignored. */
 const SPOKEN_SUBTYPES = new Set([undefined, "thread_broadcast", "file_share"]);
@@ -419,7 +420,7 @@ export class Slack {
 				const link = await handlers.onWorkflowAsk({ channel, user, request, ...(typeof inputs.about === "string" && inputs.about !== "" ? { about: inputs.about } : {}) });
 				await complete({ outputs: { thread_link: link ?? "" } });
 			} catch (error) {
-				await fail({ error: error instanceof Error ? error.message : String(error) });
+				await fail({ error: redact(error instanceof Error ? error.message : String(error)) });
 			}
 		});
 

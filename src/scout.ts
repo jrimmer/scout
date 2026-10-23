@@ -34,6 +34,8 @@ import { Reflector, reflectionExtensions } from "./reflect.ts";
 import { type Alert, type AlertPolicy, alertMatches, DEFAULT_RESPONDER_INSTRUCTIONS } from "./alerts.ts";
 import { DEFAULT_PULL_REVIEW_INSTRUCTIONS, reviewAsSubtask, reviewEnv, reviewExtension } from "./review.ts";
 import { searchExtension, ThreadSearch } from "./search.ts";
+import { rememberSecrets } from "./scan.ts";
+import { secretValues } from "./secrets.ts";
 import { DockerDriver } from "./drivers/docker.ts";
 import { LocalDriver } from "./drivers/local.ts";
 import { SpoondDriver } from "./drivers/spoond.ts";
@@ -104,6 +106,17 @@ function driverFor(config: Config, dataDir: string, instance: string, onWait?: (
 
 export async function openScout(options: ScoutOptions) {
 	const { config, dataDir, context } = options;
+	// Whatever their shape, the secrets Scout holds are redacted by value wherever redact() runs.
+	rememberSecrets([
+		...secretValues(process.env, config.mcpFile),
+		config.codeHost.token,
+		config.slack.botToken,
+		config.slack.appToken,
+		config.sandbox.spoond?.token,
+		config.gateway?.key,
+		config.alerts.grafana?.token,
+		config.governance.metricsToken,
+	]);
 	const announce = options.announce ?? (() => {});
 	const db = join(dataDir, "scout.sqlite");
 	const threads = new Threads(db);
