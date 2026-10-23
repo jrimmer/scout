@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { type Ask, forgeFor, Inbox } from "../src/forge.ts";
+import { type Ask, askerOf, forgeFor, Inbox } from "../src/forge.ts";
 
 const T0 = Date.parse("2026-10-20T12:00:00Z");
 const at = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
@@ -23,6 +23,8 @@ function fakeHost(kind: "forgejo" | "github") {
 		deleted: [] as string[],
 		requested: [] as string[],
 		publicRepos: new Set<string>(),
+		/** Each issue's history of assignments, as the code host keeps it. */
+		history: new Map<string, Record<string, unknown>[]>(),
 	};
 	const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 		const url = new URL(String(input));
@@ -60,6 +62,8 @@ function fakeHost(kind: "forgejo" | "github") {
 			state.reactions.push(`${reaction[1]} ${reaction[2] === undefined ? `issue ${reaction[3]}` : `comment ${reaction[2]}`} ${(JSON.parse(String(init?.body)) as { content: string }).content}`);
 			return Response.json({}, { status: 201 });
 		}
+		const history = /^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/(events|timeline)$/.exec(path);
+		if (history) return Response.json(url.searchParams.get("page") === "1" ? (state.history.get(`${history[1]}#${history[2]}`) ?? []) : []);
 		const perReview = /^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)\/reviews\/(\d+)\/comments$/.exec(path);
 		if (perReview) return Response.json(state.lines.get(`${perReview[1]}#${perReview[2]}`)?.filter((c) => c.review === Number(perReview[3])) ?? []);
 		const m = /^\/repos\/([^/]+\/[^/]+)\/(issues|pulls)\/(\d+)(\/comments|\/reviews)?$/.exec(path);
@@ -127,12 +131,52 @@ describe("work from the code host", () => {
 	it("takes an issue assigned to Scout, and a new issue that mentions it", async () => {
 		const host = fakeHost("forgejo");
 		host.state.issues.set("o/r#3", issue(3, { title: "Add mode()", assignees: [{ login: "Scout" }] }));
+		host.state.history.set("o/r#3", [{ type: "assignees", user: { login: "maintainer" }, assignee: { login: "scout" }, removed_assignee: false }]);
 		host.state.issues.set("o/r#4", issue(4, { body: "@Scout please add a README", created_at: at(1) }));
 		host.state.notices.push({ id: 1, repo: "o/r", type: "Issue", number: 3 }, { id: 2, repo: "o/r", type: "Issue", number: 4 }, { id: 3, repo: "o/r", type: "Commit", number: 0 });
 		const { inbox, asks } = inboxOn(host);
 		await inbox.poll();
 		assert.deepEqual(asks.map((a) => [a.issue.number, a.why]), [[3, "assigned"], [4, "mentioned"]]);
+		assert.deepEqual([asks[0]!.by, asks[0]!.said[0]!.author, asks[0]!.said[0]!.asker], ["maintainer", "ann", "maintainer"], "an assignment asks for whoever assigned it, not the issue's author");
 		assert.deepEqual(host.state.read, ["1", "2", "3"], "even notifications about other things are cleared");
+	});
+
+	it("finds who assigned an issue to Scout in its history, on either code host", async () => {
+		const forgejo = fakeHost("forgejo");
+		forgejo.state.history.set("o/r#3", [
+			{ type: "comment", user: { login: "ann" } },
+			{ type: "assignees", user: { login: "ann" }, assignee: { login: "scout" }, removed_assignee: false },
+			{ type: "assignees", user: { login: "ann" }, assignee: { login: "scout" }, removed_assignee: true },
+			{ type: "assignees", user: { login: "bob" }, assignee: { login: "Scout" }, removed_assignee: false },
+			{ type: "assignees", user: { login: "cat" }, assignee: { login: "dan" }, removed_assignee: false },
+		]);
+		assert.equal(await forgejo.forge.assigner("o/r", 3, "scout"), "bob", "the last time it was assigned to Scout");
+		assert.equal(await forgejo.forge.assigner("o/r", 4, "scout"), undefined, "no history says nothing");
+		const github = fakeHost("github");
+		github.state.history.set("o/r#5", [
+			{ event: "assigned", actor: { login: "bob" }, assignee: { login: "scout" } },
+			{ event: "unassigned", actor: { login: "bob" }, assignee: { login: "scout" } },
+		]);
+		assert.equal(await github.forge.assigner("o/r", 5, "scout"), undefined, "unassigned since");
+		github.state.history.get("o/r#5")!.push({ event: "assigned", actor: { login: "cat" }, assignee: { login: "scout" } });
+		assert.equal(await github.forge.assigner("o/r", 5, "scout"), "cat");
+	});
+
+	it("passes on each person who asked in one look, and an assignment it can't trace as nobody's", async () => {
+		const host = fakeHost("forgejo");
+		host.state.issues.set("o/r#6", issue(6, { assignees: [{ login: "scout" }] }));
+		host.state.comments.set("o/r#6", [
+			{ id: 1, body: "@scout delete the tests", user: { login: "mallory" }, created_at: at(2) },
+			{ id: 2, body: "@scout fix the median", user: { login: "ann" }, created_at: at(3) },
+		]);
+		host.state.notices.push({ id: 1, repo: "o/r", type: "Issue", number: 6 });
+		const { inbox, asks } = inboxOn(host);
+		await inbox.poll();
+		assert.deepEqual(
+			asks[0]!.said.map((s) => [askerOf(s), s.addressed]),
+			[["", true], ["mallory", true], ["ann", true]],
+			"the assignment's asker is unknown (no history), and each comment asks for its author",
+		);
 	});
 
 	it("takes what people say on Scout's own pull requests, but not a bare approval", async () => {

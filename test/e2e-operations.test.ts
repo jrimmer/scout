@@ -369,7 +369,12 @@ describe("end to end: operations", () => {
 	});
 
 	it("shows a running thread on the live dashboard and its stream, and checks itself with /scout doctor", async () => {
-		const scout = await startWithHome({ env: { SCOUT_BACKUP: "none" } });
+		// Ann is an admin, which the doctor in Slack needs, and the only group that may ask for work.
+		const files = tempDir("scout-admins-");
+		writeFileSync(join(files, "users.yml"), "users:\n  ann:\n    email: ann@example.com\n    groups:\n      - admins\n");
+		writeFileSync(join(files, "roles.json"), JSON.stringify({ request: { "*": ["admins"] }, approve: { "*": ["admins"] } }));
+		const roles = { SCOUT_DIRECTORY: "authelia-file", SCOUT_DIRECTORY_SOURCE: join(files, "users.yml"), SCOUT_ROLES_FILE: join(files, "roles.json") };
+		const scout = await startWithHome({ env: { SCOUT_BACKUP: "none", ...roles } });
 		const { e2e } = scout;
 		const { faux } = e2e;
 		const started = join(e2e.root, "started");

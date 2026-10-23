@@ -86,8 +86,12 @@ export async function readCode(repo: SearchableRepo, path: string, from = 1, to?
 	return { text, lines: all.length, truncated };
 }
 
-/** `search_code` and `read_code`, over the repositories `repos()` lists (fetched first when a mirror is stale). */
-export function codeSearchExtension(repos: () => SearchableRepo[]) {
+/**
+ * `search_code` and `read_code`, over the repositories `repos(conversationId)` lists for the conversation calling
+ * (fetched first when a mirror is stale): only the ones its requester may ask for work in, so a thread can't read a
+ * repository the person asking couldn't.
+ */
+export function codeSearchExtension(repos: (conversationId: number) => SearchableRepo[] | Promise<SearchableRepo[]>) {
 	const fetchedAt = new Map<string, number>();
 	const fresh = async (list: SearchableRepo[]) => {
 		const now = Date.now();
@@ -100,11 +104,11 @@ export function codeSearchExtension(repos: () => SearchableRepo[]) {
 		);
 		return list;
 	};
-	const pick = (name?: string) => {
-		const all = repos();
+	const pick = async (conversationId: number, name?: string) => {
+		const all = await repos(conversationId);
 		if (name === undefined || name === "") return all;
 		const found = all.filter((r) => r.name.toLowerCase() === name.toLowerCase());
-		if (found.length === 0) throw new Error(`I don't work in a repository called ${name}. These I do: ${all.map((r) => r.name).join(", ")}.`);
+		if (found.length === 0) throw new Error(`I can't read a repository called ${name} from this thread. These I can: ${all.map((r) => r.name).join(", ")}.`);
 		return found;
 	};
 
@@ -121,8 +125,8 @@ export function codeSearchExtension(repos: () => SearchableRepo[]) {
 			repo: Type.Optional(Type.String({ description: "Only this repository, by name" })),
 			path: Type.Optional(Type.String({ description: "Only paths matching this glob, e.g. 'src/**/*.ts'" })),
 		}),
-		execute: async (args) => {
-			const list = await fresh(pick(args.repo));
+		execute: async (args, api) => {
+			const list = await fresh(await pick(api.conversationId, args.repo));
 			const { matches, truncated } = await searchCode(list, {
 				pattern: args.pattern,
 				...(args.regex === undefined ? {} : { regex: args.regex }),
@@ -146,8 +150,8 @@ export function codeSearchExtension(repos: () => SearchableRepo[]) {
 			from: Type.Optional(Type.Number({ description: "First line, 1-based" })),
 			to: Type.Optional(Type.Number({ description: "Last line" })),
 		}),
-		execute: async (args) => {
-			const [repo] = await fresh(pick(args.repo));
+		execute: async (args, api) => {
+			const [repo] = await fresh(await pick(api.conversationId, args.repo));
 			const { text, lines, truncated } = await readCode(repo!, args.path, args.from, args.to);
 			return { output: [{ type: "text", text: `${repo!.name}:${args.path} (${lines} lines)\n${text}${truncated ? "(cut off here; ask for a later range with from and to)" : ""}` }] };
 		},

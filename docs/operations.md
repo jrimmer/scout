@@ -4,13 +4,16 @@ Everything here is optional beyond the basics in the README; `.env.example` list
 
 ## Is everything set up right? `npm run doctor`
 
-`npm run doctor` (with the same `.env` as the service), or `/scout doctor` in Slack, checks everything Scout depends
+`npm run doctor` (with the same `.env` as the service), or `/scout doctor` in Slack (for Scout's admins: the roles
+file's `approve` `*` groups), checks everything Scout depends
 on and prints one line each, ✅, ⚠️ or ❌, with how to fix what isn't (`src/doctor.ts`):
 
 - the settings load;
 - Slack: the token, the scopes Scout can't do without, and which features are off for want of others;
 - the code host: the token, and its scopes (on Forgejo, that it can read notifications; on GitHub, `repo` and
   `notifications` for classic tokens);
+- who may ask: a warning when `SCOUT_REQUESTER_CHECK` isn't `enforce`, and a failure when a repository the roles file
+  doesn't narrow is public on the code host ([Who may ask for work](#who-may-ask-for-work));
 - spoond, when it's the sandbox driver: reachable, and the token accepted;
 - the model gateway: answering, and serving the configured models;
 - every repository and the profile repository: reachable over git with Scout's SSH key, with their branch;
@@ -348,8 +351,10 @@ request from a fork gets the base branch instead. Nothing to configure; give Sco
 
 ## Code across repositories
 
-Any thread can search and read the code of every repository Scout is set up for, not only the one it has checked
-out (`src/codesearch.ts`): `search_code` (text or a regular expression, optionally one repository or a path glob,
+A thread can search and read the code of the repositories Scout is set up for, not only the one it has checked out:
+its own, and those the person asking there may ask for work in, by the same rules as a request (everyone who asked
+from the code host, and the latest person in Slack). A thread Scout started itself (an alert, a schedule) reads its
+channel's repositories; `npm run job` reads all of them (`src/codesearch.ts`): `search_code` (text or a regular expression, optionally one repository or a path glob,
 `repo:path:line: text`) and `read_code` (a file, with line numbers, or a range of it). Both answer from the host's
 bare mirrors with `git grep` and `git show` on each repository's base branch, fetched first when a mirror is more
 than five minutes old: exact, current, read-only, and nothing new to run. `SCOUT_CODE_SEARCH=off` turns them off.
@@ -410,8 +415,10 @@ announce again.
 The account's token needs `write:notification` (Forgejo) or the `notifications` scope (GitHub classic tokens) as well
 as access to issues and repositories.
 
-Who may ask is decided as for Slack: the login is looked up in the directory and its groups checked against
-`SCOUT_ROLES_FILE`, or, without roles for the repository, the code host's own permission. Someone who may not, or a
+Who may ask is decided as for Slack: the login is linked to a person (by the directory, or on GitHub only through the
+people file; see [Who may ask for work](#who-may-ask-for-work)) and their groups checked against `SCOUT_ROLES_FILE`,
+or, without roles for the repository, the code host's own permission. Every person asking in what Scout reads at once
+is checked, and an assignment is checked as a request from whoever assigned it. Someone who may not, or a
 repository Scout isn't set up for, gets a short reply saying why. Nothing from before the inbox was first switched on
 becomes work, and each comment is a request at most once. The code host is behind an interface (`Forge`); Forgejo
 and GitHub share one implementation, with their differences in a small dialect.
@@ -665,23 +672,45 @@ Roles live in the organization's identity provider (Authelia, Entra, Google Work
 keeping its own. Repository permissions come from the code host, which signs people in through that provider and maps
 its groups to teams; everything else asks the provider's groups directly.
 
-`SCOUT_REQUESTER_CHECK=enforce` means a person may start or steer work in a repository, or approve a change, only if
-they can change the repository themselves:
+`SCOUT_REQUESTER_CHECK=enforce`, the default, means a person may start or steer work in a repository, or approve a
+change, only if they can change the repository themselves:
 - Scout finds their code host login through the identity provider: their Slack email, the person with that email,
   their username (`SCOUT_DIRECTORY=authelia-file` with `SCOUT_DIRECTORY_SOURCE`, a path or URL of Authelia's
   `users_database.yml`; password hashes are dropped as it's read). This needs Slack's `users:read.email` scope.
 - `SCOUT_PEOPLE_FILE` maps Slack user IDs to logins directly (`{ "U0123ABC": "alice" }`), and wins over the directory.
 - Scout asks the code host for each person's permission on the repository, and caches the answer for ten minutes.
-- `SCOUT_ALLOWED_USERGROUP` can also limit requests to one Slack user group.
+- `SCOUT_ALLOWED_USERGROUP` limits requests to one Slack user group, whatever the mode.
+
+`warn` lets everyone in and logs each person `enforce` would refuse (`requester check (warn): would refuse …`), for
+trying the check before turning it on. `off` lets everyone in: only for a test install. Scout warns at every start
+when the check isn't `enforce`, and the doctor warns too, or fails when a repository without `request` roles is public
+on the code host, since then anyone who can comment there can make Scout work. Any other value stops Scout at start.
+
+**Code host logins.** Using a directory username as a code host login, and the reverse, assumes the code host signs
+people in through the directory, as a Forgejo behind Authelia does: then a login can't be taken by someone else. That
+is `SCOUT_CODEHOST_LOGINS=directory`, the default for Forgejo. On GitHub anyone can take any free login, so `admin` or
+`alice` there is nobody in particular: `separate`, GitHub's default, links a login to a person only through the
+people file (the Slack user it names, then that user's Slack email in the directory), and otherwise decides by the
+code host's own permission. Set `separate` for a Forgejo that doesn't sign in through your directory, and `directory`
+on GitHub only with Enterprise Managed Users.
 
 Everyone can still talk in threads. Their words are kept as context, and Scout tells them why it isn't acting on them.
 
 `SCOUT_ROLES_FILE` gives roles by the identity provider's groups:
 - `request`: who may ask for work (start, steer, approve) in a repository, by its name or `*`. With it, Scout checks
-  groups instead of asking the code host, which tells only its own admins what permission someone else has.
+  groups instead of asking the code host, which tells only its own admins what permission someone else has. These
+  groups apply whatever `SCOUT_REQUESTER_CHECK` says: they're a narrowing you asked for.
 - `approve`: who may approve changes made through tools (MCP servers with `writes: "approve"`), per server or `*`;
   and, under `egress`, who may let a repository's sandboxes reach a new host. `*` doesn't cover `egress`: without it,
-  nobody can allow a host from Slack.
+  nobody can allow a host from Slack. The groups under `*` are Scout's admins: only they get an answer from `/scout doctor`. Without them nobody does, and
+  `npm run doctor` on the host is the way.
+
+The other `/scout` commands (`status`, `waiting`, `schedules`, `ask`) answer only people who may ask for work in the
+channel's repository, and `/scout ask` works only in public channels Scout is in, as a mention does.
+
+Everyone who asks on the code host is checked, not only the last of several comments Scout reads at once; a remark
+from someone who may not ask is kept as context and they're told why. An issue assigned to Scout is a request from
+whoever assigned it (from the issue's history), not from its author.
 
 ```json
 { "request": { "*": ["admins", "users"] }, "approve": { "*": ["admins"], "egress": ["admins"] } }

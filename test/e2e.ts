@@ -21,6 +21,8 @@ import { seedRepo, tempDir } from "./helpers.ts";
 export type E2eOptions = {
 	/** Settings on top of the defaults below (SCOUT_* as in .env.example). */
 	env?: Record<string, string>;
+	/** Settings the defaults below set that this start leaves unset, so Scout's own defaults apply. */
+	unset?: string[];
 	/** Files in the profile directory besides system.md, by path (`channels/team/instructions.md`, say). */
 	profile?: Record<string, string>;
 	/** Fakes to share with other starts; made (and closed) here otherwise. */
@@ -63,8 +65,11 @@ export async function startScout(options: E2eOptions = {}) {
 		SCOUT_PROFILE_DIR: profileDir,
 		SCOUT_SANDBOX_DRIVER: "local",
 		SCOUT_DASH_ADDR: "off",
+		// Ann and Bob aren't collaborators on the fake code host: tests about who may ask turn the check on themselves.
+		SCOUT_REQUESTER_CHECK: "off",
 		...options.env,
-	};
+	} as Record<string, string>;
+	for (const name of options.unset ?? []) delete env[name];
 	const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }, ...(options.models ?? []).map((id) => ({ id }))] });
 	const models = createModels();
 	models.setProvider(faux.provider);

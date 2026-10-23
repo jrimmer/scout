@@ -124,11 +124,21 @@ whoever runs it.
 
 ## 8. Who may ask
 
-By default anyone in a channel Scout is in may ask it for work. To narrow it, see "Who may ask for work" in
-[operations.md](operations.md): the code host's own permissions (`SCOUT_REQUESTER_CHECK=enforce`), or groups from your
-identity provider (`SCOUT_DIRECTORY`, `SCOUT_ROLES_FILE`), which also decide who may approve changes made through
-tools and network access for sandboxes. Nobody can allow a sandbox a new host from Slack until the roles file names
-egress approvers (`"approve": { "egress": ["admins"] }`). Set budgets (`SCOUT_LIMITS_FILE`) before you open it up widely.
+Scout takes work only from people it can check may change the repository (`SCOUT_REQUESTER_CHECK=enforce`, the
+default), so before anyone can ask, tell it who people are. See "Who may ask for work" in
+[operations.md](operations.md). Either:
+- **the code host decides:** map Slack users to code host logins, with `SCOUT_PEOPLE_FILE` or through your identity
+  provider (`SCOUT_DIRECTORY`), and Scout asks the code host whether each may write to the repository; or
+- **groups decide:** `SCOUT_ROLES_FILE` names the identity provider's groups that may ask, per repository. They also
+  decide who may approve changes made through tools and who may run `/scout doctor` (the groups that may approve
+  everything, `approve` `*`). Nobody can allow a sandbox a new host from Slack until the roles file names egress
+  approvers (`"approve": { "egress": ["admins"] }`).
+
+Without either, Scout tells everyone it doesn't know their account yet. `SCOUT_REQUESTER_CHECK=warn` lets everyone
+in and logs whom it would refuse, for trying it out; `off` lets everyone in, and is only for a test install: the start
+and the doctor warn about it, and the doctor fails it if a repository is public. On GitHub, a login is linked to a
+person only through the people file, never by matching a directory username (`SCOUT_CODEHOST_LOGINS`). Set budgets
+(`SCOUT_LIMITS_FILE`) before you open it up widely.
 
 ## 9. How much Scout does on its own
 

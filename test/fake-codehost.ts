@@ -21,6 +21,8 @@ type Item = {
 	author: string;
 	state: "open" | "closed";
 	assignees: string[];
+	/** Who assigned it to its assignees: its author, unless said otherwise. */
+	assignedBy?: string;
 	createdAt: string;
 	updatedAt: string;
 	pull?: { head: string; base: string; sha?: string; fork?: string; merged: boolean; reviewers: string[]; teams: string[]; files?: string[]; mergeable?: boolean; draft?: boolean };
@@ -214,6 +216,12 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 			return ok(pullJson(r, it), 201);
 		}
 		if (sub === "/files" && it.pull !== undefined) return ok(files(r, it).map((filename) => ({ filename })));
+		// The issue's history: who assigned whom (GitHub's events, Forgejo's timeline), all on the first page.
+		if ((sub === "/events" && kind === "github") || (sub === "/timeline" && kind === "forgejo")) {
+			if (query.get("page") !== "1") return ok([]);
+			const by = { login: it.assignedBy ?? it.author };
+			return ok(it.assignees.map((login) => (kind === "github" ? { event: "assigned", actor: by, assignee: { login } } : { type: "assignees", user: by, assignee: { login }, removed_assignee: false })));
+		}
 		return { status: 404, body: { message: "not found" } };
 	};
 
@@ -255,7 +263,7 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 		repo: (slug: string, init: { private?: boolean; git?: string } = {}) => repo(slug, init),
 		/** Someone's permission on a repository: "read", "write", "admin". */
 		collaborator: (slug: string, login: string, permission: string) => void repo(slug).collaborators.set(login, permission),
-		issue: (slug: string, fields: { title: string; body?: string; author?: string; assignees?: string[] }) => add(slug, fields).number,
+		issue: (slug: string, fields: { title: string; body?: string; author?: string; assignees?: string[]; assignedBy?: string }) => add(slug, fields).number,
 		/** Someone's pull request, from `head` into `base` (main); `fork` is the repository it comes from. */
 		pull: (slug: string, fields: { title: string; head: string; base?: string; body?: string; author?: string; reviewers?: string[]; sha?: string; fork?: string; files?: string[] }) =>
 			add(slug, {

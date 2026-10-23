@@ -9,6 +9,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { Audit } from "../src/audit.ts";
+import { loadConfig } from "../src/config.ts";
 import { ThreadDoc } from "../src/docs.ts";
 import { Limits, SpendLedger, weekStart } from "../src/limits.ts";
 import { observeExtension } from "../src/observe.ts";
@@ -224,6 +225,36 @@ describe("requester permissions", () => {
 	it("can also require a Slack user group", async () => {
 		const p = new Permissions({ config: { mode: "enforce", people: { UA: "alice" }, userGroup: "S1" }, codeHost: host, fetch, groupMembers: async () => new Set(["UZ"]) });
 		assert.match(((await p.admit("UA", "o/r")) as { reason: string }).reason, /people in the group/);
+	});
+
+	it("requires the user group even with the check off, and only logs whom it would refuse in warn mode", async (t) => {
+		const off = new Permissions({ config: { mode: "off", people: {}, userGroup: "S1" }, codeHost: host, fetch, groupMembers: async () => new Set(["UZ"]) });
+		assert.match(((await off.admit("UA", "o/r")) as { reason: string }).reason, /people in the group/, "the group is a narrowing the operator asked for");
+		assert.deepEqual(await off.admit("UZ", "o/r"), { ok: true });
+
+		const warned = t.mock.method(console, "warn", () => {});
+		const warn = new Permissions({ config: { mode: "warn", people: { UB: "bob" } }, codeHost: host, fetch });
+		assert.deepEqual(await warn.admit("UB", "o/r"), { ok: true });
+		assert.deepEqual(await warn.admitLogin("mallory", "o/r"), { ok: true });
+		assert.deepEqual(
+			warned.mock.calls.map((c) => String(c.arguments[0])),
+			["requester check (warn): would refuse UB in o/r: You (bob) can't change o/r, so I can't change it for you. Someone who can could ask instead.", "requester check (warn): would refuse mallory in o/r: You (mallory) can't change o/r, so I can't change it for you. Someone who can could ask instead."],
+		);
+	});
+
+	it("checks requesters unless told off, and refuses a setting it doesn't know rather than guess", () => {
+		const env = { SCOUT_REPO_URL: "git@forge:o/r.git", SCOUT_REPO_SLUG: "o/r", SCOUT_CODEHOST_TOKEN: "t", SCOUT_CODEHOST_API: "http://forge/api/v1" };
+		assert.equal(loadConfig(env).governance.requesterCheck, "enforce", "on unless it's turned off");
+		assert.equal(loadConfig({ ...env, SCOUT_REQUESTER_CHECK: "Enforce" }).governance.requesterCheck, "enforce");
+		assert.equal(loadConfig({ ...env, SCOUT_REQUESTER_CHECK: "WARN" }).governance.requesterCheck, "warn");
+		assert.equal(loadConfig({ ...env, SCOUT_REQUESTER_CHECK: "off" }).governance.requesterCheck, "off");
+		for (const value of ["on", "true", "enforced"]) {
+			assert.throws(() => loadConfig({ ...env, SCOUT_REQUESTER_CHECK: value }), /SCOUT_REQUESTER_CHECK must be off, warn or enforce/, value);
+		}
+		assert.equal(loadConfig(env).governance.codeHostLogins, "directory", "Forgejo signs people in through the directory");
+		assert.equal(loadConfig({ ...env, SCOUT_CODEHOST: "github" }).governance.codeHostLogins, "separate", "GitHub logins are anyone's to take");
+		assert.equal(loadConfig({ ...env, SCOUT_CODEHOST_LOGINS: "separate" }).governance.codeHostLogins, "separate");
+		assert.throws(() => loadConfig({ ...env, SCOUT_CODEHOST_LOGINS: "same" }), /SCOUT_CODEHOST_LOGINS must be directory or separate/);
 	});
 });
 

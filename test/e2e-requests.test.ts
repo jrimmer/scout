@@ -598,7 +598,9 @@ describe("e2e: other ways in", () => {
 	});
 
 	it("runs the doctor from /scout doctor against the running service, and reports what is wrong", async () => {
-		await withScout({ env: { SCOUT_BACKUP: "none" } }, async (e2e) => {
+		// The doctor is for admins (the roles file's approvers of everything): Ann is one.
+		const admins = { "users.yml": "users:\n  ann:\n    email: ann@example.com\n    groups:\n      - admins\n", "roles.json": { approve: { "*": ["admins"] } } };
+		await withFiles(admins, async (files) => withScout({ env: { SCOUT_BACKUP: "none", SCOUT_REQUESTER_CHECK: "enforce", SCOUT_DIRECTORY: "authelia-file", SCOUT_DIRECTORY_SOURCE: files["users.yml"]!, SCOUT_ROLES_FILE: files["roles.json"]! } }, async (e2e) => {
 			e2e.faux.setResponses([fauxAssistantMessage("ok")]);
 			const report = await slash(e2e, "doctor");
 			assert.match(report, /✅ Forgejo: signed in as scout/, "it asked the code host");
@@ -611,7 +613,7 @@ describe("e2e: other ways in", () => {
 			const broken = await slash(e2e, "doctor");
 			assert.match(broken, /❌ Model: faux\/m didn't answer/);
 			assert.match(broken, /Check the provider's status, the key/);
-		});
+		}));
 	});
 
 	it("lists a channel's schedules with /scout schedules, once Scout set one up in a thread", async () => {
