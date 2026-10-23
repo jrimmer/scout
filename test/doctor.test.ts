@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { describe, it } from "node:test";
 import { loadConfig } from "../src/config.ts";
-import { checkBackups, reachHint, checkCodeHost, checkDashboard, checkDirectory, checkGateway, checkGitRemote, checkModel, checkProfileDir, checkRestarts, checkRunning, checkSlack, checkSpoond, doctor, fetchRunning, formatChecks, restartsOf, type Running, unitOf } from "../src/doctor.ts";
+import { checkBackups, reachHint, checkCodeHost, checkDashboard, checkDirectory, checkGateway, checkGitRemote, checkModel, checkProfileDir, checkRequesters, checkRestarts, checkRunning, checkSlack, checkSpoond, doctor, fetchRunning, formatChecks, restartsOf, type Running, unitOf } from "../src/doctor.ts";
 import { tempDir } from "./helpers.ts";
 
 /** A fetch that answers by URL: a status, a JSON body, and headers. */
@@ -230,5 +230,27 @@ describe("doctor", () => {
 		await assert.rejects(fetchRunning({ addr: "0.0.0.0:8893", auth: { user: "ops", passwordHash: "x" } }, undefined, doFetch), /SCOUT_METRICS_TOKEN/);
 		const unasked = checkRunning(await fetchRunning(undefined, undefined, doFetch).catch((error: Error) => error));
 		assert.deepEqual([unasked[0]!.status, unasked[0]!.detail], ["warn", "can't ask the running Scout: its dashboard is off (SCOUT_DASH_ADDR), so there's nothing to ask"], "a setup without a dashboard isn't Scout down");
+	});
+
+	it("fails with the requester check off and a public repository, and warns with it off otherwise", async () => {
+		const env = { SCOUT_REPO_URL: "git@host:o/web.git", SCOUT_REPO_SLUG: "o/web", SCOUT_CODEHOST_TOKEN: "t", SCOUT_CODEHOST_API: "http://forge/api/v1" };
+		const publicRepo = answering({ "http://forge/api/v1/repos/o/web": { body: { private: false } } });
+		const privateRepo = answering({ "http://forge/api/v1/repos/o/web": { body: { private: true } } });
+		const unknown = answering({});
+		assert.equal((await checkRequesters(loadConfig(env), publicRepo)).status, "ok", "enforced by default");
+		const open = await checkRequesters(loadConfig({ ...env, SCOUT_REQUESTER_CHECK: "off" }), publicRepo);
+		assert.deepEqual([open.status, open.detail], ["fail", "off, and o/web is public: anyone who can comment there can make me work"]);
+		assert.match(open.fix ?? "", /SCOUT_REQUESTER_CHECK=enforce/);
+		assert.equal((await checkRequesters(loadConfig({ ...env, SCOUT_REQUESTER_CHECK: "warn" }), publicRepo)).status, "fail", "warn lets everyone in too");
+		const quiet = await checkRequesters(loadConfig({ ...env, SCOUT_REQUESTER_CHECK: "off" }), privateRepo);
+		assert.deepEqual([quiet.status, quiet.detail], ["warn", "off: anyone in a public channel I'm in may ask me for work"]);
+		assert.equal((await checkRequesters(loadConfig({ ...env, SCOUT_REQUESTER_CHECK: "off" }), unknown)).status, "warn", "the code host wouldn't say");
+		// Roles that say who may ask in every repository narrow it whatever the mode.
+		const dir = tempDir("scout-doctor-");
+		writeFileSync(join(dir, "roles.json"), JSON.stringify({ request: { "*": ["admins"] } }));
+		assert.equal((await checkRequesters(loadConfig({ ...env, SCOUT_REQUESTER_CHECK: "off", SCOUT_ROLES_FILE: join(dir, "roles.json") }), publicRepo)).status, "ok");
+		rmSync(dir, { recursive: true, force: true });
+		const checks = await doctor(loadConfig({ ...env, SCOUT_REQUESTER_CHECK: "off", SCOUT_DASH_ADDR: "off" }), { fetch: publicRepo, git: async () => "abc\trefs/heads/main\n" });
+		assert.equal(checks.find((c) => c.name === "Requester check")?.status, "fail", "the doctor runs it");
 	});
 });

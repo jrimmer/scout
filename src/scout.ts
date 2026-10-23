@@ -17,7 +17,7 @@ import { loadPeople, Permissions } from "./permissions.ts";
 import { Pricing } from "./pricing.ts";
 import { Counters, Tracer } from "./telemetry.ts";
 import { AutheliaFile, approversOf, loadRoles, requestersOf } from "./directory.ts";
-import { codeSearchExtension } from "./codesearch.ts";
+import { codeSearchExtension, type SearchableRepo } from "./codesearch.ts";
 import { Approaches, approachesExtension, type ApproachesOptions, chooseApproach } from "./approaches.ts";
 import { egressExtension } from "./egress.ts";
 import { Images } from "./images.ts";
@@ -187,13 +187,24 @@ export async function openScout(options: ScoutOptions) {
 	// The identity provider: who a Slack user is (by email), their code host login, and their groups.
 	const directory = governance.directory === undefined ? undefined : new AutheliaFile(sourceReader(governance.directory.source, config.codeHost, options.fetch ?? fetch));
 	const people = loadPeople(governance.peopleFile);
-	/** A Slack user in the directory: by the people file's login, or else by their Slack email. */
+	// A code host login is a directory username only when the code host signs people in through the directory
+	// (SCOUT_CODEHOST_LOGINS=directory, Forgejo's default). On GitHub anyone can take any free login, so `admin` there is
+	// nobody in particular: a login is a person only by the people file, and then by that Slack user's email.
+	const loginsAreUsernames = governance.codeHostLogins === "directory";
+	/** A Slack user in the directory: by the people file's login (when logins are usernames), or else by their Slack email. */
 	const personOf = async (user: string) => {
 		if (directory === undefined) return undefined;
 		const login = people[user];
-		if (login !== undefined) return directory.byUsername(login);
+		if (login !== undefined && loginsAreUsernames) return directory.byUsername(login);
 		const email = await options.emailOf?.(user);
 		return email === undefined ? undefined : directory.byEmail(email);
+	};
+	/** A code host account in the directory: by its login when logins are usernames, else only through the people file. */
+	const personOfLogin = async (login: string) => {
+		if (directory === undefined) return undefined;
+		if (loginsAreUsernames) return directory.byUsername(login);
+		const user = slackUserOf(login);
+		return user === undefined ? undefined : personOf(user);
 	};
 	const roles = loadRoles(governance.rolesFile);
 	const refuseApprover = async (user: string, server: string): Promise<string | undefined> => {
@@ -203,23 +214,42 @@ export async function openScout(options: ScoutOptions) {
 		if (person?.groups.some((g) => groups.includes(g)) === true) return undefined;
 		return `changes to ${server} need someone in ${groups.join(" or ")}${person === undefined ? ", and I couldn't find who approved in the directory" : ""}.`;
 	};
-	/** May this person ask for work in this repository: by the roles file's groups, or else the code host's say. */
+	/**
+	 * May this person ask for work in this repository: by the roles file's groups, or else the code host's say. Groups
+	 * the roles file names are a narrowing the operator asked for, so they apply whatever SCOUT_REQUESTER_CHECK says, as
+	 * the allowed user group does.
+	 */
 	const mayRequest = async (user: string, repo: RepoConfig): Promise<Admission> => {
 		const groups = requestersOf(roles, repo.name);
-		if (groups === undefined || !permissions.enforcing) return permissions.admit(user, repo.slug);
+		if (groups === undefined) return permissions.admit(user, repo.slug);
+		const member = await permissions.member(user);
+		if (!member.ok) return member;
 		const person = await personOf(user).catch(() => undefined);
 		if (person === undefined) return { ok: false, reason: "I can't find you in the directory, so I can't check you may ask me for work here. Ask whoever runs me to link your account." };
 		if (person.groups.some((g) => groups.includes(g))) return { ok: true };
 		return { ok: false, reason: `I can only take work in ${repo.name} from people in ${groups.join(" or ")}. Ask an admin to add you.` };
 	};
-	/** The same, for someone asking on the code host: their login is their directory username. */
+	/** The same, for someone asking on the code host. */
 	const mayAsk = async (login: string, repo: Pick<RepoConfig, "name" | "slug">): Promise<Admission> => {
 		const groups = requestersOf(roles, repo.name);
-		if (groups === undefined || !permissions.enforcing) return permissions.admitLogin(login, repo.slug);
-		const person = directory === undefined ? undefined : await directory.byUsername(login).catch(() => undefined);
-		if (person === undefined) return { ok: false, reason: `I can't find ${login} in the directory, so I can't check you may ask me for work here. Ask whoever runs me to add you.` };
+		if (groups === undefined) return permissions.admitLogin(login, repo.slug);
+		const person = await personOfLogin(login).catch(() => undefined);
+		if (person === undefined) {
+			const how = loginsAreUsernames ? "in the directory" : `in the directory: whoever runs me can link your ${config.codeHost.kind === "github" ? "GitHub" : "Forgejo"} account to you in the people file`;
+			return { ok: false, reason: `I can't find ${login} ${how}, so I can't check you may ask me for work here.${loginsAreUsernames ? " Ask whoever runs me to add you." : ""}` };
+		}
 		if (person.groups.some((g) => groups.includes(g))) return { ok: true };
 		return { ok: false, reason: `I can only take work in ${repo.name} from people in ${groups.join(" or ")}. Ask an admin to add you.` };
+	};
+	/**
+	 * Is this person one of Scout's admins: in a group the roles file lets approve changes to everything (`approve`'s
+	 * `"*"`)? With no such groups there are no admins in Slack; whoever runs Scout has `npm run doctor` on its host.
+	 */
+	const isAdmin = async (user: string): Promise<boolean> => {
+		const groups = roles.approve?.["*"];
+		if (groups === undefined || groups.length === 0) return false;
+		const person = await personOf(user).catch(() => undefined);
+		return person?.groups.some((g) => groups.includes(g)) === true;
 	};
 	/** Who should review a change to these files: their CODEOWNERS, or else who changed them lately (owners.ts). */
 	const reviewersFor = async (repoName: string, files: readonly string[], exclude: readonly string[]): Promise<Owners> => {
@@ -231,14 +261,16 @@ export async function openScout(options: ScoutOptions) {
 			return { users: owners.users.filter((u) => !skip.has(u.toLowerCase())), teams: owners.teams };
 		}
 		const emails = await workspaces.recentAuthors(repoName, files).catch(() => []);
-		const logins = await Promise.all(emails.map(async (email) => (directory === undefined ? undefined : (await directory.byEmail(email).catch(() => undefined))?.username)));
+		const logins = await Promise.all(emails.map(async (email) => (directory === undefined || !loginsAreUsernames ? undefined : (await directory.byEmail(email).catch(() => undefined))?.username)));
 		return { users: recentOwners(logins, exclude), teams: [] };
 	};
-	/** A Slack user's code host login, and the reverse, from the people file and the directory. */
-	const loginOf = async (user: string): Promise<string | undefined> => (await personOf(user).catch(() => undefined))?.username;
-	const slackUserOf = (login: string): string | undefined => Object.entries(people).find(([, l]) => l.toLowerCase() === login.toLowerCase())?.[0];
+	/** A Slack user's code host login, and the reverse: the people file's, else (when logins are usernames) the directory's. */
+	const loginOf = async (user: string): Promise<string | undefined> => people[user] ?? (loginsAreUsernames ? (await personOf(user).catch(() => undefined))?.username : undefined);
+	function slackUserOf(login: string): string | undefined {
+		return Object.entries(people).find(([, l]) => l.toLowerCase() === login.toLowerCase())?.[0];
+	}
 	const permissions = new Permissions({
-		loginOf: async (user) => (await personOf(user))?.username,
+		loginOf: async (user) => (loginsAreUsernames ? (await personOf(user))?.username : undefined),
 		config: {
 			mode: governance.requesterCheck,
 			people,
@@ -250,6 +282,11 @@ export async function openScout(options: ScoutOptions) {
 			: { groupMembers: () => options.groupMembers!(governance.allowedUserGroup!) }),
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 	});
+	if (governance.requesterCheck !== "enforce") {
+		console.warn(
+			`SCOUT_REQUESTER_CHECK=${governance.requesterCheck}: anyone in a public channel I'm in, or anyone who can comment on a repository I work in, may ask me for work${governance.requesterCheck === "warn" ? " (whom it would refuse goes in this log)" : ""}. Fine for a test install; set it to enforce wherever people you don't know can reach me.`,
+		);
+	}
 	const observers: Observer[] = [audit, limits, spend, counters, ...(tracer === undefined ? [] : [tracer])];
 	const observe = observeExtension(observers, (event, reason) =>
 		audit.record("blocked", { actor: "scout", conversationId: event.conversationId, channel: event.channel, detail: { tool: event.name, reason } }),
@@ -329,8 +366,34 @@ export async function openScout(options: ScoutOptions) {
 	// A sandbox that can't reach a host asks whoever runs Scout to allow it (egress.ts); the service posts the question.
 	let proposeEgress: (conversationId: number, host: string, why: string) => Promise<string> = async () => "I can't ask anyone about network access from here.";
 	const egressTools = egressExtension((id, host, why) => proposeEgress(id, host, why));
-	// Every repository's code, from any thread: the host's mirrors, read-only (codesearch.ts).
-	const codeSearchTools = codeSearchExtension(() => config.repos.map((r) => ({ name: r.name, base: r.base, mirror: workspaces.mirrorFor(r.name) })));
+	// Other repositories' code, from the host's mirrors, read-only (codesearch.ts): a thread reads its own repository and
+	// those the person asking there may ask for work in (by the same rules), so someone admitted on a public repository
+	// can't have Scout read them a private one. Who asked on the code host is the service's to say (it sets this).
+	let codeHostAskers: (thread: ThreadRow) => string[] = () => [];
+	const searchable = (r: RepoConfig): SearchableRepo => ({ name: r.name, base: r.base, mirror: workspaces.mirrorFor(r.name) });
+	const readableRepos = async (conversationId: number): Promise<SearchableRepo[]> => {
+		// An approach works for its thread, and reads what its thread may.
+		const id = threads.byConversation(conversationId) === undefined ? (approaches.parentOf(conversationId) ?? conversationId) : conversationId;
+		const thread = threads.byConversation(id);
+		// No thread at all: a job or an eval, run by whoever runs Scout, on its host.
+		if (thread === undefined) return config.repos.map(searchable);
+		const own = (await repoOf(id, context)).name;
+		const logins = codeHostAskers(thread);
+		const user = thread.lastAsker === "scout" ? undefined : thread.lastAsker;
+		// Nobody asked (Scout started it: an alert, a schedule): its channel's repositories.
+		const channelName = (await harness?.snapshot(ThreadDoc, id as ConversationId, context))?.channelName ?? "";
+		const channelRepos = profile.channels.get(channelName)?.repos ?? [];
+		const readable = await Promise.all(
+			config.repos.map(async (r) => {
+				if (r.name === own) return true;
+				if (logins.length === 0 && user === undefined) return channelRepos.includes(r.name);
+				for (const login of logins) if (!(await mayAsk(login, r)).ok) return false;
+				return user === undefined || (await mayRequest(user, r)).ok;
+			}),
+		);
+		return config.repos.filter((_, i) => readable[i]).map(searchable);
+	};
+	const codeSearchTools = codeSearchExtension(readableRepos);
 	// Experimental: several approaches at once, compared in the thread (approaches.ts). Where the comparison goes is the
 	// service's to say (service.ts sets it); each approach works without this tool, and without opening pull requests.
 	const approaches = new Approaches(db);
@@ -540,6 +603,13 @@ export async function openScout(options: ScoutOptions) {
 		repoFor,
 		channelOf,
 		mayAsk,
+		/** May this Slack user ask for work in the repository a channel works in (for `/scout` commands there)? */
+		mayAskIn: (user: string, channelName: string) => mayRequest(user, repoNamed(repoFor(channelName))),
+		isAdmin,
+		/** Who has asked in a thread from the code host: set by the service, which reads the code host. */
+		setCodeHostAskers: (askers: (thread: ThreadRow) => string[]) => {
+			codeHostAskers = askers;
+		},
 		reviewersFor,
 		loginOf,
 		slackUserOf,

@@ -55,7 +55,7 @@ describe("code search across repositories", async () => {
 		const [search, read] = extension.tools!;
 		const found = await search!.execute({ pattern: "fetchUser", repo: "web" } as never, {} as never, context);
 		assert.match(JSON.stringify(found.output), /web:app\/profile\.tsx:1: import \{ fetchUser \}/);
-		await assert.rejects(search!.execute({ pattern: "x", repo: "billing" } as never, {} as never, context), /don't work in a repository called billing\. These I do: api, web/);
+		await assert.rejects(search!.execute({ pattern: "x", repo: "billing" } as never, {} as never, context), /can't read a repository called billing from this thread\. These I can: api, web/);
 		const file = await read!.execute({ repo: "api", path: "docs/notes.md" } as never, {} as never, context);
 		assert.match(JSON.stringify(file.output), /api:docs\/notes\.md \(1 lines\)\\n1\\tfetchUser is cached/);
 	});

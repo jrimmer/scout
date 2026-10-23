@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { NEEDS } from "./capabilities.ts";
 import type { CodeHost } from "./codehost.ts";
 import type { Config } from "./config.ts";
-import { parseAutheliaUsers } from "./directory.ts";
+import { loadRoles, parseAutheliaUsers, requestersOf, type Roles } from "./directory.ts";
 import type { GatewayConfig } from "./gateway.ts";
 import { profileDirProblem } from "./profile.ts";
 import type { Models } from "@earendil-works/pi-ai/models";
@@ -69,6 +69,39 @@ export async function checkCodeHost(host: CodeHost, doFetch: typeof fetch = fetc
 		return { name, status: "warn", detail: `signed in as ${login}, but the token can't read notifications`, fix: "Give the token write:notification (and write:issue, write:repository, read:user), or work from the code host won't arrive." };
 	}
 	return { name, status: "ok", detail: `signed in as ${login}, with notifications` };
+}
+
+/**
+ * Who may ask for work. Off (or only warning), anyone in a public channel Scout is in may; and on a repository anyone
+ * can read on the code host, anyone at all who can comment there. The roles file's `request` groups narrow a repository
+ * whatever the mode, so those count as checked.
+ */
+export async function checkRequesters(config: Config, doFetch: typeof fetch = fetch): Promise<Check> {
+	const name = "Requester check";
+	const mode = config.governance.requesterCheck;
+	if (mode === "enforce") return { name, status: "ok", detail: "only people who may change a repository can ask for work in it" };
+	let roles: Roles = {};
+	try {
+		roles = loadRoles(config.governance.rolesFile);
+	} catch {
+		// The roles file has a check of its own at start-up; here it narrows nothing.
+	}
+	const open = config.repos.filter((r) => requestersOf(roles, r.name) === undefined);
+	if (open.length === 0) return { name, status: "ok", detail: `${mode}, but the roles file says who may ask for work in every repository` };
+	const host = config.codeHost;
+	const headers = { accept: host.kind === "github" ? "application/vnd.github+json" : "application/json", authorization: host.kind === "github" ? `Bearer ${host.token}` : `token ${host.token}` };
+	const isPublic = async (slug: string) => {
+		const response = await doFetch(`${host.apiUrl}/repos/${slug}`, { headers }).catch(() => undefined);
+		if (response?.ok !== true) return false;
+		return ((await response.json().catch(() => ({}))) as { private?: boolean }).private === false;
+	};
+	const publicRepos: string[] = [];
+	for (const r of open) if (await isPublic(r.slug)) publicRepos.push(r.slug);
+	const fix = "Set SCOUT_REQUESTER_CHECK=enforce, or name who may ask in the roles file (docs/setup.md, step 8).";
+	if (publicRepos.length > 0) {
+		return { name, status: "fail", detail: `${mode}, and ${publicRepos.join(", ")} ${publicRepos.length === 1 ? "is" : "are"} public: anyone who can comment there can make me work`, fix };
+	}
+	return { name, status: "warn", detail: `${mode}: anyone in a public channel I'm in may ask me for work`, fix: `${fix} Off is fine for a test install.` };
 }
 
 export async function checkSpoond(url: string, token: string, doFetch: typeof fetch = fetch): Promise<Check> {
@@ -235,6 +268,7 @@ export async function doctor(
 		{ name: "Settings", status: "ok", detail: `${config.repos.length} repositor${config.repos.length === 1 ? "y" : "ies"}, model ${config.model.provider}/${config.model.modelId}` },
 		await checkSlack(config.slack.botToken, doFetch),
 		await checkCodeHost(config.codeHost, doFetch),
+		await checkRequesters(config, doFetch),
 	];
 	if (config.sandbox.driver === "spoond" && config.sandbox.spoond !== undefined) checks.push(await checkSpoond(config.sandbox.spoond.url, config.sandbox.spoond.token, doFetch));
 	else checks.push({ name: "Sandboxes", status: "ok", detail: `${config.sandbox.driver} driver` });

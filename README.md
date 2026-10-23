@@ -8,7 +8,7 @@ from it.
 - **Multiplayer threads.** One Slack thread is one durable conversation
   ([Pi Durable](https://earendil.com/posts/pi-durable/)).
   - It survives restarts.
-  - Anyone in the thread can redirect the work.
+  - Anyone in the thread who may ask for work (by default, people who can change the repository) can redirect it.
   - A stop sign (or "@Scout stop") stops it.
   - A change made through a tool that needs approval waits for "approve", or a 👍 on Scout's request.
   - 🔁 on its answer tries again; editing a request steers the work.
@@ -19,7 +19,8 @@ from it.
     waiting for approval get Approve and Decline buttons.
   - Each channel gets a canvas of what's open; a Slack List tracks all of Scout's work; links to the code host
     preview with their state; Workflow Builder gets an Ask Scout step.
-- **All your code.** Any thread can search and read every repository Scout works in, not just its own checkout.
+- **All your code.** A thread can search and read the other repositories Scout works in, not just its own checkout:
+  the ones the person asking may work in.
 - **Its own sandbox.** Each thread gets its own clone, in its channel's repository, and its own Docker container.
   Credentials never enter it.
 - **Reviewed before you review it.** Scout reviews its own diff before opening a pull request, and keeps pull

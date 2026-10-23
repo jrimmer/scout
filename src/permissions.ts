@@ -8,13 +8,16 @@ import type { Admission } from "./limits.ts";
  * they couldn't make them themselves.
  *
  * Slack users map to code host accounts through the identity provider (directory.ts: their Slack email, the person
- * with that email, whose username is their code host login), or a file the operator keeps (`{ "U0123ABC": "alice" }`),
- * which wins. Neither lets a person claim an account: Slack's email is the workspace's, the directory the operator's. A Slack user group can also gate who may use Scout at all.
- * With `SCOUT_REQUESTER_CHECK=enforce`, people without write access (or without a mapping) can talk in threads, but
- * their messages don't start or steer work.
+ * with that email, whose username is their code host login when the code host signs people in through it), or a file
+ * the operator keeps (`{ "U0123ABC": "alice" }`), which wins. Neither lets a person claim an account: Slack's email is
+ * the workspace's, the directory the operator's. A Slack user group can also gate who may use Scout at all, and does
+ * whatever the mode.
+ * With `SCOUT_REQUESTER_CHECK=enforce` (the default), people without write access (or without a mapping) can talk in
+ * threads, but their messages don't start or steer work. `warn` logs whom it would refuse and lets them through; `off`
+ * checks nobody.
  */
 export type PermissionsConfig = {
-	mode: "off" | "enforce";
+	mode: "off" | "warn" | "enforce";
 	/** Slack user ID → code host login. */
 	people: Record<string, string>;
 	/** Only members of this Slack user group may ask Scout for work. */
@@ -53,28 +56,26 @@ export class Permissions {
 		this.#groupMembers = options.groupMembers ?? (async () => new Set());
 	}
 
-	get enforcing(): boolean {
-		return this.#config.mode === "enforce";
+	get mode(): PermissionsConfig["mode"] {
+		return this.#config.mode;
 	}
 
 	/** May `user` ask for work in the repository `slug`? */
 	async admit(user: string, slug: string, now = Date.now()): Promise<Admission> {
-		if (!this.enforcing) return { ok: true };
-		const key = `${user} ${slug}`;
-		const cached = this.#cache.get(key);
-		if (cached !== undefined && now - cached.at < CACHE_MS) return cached.admission;
-		const admission = await this.#check(user, slug, now);
-		this.#cache.set(key, { at: now, admission });
-		return admission;
+		const member = await this.member(user, now);
+		if (!member.ok || this.#config.mode === "off") return member;
+		return this.#softened(`${user} in ${slug}`, await this.#cached(`${user} ${slug}`, now, () => this.#check(user, slug)));
 	}
 
-	async #check(user: string, slug: string, now: number): Promise<Admission> {
-		if (this.#config.userGroup !== undefined) {
-			if (this.#group === undefined || now - this.#group.at > CACHE_MS) this.#group = { at: now, members: await this.#groupMembers() };
-			if (!this.#group.members.has(user)) {
-				return { ok: false, reason: "I can only take work from people in the group set up for me. Ask whoever runs me to add you." };
-			}
-		}
+	/** Is `user` in the Slack user group that may use Scout (anyone is, when there's none)? Whatever the mode. */
+	async member(user: string, now = Date.now()): Promise<Admission> {
+		if (this.#config.userGroup === undefined) return { ok: true };
+		if (this.#group === undefined || now - this.#group.at > CACHE_MS) this.#group = { at: now, members: await this.#groupMembers() };
+		if (this.#group.members.has(user)) return { ok: true };
+		return { ok: false, reason: "I can only take work from people in the group set up for me. Ask whoever runs me to add you." };
+	}
+
+	async #check(user: string, slug: string): Promise<Admission> {
 		const login = this.#config.people[user] ?? (await this.#loginOf(user).catch(() => undefined));
 		if (login === undefined) {
 			return { ok: false, reason: `I don't know your ${hostName(this.#host)} account yet, so I can't check you can change ${slug}. Ask whoever runs me to link it.` };
@@ -84,13 +85,23 @@ export class Permissions {
 
 	/** May the code host account `login` ask for work in `slug`? For requests made on the code host itself. */
 	async admitLogin(login: string, slug: string, now = Date.now()): Promise<Admission> {
-		if (!this.enforcing) return { ok: true };
-		const key = `login:${login} ${slug}`;
+		if (this.#config.mode === "off") return { ok: true };
+		return this.#softened(`${login} in ${slug}`, await this.#cached(`login:${login} ${slug}`, now, () => this.#canChange(login, slug)));
+	}
+
+	async #cached(key: string, now: number, check: () => Promise<Admission>): Promise<Admission> {
 		const cached = this.#cache.get(key);
 		if (cached !== undefined && now - cached.at < CACHE_MS) return cached.admission;
-		const admission = await this.#canChange(login, slug);
+		const admission = await check();
 		this.#cache.set(key, { at: now, admission });
 		return admission;
+	}
+
+	/** In `warn` mode a refusal is only logged: for trying the check out before turning it on. */
+	#softened(who: string, admission: Admission): Admission {
+		if (admission.ok || this.#config.mode !== "warn") return admission;
+		console.warn(`requester check (warn): would refuse ${who}: ${admission.reason}`);
+		return { ok: true };
 	}
 
 	async #canChange(login: string, slug: string): Promise<Admission> {

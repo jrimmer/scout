@@ -35,8 +35,18 @@ Text Scout reads can try to tell it what to do: a Slack message, an issue or com
 repository, a web page, a tool's output. Scout treats it as data, but a model can be talked into things. What limits
 the damage:
 
-- **Who may ask** is checked for every request: in Slack by the person's identity, on the code host by their login
-  (looked up in the directory). A comment from someone who may not ask is answered with a polite no, not acted on.
+- **Who may ask** is checked for every request, and is on by default (`SCOUT_REQUESTER_CHECK=enforce`; `off` is
+  for test installs, and the doctor fails it when a repository is public): in Slack by the person's identity, on the
+  code host by their login. Every person asking is checked, not only the last; an assignment is checked as a request
+  from whoever assigned it. A comment from someone who may not ask is answered with a polite no, not acted on.
+- **Logins aren't identities** unless the code host signs people in through your directory (a Forgejo behind it). On
+  GitHub anyone can register any free login, so a GitHub login is linked to a person only through the people file
+  (`SCOUT_CODEHOST_LOGINS`), never by sharing a name with someone in the directory.
+- **Reading other repositories** (`search_code`, `read_code`) is limited to the thread's own repository and those
+  the person asking may ask for work in: someone admitted on a public repository can't have Scout read a private one.
+- **`/scout`** answers `doctor` only to admins (it shows how Scout is set up), the other commands only to people who
+  may ask for work in that channel's repository, and starts work with `ask` only in public channels Scout is in, so
+  nothing from a private channel or a DM reaches threads or search.
 - **The sandbox** holds nothing worth stealing and reaches only what its egress list allows; exfiltration needs a
   host on that list.
 - **Approvals** gate tool writes and network access; Scout's own requests are never enough.

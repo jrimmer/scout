@@ -82,8 +82,18 @@ export type Config = {
 		pricesFile?: string;
 		/** Budgets, per-run limits and concurrency. */
 		limitsFile?: string;
-		/** `enforce`: only people who can change a repository may ask for work in it. */
-		requesterCheck: "off" | "enforce";
+		/**
+		 * `enforce` (the default): only people who can change a repository may ask for work in it. `warn` logs whom it
+		 * would refuse and lets them through; `off` lets anyone. The roles file's `request` groups and the allowed user
+		 * group apply whatever this says.
+		 */
+		requesterCheck: "off" | "warn" | "enforce";
+		/**
+		 * Whether a code host login is the person's username in the directory: `directory` when the code host signs
+		 * people in through the same identity provider (the default for Forgejo), `separate` when it doesn't (the
+		 * default for GitHub, where anyone can take any free login). Separate, a login is someone only by the people file.
+		 */
+		codeHostLogins: "directory" | "separate";
 		/** Slack user ID → code host login, for the requester check. */
 		peopleFile?: string;
 		/** Only this Slack user group may ask for work. */
@@ -165,6 +175,19 @@ function jsonSetting<T>(env: NodeJS.ProcessEnv, name: string, example: string): 
 	} catch (error) {
 		throw new ConfigError(`${name} isn't valid JSON (${error instanceof Error ? error.message : String(error)}); it should look like ${example}`);
 	}
+}
+
+/** Who may ask for work: checked unless it's turned off, and only by a word Scout knows (a typo mustn't open it up). */
+function requesterCheck(value: string | undefined): Config["governance"]["requesterCheck"] {
+	const mode = (value || "enforce").trim().toLowerCase();
+	if (mode === "off" || mode === "warn" || mode === "enforce") return mode;
+	throw new ConfigError(`SCOUT_REQUESTER_CHECK must be off, warn or enforce, not "${value}"`);
+}
+
+function codeHostLogins(value: string | undefined, kind: CodeHostKind): Config["governance"]["codeHostLogins"] {
+	const said = (value || (kind === "github" ? "separate" : "directory")).trim().toLowerCase();
+	if (said === "directory" || said === "separate") return said;
+	throw new ConfigError(`SCOUT_CODEHOST_LOGINS must be directory or separate, not "${value}"`);
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -328,7 +351,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			...(env.SCOUT_DIRECTORY === "authelia-file" ? { directory: { kind: "authelia-file" as const, source: required(env, "SCOUT_DIRECTORY_SOURCE") } } : {}),
 			...(env.SCOUT_ROLES_FILE ? { rolesFile: resolve(env.SCOUT_ROLES_FILE) } : {}),
 			...(env.SCOUT_LIMITS_FILE ? { limitsFile: resolve(env.SCOUT_LIMITS_FILE) } : {}),
-			requesterCheck: env.SCOUT_REQUESTER_CHECK === "enforce" ? "enforce" : "off",
+			requesterCheck: requesterCheck(env.SCOUT_REQUESTER_CHECK),
+			codeHostLogins: codeHostLogins(env.SCOUT_CODEHOST_LOGINS, kind),
 			...(env.SCOUT_PEOPLE_FILE ? { peopleFile: resolve(env.SCOUT_PEOPLE_FILE) } : {}),
 			...(env.SCOUT_ALLOWED_USERGROUP ? { allowedUserGroup: env.SCOUT_ALLOWED_USERGROUP } : {}),
 			...(env.SCOUT_RETENTION_DAYS ? { retentionDays: Number(env.SCOUT_RETENTION_DAYS) } : {}),

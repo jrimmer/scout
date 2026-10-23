@@ -25,7 +25,7 @@ import { countMcpTools, doctor, formatChecks, restartsOf, type Unit, unitOf } fr
 import type { SandboxDriver } from "./drivers/types.ts";
 import { allowInReposFile, EgressRequests } from "./egress.ts";
 import { loadTasks } from "./evals.ts";
-import { type Ask, forgeFor, Inbox } from "./forge.ts";
+import { type Ask, askerOf, forgeFor, Inbox } from "./forge.ts";
 import { modelsFor } from "./gateway.ts";
 import { Health } from "./health.ts";
 import { type HomeData, type HomeThread, homeView } from "./home.ts";
@@ -489,7 +489,25 @@ export async function startService(options: ServiceOptions) {
 	/** `/scout …`, answered just to whoever asked. */
 	async function slashCommand(c: { user: string; channel: string; channelName: string; text: string }): Promise<string> {
 		const [word = "", ...rest] = c.text.trim().split(/\s+/);
-		switch (word.toLowerCase()) {
+		const command = word.toLowerCase();
+		// The doctor shows how I'm set up (addresses, accounts, what's broken) and costs a model call: admins only.
+		if (command === "doctor" && !(await scout.isAdmin(c.user))) {
+			return "Only my admins can run the doctor from Slack, since it shows how I'm set up. Whoever runs me can run `npm run doctor` on my host.";
+		}
+		// The rest show or start work in this channel's repository: for people who may ask for work there.
+		if (command === "status" || command === "waiting" || command === "schedules" || command === "ask") {
+			const allowed = await scout.mayAskIn(c.user, c.channelName);
+			if (!allowed.ok) return allowed.reason;
+		}
+		// Work happens where everyone can see it: never in a private channel or a DM, whose content would then reach
+		// threads and search. The same check as the Workflow step's.
+		if (command === "ask") {
+			const info = await slack.app.client.conversations.info({ channel: c.channel }).catch(() => undefined);
+			if (info?.channel?.is_channel !== true || info.channel.is_private === true || info.channel.is_member !== true) {
+				return "I only take work in public channels I'm in, so everyone can see what we do. Invite me to one and ask there.";
+			}
+		}
+		switch (command) {
 			case "status":
 				return describeNow(c.channelName);
 			case "doctor": {
@@ -757,6 +775,7 @@ export async function startService(options: ServiceOptions) {
 			ask: (ask) => takeAsk(ask),
 		},
 	});
+	scout.setCodeHostAskers((thread) => inbox.askers(thread.key));
 	const REVIEW_WORDS: Record<string, string> = { APPROVED: "approved", APPROVE: "approved", REQUEST_CHANGES: "asked for changes", CHANGES_REQUESTED: "asked for changes", COMMENT: "reviewed", COMMENTED: "reviewed" };
 	async function takeAsk(ask: Ask): Promise<void> {
 		const { issue } = ask;
@@ -789,28 +808,42 @@ export async function startService(options: ServiceOptions) {
 			await say(`I'm not set up to work in ${issue.slug}, so I can't take this on. Whoever runs me can add it.`);
 			return;
 		}
-		const allowed = await scout.mayAsk(ask.by, repo);
-		if (!allowed.ok) {
-			await say(`@${ask.by} ${allowed.reason}`);
-			return;
+		// Everyone who asked in what came in must be someone who may, not only the last of them (an assignment asks for
+		// whoever assigned it). Whoever may not is context, as their reply in Slack would be.
+		const refused = new Map<string, string>();
+		for (const who of new Set(ask.said.filter((s) => s.addressed).map(askerOf))) {
+			const allowed = who === "" ? { ok: false as const, reason: "I couldn't tell who assigned this to me, so I can't check they may ask me for work here. Mention me with what you'd like instead." } : await scout.mayAsk(who, repo);
+			if (!allowed.ok) refused.set(who, allowed.reason);
 		}
+		for (const [who, reason] of refused) await say(who === "" ? reason : `@${who} ${reason}`);
+		const asking = ask.said.filter((s) => s.addressed && !refused.has(askerOf(s)));
+		if (asking.length === 0) return;
+		const by = askerOf(asking.at(-1)!);
+		const told = ask.said
+			.map((s) => `${s.author}${s.review === undefined ? "" : ` (${REVIEW_WORDS[s.review] ?? "reviewed"})`}${where(s)}${s.addressed && refused.has(askerOf(s)) ? " (context only: they may not ask you for work here)" : ""}: ${s.body.trim() || "(no comment)"}`)
+			.join("\n\n");
 		// 👀 on what asked, so people on the code host see it was picked up; the answer follows when it's done.
-		for (const s of ask.said.filter((x) => x.addressed)) {
+		for (const s of asking) {
 			await forge.acknowledge(issue.slug, issue.number, s.id).catch((error: unknown) => console.error(`couldn't react on ${ref}:`, error));
 		}
 		const verb = ask.why === "assigned" ? `assigned you ${kind}` : ask.why === "mentioned" ? `asked you in ${kind}` : `commented on your ${kind}`;
 		const prompt = [
-			`${ask.by} ${verb} ${ref} "${issue.title}" on ${forge.name} (${issue.url}):`,
-			said,
+			`${by} ${verb} ${ref} "${issue.title}" on ${forge.name} (${issue.url}):`,
+			told,
 			ask.why === "own pull request"
 				? "If they're asking for a change, make it and call open_pull_request again: it updates the same pull request. Otherwise answer them."
 				: `Work on it as you would a request in Slack. Your answer goes in this thread and back on the ${kind} as a comment.${issue.pull ? "" : ` If you open a pull request that resolves the issue, put "Closes #${issue.number}" in its description.`}`,
 		].join("\n\n");
-		audit.record("request", { actor: ask.by, detail: { as: forge.name.toLowerCase(), url: issue.url, why: ask.why, text: said.slice(0, 200) } });
+		audit.record("request", { actor: by, detail: { as: forge.name.toLowerCase(), url: issue.url, why: ask.why, text: told.slice(0, 200) } });
 		const requestId = `forge:${ref}:${ask.said.map((s) => s.id ?? s.url ?? s.body.length).join(",")}`;
+		// What the thread may read of other repositories, each of them may (scout.ts, code search).
+		const askedIn = (key: string) => {
+			for (const s of asking) inbox.asked(key, askerOf(s));
+		};
 
 		if (existing !== undefined && thread !== undefined) {
 			await inThread(existing, quoted);
+			askedIn(thread.key);
 			inbox.replyTo(existing, issue.slug, issue.number);
 			await bridge.work(existing, prompt, requestId, "pick this up");
 			return;
@@ -825,7 +858,7 @@ export async function startService(options: ServiceOptions) {
 			await say(`I don't have a Slack channel to work on ${repo.name} in yet, so I can't take this on. Whoever runs me can set one up.`);
 			return;
 		}
-		const root = `📥 *${ask.by}* ${ask.why === "assigned" ? "assigned me" : "asked me on"} <${issue.url}|${ref}>: ${issue.title}\n${quote(ask.said.at(-1)?.body ?? "")}`;
+		const root = `📥 *${by}* ${ask.why === "assigned" ? "assigned me" : "asked me on"} <${issue.url}|${ref}>: ${issue.title}\n${quote(ask.said.at(-1)?.body ?? "")}`;
 		const threadTs = await slack.surface.post(channel, undefined, { text: root, blocks: [{ type: "markdown", text: root }] });
 		const base = issue.pull ? await forge.headBranch(issue.slug, issue.number) : undefined;
 		const context = [
@@ -833,6 +866,7 @@ export async function startService(options: ServiceOptions) {
 			`# ${issue.title}\n\n${issue.body}`,
 			...(base === undefined ? [] : [`Changes you make here go into the pull request's own branch, ${base}.`]),
 		].join("\n\n");
+		askedIn(threadKey(channel, threadTs));
 		await bridge.investigate({ channel, channelName: name, threadTs, context, prompt, requestId, ...(base === undefined ? {} : { base }) });
 		const conversationId = threads.get(threadKey(channel, threadTs))?.conversationId;
 		if (conversationId !== undefined) {

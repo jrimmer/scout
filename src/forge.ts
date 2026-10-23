@@ -48,6 +48,8 @@ export interface Forge {
 	unread(): Promise<Notice[]>;
 	markRead(notice: Notice): Promise<void>;
 	issue(slug: string, number: number): Promise<Issue>;
+	/** Who last assigned the issue or pull request to `login`, from its history; undefined when it doesn't say. */
+	assigner(slug: string, number: number, login: string): Promise<string | undefined>;
 	/** Comments, and for a pull request its reviews and comments on lines, oldest first. */
 	remarks(issue: Issue): Promise<Remark[]>;
 	/** React 👀 to a comment (`comment:<id>`), or to the issue itself, to say Scout has picked it up. */
@@ -77,6 +79,10 @@ type Dialect = {
 	isIssue(subjectType: string): boolean;
 	/** The path that deletes a branch. */
 	branchPath(slug: string, branch: string): string;
+	/** An issue's history, ending in `?…&` for the page. */
+	assignmentsPath(slug: string, number: number): string;
+	/** An entry of it that (un)assigns someone: who did it, to whom. */
+	assignment(event: ApiEvent): { by: string; to: string; removed: boolean } | undefined;
 	/** Comments on lines of a pull request, with their review's id. */
 	lineComments(api: (path: string) => Promise<unknown>, slug: string, number: number, reviews: ApiReview[]): Promise<(ApiLineComment & { reviewId?: number })[]>;
 };
@@ -90,6 +96,9 @@ const DIALECTS: Record<CodeHost["kind"], Dialect> = {
 		unreadPath: "/notifications?status-types=unread&limit=50",
 		isIssue: (type) => type === "Issue" || type === "Pull",
 		branchPath: (slug, branch) => `/repos/${slug}/branches/${encodeURIComponent(branch)}`,
+		assignmentsPath: (slug, number) => `/repos/${slug}/issues/${number}/timeline?limit=50&`,
+		assignment: (e) =>
+			e.type === "assignees" && e.user?.login !== undefined && e.assignee?.login !== undefined ? { by: e.user.login, to: e.assignee.login, removed: e.removed_assignee === true } : undefined,
 		// Forgejo keeps them under each review, with the new file's line as `position`.
 		lineComments: async (api, slug, number, reviews) => {
 			const all = [];
@@ -107,6 +116,11 @@ const DIALECTS: Record<CodeHost["kind"], Dialect> = {
 		unreadPath: "/notifications?per_page=50",
 		isIssue: (type) => type === "Issue" || type === "PullRequest",
 		branchPath: (slug, branch) => `/repos/${slug}/git/refs/heads/${branch.split("/").map(encodeURIComponent).join("/")}`,
+		assignmentsPath: (slug, number) => `/repos/${slug}/issues/${number}/events?per_page=100&`,
+		assignment: (e) =>
+			(e.event === "assigned" || e.event === "unassigned") && e.actor?.login !== undefined && e.assignee?.login !== undefined
+				? { by: e.actor.login, to: e.assignee.login, removed: e.event === "unassigned" }
+				: undefined,
 		lineComments: async (api, slug, number) =>
 			((await api(`/repos/${slug}/pulls/${number}/comments?per_page=100`)) as ApiLineComment[]).map((c) => ({
 				...c,
@@ -133,6 +147,8 @@ type ApiIssue = {
 };
 type ApiComment = { id: number; body?: string | null; user?: User; created_at: string; html_url?: string };
 type ApiReview = { id: number; body?: string | null; user?: User; state: string; submitted_at?: string; html_url?: string; comments_count?: number };
+/** An entry in an issue's history: GitHub's events (`event`, `actor`) or Forgejo's timeline (`type`, `user`). */
+type ApiEvent = { event?: string; type?: string; actor?: User | null; user?: User | null; assignee?: User | null; removed_assignee?: boolean };
 
 class RestForge implements Forge {
 	readonly #host: CodeHost;
@@ -165,6 +181,20 @@ class RestForge implements Forge {
 			}
 			return [{ id: String(t.id), slug, number }];
 		});
+	}
+
+	async assigner(slug: string, number: number, login: string): Promise<string | undefined> {
+		let by: string | undefined;
+		// The history, oldest first, a page at a time: the last time it was assigned to `login` is who asked.
+		for (let page = 1; page <= 10; page++) {
+			const events = (await this.#api("GET", `${this.#dialect.assignmentsPath(slug, number)}page=${page}`)) as ApiEvent[] | undefined;
+			if (!Array.isArray(events) || events.length === 0) break;
+			for (const e of events) {
+				const assigned = this.#dialect.assignment(e);
+				if (assigned !== undefined && assigned.to.toLowerCase() === login.toLowerCase()) by = assigned.removed ? undefined : assigned.by;
+			}
+		}
+		return by;
 	}
 
 	async markRead(notice: Notice): Promise<void> {
@@ -337,7 +367,10 @@ class RestForge implements Forge {
  */
 export type Ask = {
 	issue: Issue;
-	/** Who asked; the last of them when several did (or who spoke last, for context alone). */
+	/**
+	 * Who asked; the last of them when several did (or who spoke last, for context alone). Each addressed remark's
+	 * asker (`askerOf`) is someone to check, not just this one.
+	 */
 	by: string;
 	/** What was said, oldest first: each remark, or the issue itself when that's what asked. */
 	said: Said[];
@@ -350,7 +383,16 @@ export type Ask = {
 	request: boolean;
 };
 
-export type Said = { id?: string; author: string; body: string; url?: string; review?: string; path?: string; line?: number; addressed: boolean };
+/**
+ * `asker` is who asks with it when that isn't its author: whoever assigned the issue to Scout (empty when the code
+ * host didn't say). Everyone who asks must be someone who may ask, not only the last of them.
+ */
+export type Said = { id?: string; author: string; body: string; url?: string; review?: string; path?: string; line?: number; addressed: boolean; asker?: string };
+
+/** Who asks with a remark: its asker when it has one (an assignment's), else its author. */
+export function askerOf(said: Said): string {
+	return said.asker ?? said.author;
+}
 
 export type InboxHandlers = {
 	/** Is this one of Scout's own pull requests (it opened it)? */
@@ -388,6 +430,7 @@ export class Inbox {
 				number INTEGER NOT NULL
 			);
 			CREATE TABLE IF NOT EXISTS forge_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+			CREATE TABLE IF NOT EXISTS forge_askers (thread_key TEXT NOT NULL, login TEXT NOT NULL, PRIMARY KEY (thread_key, login));
 		`);
 		this.#db.prepare("INSERT OR IGNORE INTO forge_meta (key, value) VALUES ('since', ?)").run(String(options.now ?? Date.now()));
 	}
@@ -432,7 +475,13 @@ export class Inbox {
 
 		const fresh = issue.createdAt >= since && issue.author.toLowerCase() !== me;
 		const opening = { author: issue.author, body: `${issue.title}\n\n${issue.body}`.trim(), url: issue.url, addressed: true };
-		if (issue.assignees.some((a) => a.toLowerCase() === me)) take(`assigned:${issue.slug}#${issue.number}`, opening, "assigned");
+		const assignedKey = `assigned:${issue.slug}#${issue.number}`;
+		if (issue.assignees.some((a) => a.toLowerCase() === me)) {
+			// An assignment asks on behalf of whoever assigned it, not the issue's author: an outsider's issue a maintainer
+			// assigned is the maintainer's request, and a maintainer's issue an outsider assigned isn't.
+			const asker = this.#handled(assignedKey) ? "" : ((await this.#forge.assigner(issue.slug, issue.number, me).catch(() => undefined)) ?? "");
+			take(assignedKey, { ...opening, asker }, "assigned");
+		}
 		else if (fresh && mentions(`${issue.title}\n${issue.body}`)) take(`opened:${issue.slug}#${issue.number}`, opening, "mentioned");
 		for (const remark of await this.#forge.remarks(issue)) {
 			if (remark.at < since || remark.author.toLowerCase() === me) continue;
@@ -456,7 +505,8 @@ export class Inbox {
 		}
 		if (said.length === 0 || why === undefined) return;
 		const asking = said.filter((s) => s.addressed);
-		await this.#handlers.ask({ issue, by: (asking.at(-1) ?? said.at(-1))!.author, said, why, request: asking.length > 0 });
+		const last = asking.at(-1);
+		await this.#handlers.ask({ issue, by: last === undefined ? said.at(-1)!.author : askerOf(last), said, why, request: asking.length > 0 });
 	}
 
 	#handled(key: string): boolean {
@@ -471,6 +521,16 @@ export class Inbox {
 	threadOf(slug: string, number: number): number | undefined {
 		const row = this.#db.prepare("SELECT conversation_id FROM forge_threads WHERE slug = ? AND number = ?").get(slug, number) as { conversation_id: number } | undefined;
 		return row?.conversation_id;
+	}
+
+	/** `login` asked for work in the Slack thread `threadKey` from the code host (before its run starts). */
+	asked(threadKey: string, login: string): void {
+		this.#db.prepare("INSERT OR IGNORE INTO forge_askers (thread_key, login) VALUES (?, ?)").run(threadKey, login);
+	}
+
+	/** Everyone who has asked in a thread from the code host: what the thread reads, each of them may. */
+	askers(threadKey: string): string[] {
+		return this.#db.prepare("SELECT login FROM forge_askers WHERE thread_key = ? ORDER BY login").all(threadKey).map((r) => String(r.login));
 	}
 
 	threadStarted(slug: string, number: number, conversationId: number): void {

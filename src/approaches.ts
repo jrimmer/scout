@@ -121,6 +121,12 @@ export class Approaches {
 			}));
 	}
 
+	/** The thread's conversation an approach's conversation works for, if it is one. */
+	parentOf(childId: number): number | undefined {
+		const row = this.#db.prepare("SELECT parent_id FROM approaches WHERE child_id = ?").get(childId) as { parent_id: number } | undefined;
+		return row === undefined ? undefined : Number(row.parent_id);
+	}
+
 	close(): void {
 		this.#db.close();
 	}
