@@ -43,21 +43,58 @@ describe("MCP tools", () => {
 
 	it("keeps approvals across a restart: who approved, a change waiting, and the answer that asked", () => {
 		const path = join(tempDir("scout-approvals-"), "scout.sqlite");
+		const change = { server: "grafana", tool: "write_rules", args: { threshold: 90 } };
 		const before = new Approvals(path);
+		before.ask(1, change);
+		before.answered(1, "100.1");
 		before.grant(1, "UANN");
-		before.ask(2);
+		before.ask(2, change);
 		before.answered(2, "200.1");
-		before.ask(3);
+		before.ask(3, change);
 		before.close();
 
 		const after = new Approvals(path);
-		assert.equal(after.by(1), "UANN", "an approval given before the restart still lets the change go ahead");
+		assert.equal(after.by(1, change), "UANN", "an approval given before the restart still lets the change go ahead");
 		assert.equal(after.askedIn("200.1"), 2, "a 👍 on the answer that asked still approves");
 		after.answered(3, "300.1");
 		assert.equal(after.askedIn("300.1"), 3, "a run that asked before the restart and answered after it");
 		after.use(1);
-		assert.equal(after.by(1), undefined);
+		assert.equal(after.by(1, change), undefined);
 		after.close();
+	});
+
+	it("binds an approval to the change that was asked for and is waiting, until it's used or declined", () => {
+		const approvals = new Approvals();
+		const rules90 = { server: "grafana", tool: "write_rules", args: { rule: "disk", threshold: 90 } };
+		const rules10 = { ...rules90, args: { rule: "disk", threshold: 10 } };
+		assert.equal(approvals.grant(1, "UANN"), false, "nothing is waiting, so there's nothing to approve");
+		approvals.ask(1, rules90);
+		assert.equal(approvals.grant(1, "UANN"), false, "asked in the run going on, and not yet put to anyone");
+		approvals.answered(1, "100.1");
+		assert.equal(approvals.askedFor(1), "grafana");
+		assert.equal(approvals.grant(1, "UANN"), true);
+		assert.equal(approvals.by(1, { ...rules90, args: { threshold: 90, rule: "disk" } }), "UANN", "the same arguments, in another order");
+		assert.equal(approvals.by(1, rules10), undefined, "other arguments");
+		assert.equal(approvals.by(1, { ...rules90, tool: "delete_rules" }), undefined, "another tool");
+		assert.equal(approvals.by(1, { ...rules90, server: "billing" }), undefined, "another server");
+		// A later run (steered meanwhile) asks for something else: the approval stays with what was approved.
+		approvals.ask(1, rules10);
+		assert.equal(approvals.by(1, rules10), undefined);
+		assert.equal(approvals.by(1, rules90), "UANN");
+		approvals.use(1);
+		assert.equal(approvals.by(1, rules90), undefined, "used once");
+
+		// Declined: what waits and what was approved are both gone.
+		approvals.ask(2, rules90);
+		approvals.answered(2, "200.1");
+		approvals.grant(2, "UANN");
+		assert.equal(approvals.pending(2), true);
+		approvals.decline(2);
+		assert.equal(approvals.by(2, rules90), undefined);
+		assert.equal(approvals.waiting(2), false);
+		assert.equal(approvals.pending(2), false);
+		assert.equal(approvals.askedIn("200.1"), undefined, "a 👍 on the answer no longer approves");
+		approvals.close();
 	});
 
 	it("offers a server's tools to threads in its channels, and only there", async () => {
@@ -158,11 +195,16 @@ describe("MCP tools", () => {
 		approvals.answered(conversation.id, "200.2");
 		assert.equal(approvals.askedIn("200.1"), undefined, "a later answer that didn't ask takes it back");
 		assert.equal(approvals.askedIn("200.2"), undefined);
-		approvals.grant(conversation.id, "UANN");
+		assert.equal(approvals.grant(conversation.id, "UANN"), false, "nothing is waiting, so there's nothing to approve");
+		assert.match(await write(), /needs a person's approval first/);
+		approvals.answered(conversation.id, "200.3");
+		assert.equal(approvals.grant(conversation.id, "UANN"), true);
 		assert.match(await write(), /written/);
 		assert.match(await write(), /needs a person's approval first/, "an approval covers one change, not the next");
+		approvals.answered(conversation.id, "200.4");
 		approvals.grant(conversation.id, "UANN", Date.now() - 16 * 60 * 1000);
 		assert.match(await write(), /needs a person's approval first/, "an approval runs out");
+		approvals.answered(conversation.id, "200.5");
 		approvals.grant(conversation.id, "UBOB");
 		assert.match(await write(), /doesn't cover this: changes to grafana need someone in admins/, "only someone in an approving group counts");
 		await harness.close(context);

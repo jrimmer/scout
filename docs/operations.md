@@ -166,11 +166,32 @@ resumes on its next use, so a thread's first command after a quiet spell can tak
 
 A sandbox that can't reach something it needs (DNS failures, refused or timed-out connections during an install)
 doesn't diagnose itself or work around the network: Scout calls `ask_for_network` with the host and what needed it
-(`src/egress.ts`). Its home channel gets the question, with the thread's link and Allow and Decline buttons. Only
-people in the `egress` approvers of `SCOUT_ROLES_FILE` (`"approve": { "egress": [...] }`, or else `"*"`) may decide;
-anyone else pressing a button is told why, just to them. Allow adds the host to the repository's egress list in the
-repos file (`SCOUT_REPOS_FILE`; a backup is kept as `.bak`, and the file is replaced in one step) and in memory, so
-new sandboxes get it at once. Sandboxes already running keep their network: the thread is told a new thread gets it.
+(`src/egress.ts`). Its home channel gets the question, with the thread's link and Allow and Decline buttons. It names
+the host first, says that allowing it lets every new sandbox for the repository connect to that host from now on, and
+shows the reason the model gave as "Scout's reason", in plain text.
+
+**Name egress approvers.** Only people in the groups `SCOUT_ROLES_FILE` names for `egress` itself may decide
+(`"approve": { "egress": ["admins"] }`); approvers for every server (`"*"`) don't count, and neither does anyone
+else's press, which is answered just to them. With no egress approvers named, nobody can allow a host from Slack: the
+home channel is told that a thread needed it and that whoever runs Scout has to name approvers or add the host to the
+repos file themselves.
+
+**What can be asked for.** A host name on the internet (`registry.npmjs.org`), or `*.` and one domain under a public
+suffix (`*.npmjs.org`, which spoond's allowlist takes as every host under it). Scout won't ask for, and Allow won't
+add, an IP address or range (v4 or v6), `localhost` or `*.localhost`, names that stay inside a network (`.internal`,
+`.local`, `.lan`, `.home.arpa` and the like, which covers `metadata.google.internal`), names that resolve to whatever
+address they contain (`nip.io`, `sslip.io`), a public suffix on its own, or a wildcard over a public suffix (`*`,
+`*.com`, `*.co.uk`) or over a domain where anyone can have a host (`*.amazonaws.com`, `*.github.io`). Addresses
+matter because spoond lets an allowlisted private address (cloud metadata at 169.254.169.254, the LAN) through its
+firewall. Whoever runs Scout can still put anything in the repos file by hand.
+
+**DNS is the substrate's job.** Scout doesn't resolve names, so a public-looking name can still resolve to a
+private address. spoond checks the address a name resolves to when the sandbox connects and refuses private,
+link-local and host addresses (DNS rebinding included) unless the allowlist names that address itself, which Scout
+never adds. A substrate without that check shouldn't be given egress lists people can add to from Slack.
+
+Allow adds the host to the repository's egress list in the repos file (`SCOUT_REPOS_FILE`; a backup is kept as
+`.bak`, and the file is replaced in one step) and in memory, so new sandboxes get it at once. Sandboxes already running keep their network: the thread is told a new thread gets it.
 A repository configured in the environment rather than the repos file gets it until Scout restarts, and the decision
 message says to add it to `SCOUT_REPO_EGRESS`. Each host is asked about once per repository while it waits, and both
 the request and the decision are in the audit trail.
@@ -246,8 +267,9 @@ either way.
 - **🔍 to ask for a look.** A 🔍 on any message in a public channel Scout is in starts a thread on it: "look into
   this", as a request from whoever reacted.
 - **Approve and Decline buttons.** When Scout's answer asks for approval of a change, a message with Approve and
-  Decline follows (👍 on the answer still works). Pressing one goes through the same checks as replying "approve";
-  the buttons then give way to who decided, or why they couldn't.
+  Decline follows (👍 on the answer still works). Pressing either goes through the same checks as replying "approve",
+  and the buttons then give way to who decided. A press that doesn't count is answered just to whoever pressed, and
+  the buttons stay.
 - **`/scout`**: `status`, `schedules`, `waiting` (what's waiting on you) answered just to you, and `ask …` to start a
   thread without an @mention.
 - **Link previews.** A pull request or issue link to a repository Scout works in (on the domains in the manifest's
@@ -532,10 +554,17 @@ provisioning files or Git Sync, infrastructure as Terraform. A server's `writes`
 no configuration as code (a SaaS console, say):
 
 - `"writes": "approve"`: tools that change things are offered, but a call waits until a person in the thread replies
-  `approve` (alone; "I don't approve" never counts) or reacts 👍 or ✅ to the answer where Scout asked (only that one,
-  and only until Scout answers again). Approvals are kept in `scout.sqlite`, so a restart loses none. The approver must be allowed to request work there (and be in a
-  group `SCOUT_ROLES_FILE` names for that server). One approval covers one change, within 15 minutes; the next needs
-  its own. The audit trail records each. Give the server credentials that can write.
+  `approve` (alone; "I don't approve" never counts, and neither do "go ahead" or "approved", which answer ordinary
+  questions too), reacts 👍 or ✅ to the answer where Scout asked (only that one, and only until Scout answers again),
+  or presses Approve. Approvals are kept in `scout.sqlite`, so a restart loses none. The approver must be allowed to
+  request work there (and be in a group `SCOUT_ROLES_FILE` names for that server). The audit trail records each. Give
+  the server credentials that can write.
+  - **An approval covers exactly what was asked.** When a call needs approval, Scout records its server, tool and a
+    hash of its arguments, and an approval is taken only while that change is waiting in Scout's answer. The call goes
+    ahead only if it's the same server, tool and arguments; anything else (another server, other arguments, a run
+    steered in between) asks again. One approval covers one call, within 15 minutes; the next needs its own.
+  - **Decline** counts only from someone who may approve the change, and it also takes back an approval given but not
+    yet used.
 - `"writes": "allow"`: every tool, no gate; for a trusted server that doesn't mark its tools.
 
 - **Grafana**: Grafana Labs' [`mcp-grafana`](https://github.com/grafana/mcp-grafana) with `--disable-write` and a
@@ -648,10 +677,12 @@ Everyone can still talk in threads. Their words are kept as context, and Scout t
 `SCOUT_ROLES_FILE` gives roles by the identity provider's groups:
 - `request`: who may ask for work (start, steer, approve) in a repository, by its name or `*`. With it, Scout checks
   groups instead of asking the code host, which tells only its own admins what permission someone else has.
-- `approve`: who may approve changes made through tools (MCP servers with `writes: "approve"`), per server or `*`.
+- `approve`: who may approve changes made through tools (MCP servers with `writes: "approve"`), per server or `*`;
+  and, under `egress`, who may let a repository's sandboxes reach a new host. `*` doesn't cover `egress`: without it,
+  nobody can allow a host from Slack.
 
 ```json
-{ "request": { "*": ["admins", "users"] }, "approve": { "*": ["admins"] } }
+{ "request": { "*": ["admins", "users"] }, "approve": { "*": ["admins"], "egress": ["admins"] } }
 ```
 
 Merging and deploying stay with the code host: branch protection says who may merge, and deploys run from merges

@@ -23,7 +23,7 @@ import { startDashboard } from "./dash/server.ts";
 import { ThreadDoc } from "./docs.ts";
 import { countMcpTools, doctor, formatChecks, restartsOf, type Unit, unitOf } from "./doctor.ts";
 import type { SandboxDriver } from "./drivers/types.ts";
-import { allowInReposFile, EgressRequests } from "./egress.ts";
+import { allowInReposFile, EgressRequests, whyNotHost } from "./egress.ts";
 import { loadTasks } from "./evals.ts";
 import { type Ask, forgeFor, Inbox } from "./forge.ts";
 import { modelsFor } from "./gateway.ts";
@@ -365,17 +365,29 @@ export async function startService(options: ServiceOptions) {
 		if (repo.egress === undefined && config.sandbox.network === "open") {
 			return `Sandboxes for ${repo.name} already have an open network, so it isn't the egress list: ${host} may be down, or blocking us.`;
 		}
+		const home = config.reflect.channel === undefined ? undefined : await slack.channelId(config.reflect.channel);
+		const link = await linkOf(conversationId);
+		const thread = link === undefined ? "A thread" : `<${link}|A thread>`;
+		// The host first and plainly; the reason is Scout's own words, so it's labelled as such and shown as plain text.
+		const reason = { type: "context", elements: [{ type: "plain_text", text: `Scout's reason: ${why.slice(0, 500)}`, emoji: false }] };
+		if (!scout.egressDecidable) {
+			audit.record("egress_requested", { actor: "scout", conversationId, detail: { repo: repo.name, host, why, undecidable: true } });
+			if (home === undefined) return `I'd ask for ${host} to be allowed for ${repo.name}, but nobody is named to decide network access, and I have no home channel to ask in. Whoever runs me can add it to the repository's egress list.`;
+			const text = `\`${host}\` for ${repo.name}'s sandboxes: ${thread} couldn't reach it. Nobody can allow network access from Slack yet: whoever runs me has to name egress approvers in the roles file (\`"approve": { "egress": [...] }\`), or add \`${host}\` to ${repo.name}'s egress list themselves.`;
+			await slack.surface.post(home, undefined, { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }, reason] });
+			return `I've told whoever runs me that this needs ${host}, but nobody is named to decide network access yet, so it's up to them to add it to ${repo.name}'s egress list.`;
+		}
 		const { request, isNew } = egress.ask({ repo: repo.name, host, why, conversationId });
 		if (!isNew) return `I've already asked for ${host} to be allowed for ${repo.name}; it's waiting on a decision.`;
 		audit.record("egress_requested", { actor: "scout", conversationId, detail: { id: request.id, repo: repo.name, host, why } });
-		const home = config.reflect.channel === undefined ? undefined : await slack.channelId(config.reflect.channel);
 		if (home === undefined) return `I'd ask for ${host} to be allowed for ${repo.name}, but I have no home channel to ask in. Whoever runs me can add it to the repository's egress list.`;
-		const link = await linkOf(conversationId);
-		const text = `${link === undefined ? "A thread" : `<${link}|A thread>`} in *${repo.name}* couldn't reach \`${host}\`: ${why}\nAllow \`${host}\` for ${repo.name}'s sandboxes?`;
+		const text = `Allow \`${host}\` for ${repo.name}'s sandboxes?`;
+		const what = `*${text}*\nAllowing it lets every new sandbox for ${repo.name} connect to \`${host}\` from now on, not just this thread's, until someone takes it out of the repository's egress list. ${thread} couldn't reach it.`;
 		await slack.surface.post(home, undefined, {
 			text,
 			blocks: [
-				{ type: "section", text: { type: "mrkdwn", text } },
+				{ type: "section", text: { type: "mrkdwn", text: what } },
+				reason,
 				{
 					type: "actions",
 					elements: [
@@ -388,13 +400,16 @@ export async function startService(options: ServiceOptions) {
 		return `I've asked whoever runs me to allow ${host} for ${repo.name}'s sandboxes. I'll say here when they decide.`;
 	});
 
-	/** Allow or Decline on a network request: only the egress approvers decide; the thread hears the outcome. */
+	/** Allow or Decline on a network request: only the egress approvers named in the roles file decide; the thread hears the outcome. */
 	async function decideEgress(d: { user: string; id: number; allow: boolean }): Promise<{ text: string; final: boolean }> {
+		const refused = await scout.refuseApprover(d.user, "egress");
+		if (refused !== undefined) return { text: `You can't decide this one: ${refused}`, final: false };
 		const request = egress.get(d.id);
 		if (request === undefined) return { text: "That request is gone.", final: true };
 		if (request.state !== "pending") return { text: `Already ${request.state}${request.decidedBy === undefined ? "" : ` by <@${request.decidedBy}>`}.`, final: true };
-		const refused = await scout.refuseApprover(d.user, "egress");
-		if (refused !== undefined) return { text: `You can't decide this one: ${refused}`, final: false };
+		// A request from before hosts were checked can name one sandboxes never get: it can only be declined.
+		const unfit = whyNotHost(request.host);
+		if (d.allow && unfit !== undefined) return { text: `\`${request.host}\` can't be allowed from here: ${unfit} Decline it, or add it to the repos file yourself.`, final: false };
 		const decided = egress.decide(d.id, d.allow, d.user);
 		if (decided === undefined) return { text: "Someone else just decided it.", final: true };
 		const repo = config.repos.find((r) => r.name === decided.repo);
@@ -467,21 +482,27 @@ export async function startService(options: ServiceOptions) {
 	}
 
 	/** Someone pressed Approve or Decline: through the same checks as a reply, and the buttons give way to who decided. */
-	async function decide(d: { user: string; channel: string; conversationId: number; approve: boolean }): Promise<string> {
+	async function decide(d: { user: string; channel: string; conversationId: number; approve: boolean }): Promise<string | { text: string; final: boolean }> {
 		const thread = threads.byConversation(d.conversationId);
 		if (thread === undefined) return "That thread is gone.";
-		if (!scout.approvals.waiting(d.conversationId)) return "Nothing's waiting for approval there any more.";
+		// Approve needs a change waiting; Decline also stops one approved and not yet made.
+		if (d.approve ? !scout.approvals.waiting(d.conversationId) : !scout.approvals.pending(d.conversationId)) return "Nothing's waiting for approval there any more.";
 		const channelName = await channelOf(d.conversationId);
 		const ts = (Date.now() / 1000).toFixed(6);
+		// Either way, only the approvers for the change decide it: anyone else's press doesn't count, and the buttons stay.
+		const server = scout.approvals.askedFor(d.conversationId);
+		const refused = server === undefined ? undefined : await scout.refuseApprover(d.user, server);
 		if (d.approve) {
-			// Only the approvers for the waiting change: anyone else's press doesn't count, and the button stays.
-			const server = scout.approvals.askedFor(d.conversationId);
-			const refused = server === undefined ? undefined : await scout.refuseApprover(d.user, server);
-			if (refused !== undefined) return `<@${d.user}> can't approve this one: ${refused}`;
+			if (refused !== undefined) return { text: `<@${d.user}> can't approve this one: ${refused}`, final: false };
 			await bridge.onMessage({ channel: thread.channel, channelType: "channel", channelName, user: d.user, text: "approve", ts, threadTs: thread.threadTs });
-			return scout.approvals.by(d.conversationId) === d.user ? `👍 Approved by <@${d.user}>.` : `<@${d.user}> can't approve this one; the thread says why.`;
+			return scout.approvals.approver(d.conversationId) === d.user ? `👍 Approved by <@${d.user}>.` : { text: `<@${d.user}> can't approve this one; the thread says why.`, final: false };
 		}
-		scout.approvals.answered(d.conversationId, undefined);
+		if (refused !== undefined) return { text: `<@${d.user}> can't decline this one: ${refused}`, final: false };
+		const doc = await harness.snapshot(ThreadDoc, d.conversationId as ConversationId, context);
+		const admitted = await scout.admitter(async () => [])({ user: d.user, channelName, ...(doc?.repo === undefined ? {} : { repo: doc.repo }), starting: false });
+		if (!admitted.ok) return { text: `<@${d.user}> can't decline this one: ${admitted.reason}`, final: false };
+		// What waits is dropped, and an approval given but not yet used is taken back.
+		scout.approvals.decline(d.conversationId);
 		await bridge.onMessage({ channel: thread.channel, channelType: "channel", channelName, user: d.user, text: `<@${slack.botUserId}> I'm declining that change: please don't make it.`, ts, threadTs: thread.threadTs });
 		return `✋ Declined by <@${d.user}>.`;
 	}

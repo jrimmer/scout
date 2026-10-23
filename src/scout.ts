@@ -16,7 +16,7 @@ import { observeExtension, type Observer } from "./observe.ts";
 import { loadPeople, Permissions } from "./permissions.ts";
 import { Pricing } from "./pricing.ts";
 import { Counters, Tracer } from "./telemetry.ts";
-import { AutheliaFile, approversOf, loadRoles, requestersOf } from "./directory.ts";
+import { AutheliaFile, approversOf, egressApproversOf, loadRoles, NO_EGRESS_APPROVERS, requestersOf } from "./directory.ts";
 import { codeSearchExtension } from "./codesearch.ts";
 import { Approaches, approachesExtension, type ApproachesOptions, chooseApproach } from "./approaches.ts";
 import { egressExtension } from "./egress.ts";
@@ -197,7 +197,9 @@ export async function openScout(options: ScoutOptions) {
 	};
 	const roles = loadRoles(governance.rolesFile);
 	const refuseApprover = async (user: string, server: string): Promise<string | undefined> => {
-		const groups = approversOf(roles, server);
+		// Widening a sandbox's network needs approvers named for it: with none, nobody may (not "*", not everyone).
+		const groups = server === "egress" ? egressApproversOf(roles) : approversOf(roles, server);
+		if (server === "egress" && groups === undefined) return NO_EGRESS_APPROVERS;
 		if (groups === undefined) return undefined;
 		const person = await personOf(user).catch(() => undefined);
 		if (person?.groups.some((g) => groups.includes(g)) === true) return undefined;
@@ -554,6 +556,8 @@ export async function openScout(options: ScoutOptions) {
 		repoOfConversation: (id: number) => repoOf(id, context),
 		/** Why this person may not approve changes to `server` (an MCP server, or "egress"), if they may not. */
 		refuseApprover,
+		/** Whether the roles file names anyone who may widen a sandbox's network; without them nobody may. */
+		egressDecidable: egressApproversOf(roles) !== undefined,
 		approaches,
 		capacity,
 		board,

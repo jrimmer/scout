@@ -39,7 +39,7 @@ the damage:
   (looked up in the directory). A comment from someone who may not ask is answered with a polite no, not acted on.
 - **The sandbox** holds nothing worth stealing and reaches only what its egress list allows; exfiltration needs a
   host on that list.
-- **Approvals** gate tool writes and network access; Scout's own requests are never enough.
+- **Approvals** gate tool writes and network access; Scout's own requests are never enough (see below).
 - **Pull requests** are reviewed by people before anything reaches a base branch, and Scout reviews its own diff
   first (including for things that look like credentials, which it refuses to push).
 - **Notes Scout keeps** are shown with its answers so people can object, expire unless reviewed, and are framed to
@@ -47,6 +47,25 @@ the damage:
 
 Be careful with public repositories (anyone can open an issue or comment) and with MCP servers that can write:
 keep those behind approval.
+
+## Approvals
+
+**Tool writes** (MCP servers with `writes: approve`). An approval is bound to the change it was asked for: the server,
+the tool, and a hash of the arguments, recorded when the call was refused for want of one. It's taken only while that
+change is waiting in Scout's answer, only from "approve" alone, a 👍 on that answer, or the Approve button (not "go
+ahead", which answers any question), and only from someone who may approve changes to that server. The call goes ahead
+only if it matches exactly; a run steered in between that changes the call needs a new approval. One approval covers
+one call, for 15 minutes. Decline counts only from someone who may approve the change, and takes back an approval not
+yet used.
+
+**Network for sandboxes** (`ask_for_network`). Allowing a host lets every new sandbox for that repository reach it from
+now on, so only people the roles file names for `egress` decide; `*` doesn't cover it, and with no one named nobody
+can allow a host from Slack. The question names the host first and labels the model's reason as Scout's, in plain
+text, since a prompt injection can write it. Scout refuses to ask for IP addresses and ranges, names inside a network
+(`localhost`, `.internal`, `.local`, cloud metadata names), and wildcards wider than one registrable domain, because
+an allowlisted private address gets through spoond's firewall. A public name that resolves to a private address is
+the substrate's to stop: spoond checks resolved addresses at connect time and refuses private, link-local and host
+addresses the allowlist doesn't name itself.
 
 ## The dashboard
 
