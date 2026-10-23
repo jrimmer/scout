@@ -11,6 +11,7 @@ import { Memory } from "../src/memory.ts";
 import { Pulls } from "../src/pulls.ts";
 import { Threads, threadKey } from "../src/threads.ts";
 import { busy } from "./fixtures/snapshot.ts";
+import { fake } from "./helpers.ts";
 
 describe("grid", () => {
 	it("draws frames, meters and sparklines, and clips to its width", () => {
@@ -219,7 +220,7 @@ describe("dashboard server", () => {
 	});
 
 	it("gives monitors what the doctor reads with the metrics token, the whole snapshot only with the login", async () => {
-		const snapshot = { ...busy, alerts: [{ message: "gateway said: bad key sk-ant-api03-abcdefghijklmnopqrstuvwxyz", since: busy.now }] };
+		const snapshot = { ...busy, alerts: [{ message: `gateway said: bad key ${fake("sk-", "ant-api03-abcdefghijklmnopqrstuvwxyz")}`, since: busy.now }] };
 		const collector = { collect: async () => snapshot } as unknown as Collector;
 		const dash = await startDashboard({
 			addr: "127.0.0.1:0",

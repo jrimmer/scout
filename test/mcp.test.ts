@@ -11,7 +11,7 @@ import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durab
 import { z } from "zod";
 import { ThreadDoc } from "../src/docs.ts";
 import { Approvals, connectMcp, loadMcpConfig, mcpExtension, type Writes } from "../src/mcp.ts";
-import { tempDir } from "./helpers.ts";
+import { fake, tempDir } from "./helpers.ts";
 
 function warehouse() {
 	const server = new McpServer({ name: "warehouse", version: "1" });
@@ -143,8 +143,8 @@ describe("MCP tools", () => {
 	});
 
 	it("takes credentials out of what a tool returns, and of its errors, before the model sees them", async () => {
-		const token = `ghp_${"e".repeat(36)}`;
-		const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl";
+		const token = fake("gh", "p_") + "e".repeat(36);
+		const jwt = fake("eyJ", "hbGciOiJIUzI1NiJ9.", "eyJ", "zdWIiOiIxIn0.c2lnbmF0dXJl");
 		const logs = () => {
 			const server = new McpServer({ name: "ci", version: "1" });
 			server.registerTool("job_log", { description: "A job's log", inputSchema: { failed: z.boolean() }, annotations: { readOnlyHint: true } }, async ({ failed }) =>

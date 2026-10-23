@@ -20,7 +20,7 @@ import { findSecrets, redact, rememberSecrets } from "../src/scan.ts";
 import { resolveSecrets, rotate, secretValues } from "../src/secrets.ts";
 import { Counters, Tracer } from "../src/telemetry.ts";
 import { Threads, threadKey } from "../src/threads.ts";
-import { tempDir } from "./helpers.ts";
+import { fake, tempDir } from "./helpers.ts";
 
 const toolUse = { stopReason: "toolUse" } as const;
 
@@ -50,41 +50,41 @@ describe("secrets", () => {
 });
 
 describe("credential scanning", () => {
-	const aws = "AKIA" + "ABCDEFGHIJKLMNOP";
-	const gh = "ghp_" + "a".repeat(36);
+	const aws = fake("AK", "IA", "ABCDEFGHIJKLMNOP");
+	const gh = fake("gh", "p_") + "a".repeat(36);
 	it("finds credentials by kind, and redacts them", () => {
 		assert.deepEqual(findSecrets(`key = "${aws}"`), [{ kind: "AWS access key" }]);
-		assert.deepEqual(findSecrets("-----BEGIN OPENSSH PRIVATE KEY-----"), [{ kind: "private key" }]);
+		assert.deepEqual(findSecrets(fake("-----BEGIN ", "OPENSSH PRIVATE KEY-----")), [{ kind: "private key" }]);
 		assert.deepEqual(findSecrets("const answer = 42; // ordinary code"), []);
 		assert.equal(redact(`token ${gh} here`), "token [redacted GitHub token] here");
 	});
 
 	it("redacts the tokens Scout itself holds, and the common ones", () => {
 		const hex = "0123456789abcdef0123456789abcdef01234567";
-		const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl";
+		const jwt = fake("eyJ", "hbGciOiJIUzI1NiJ9.", "eyJ", "zdWIiOiIxIn0.c2lnbmF0dXJl");
 		const shapes: [text: string, kind: string][] = [
-			["xapp-1-A0123456789-1234567890123-abcdef0123456789", "Slack token"],
-			["xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOp", "Slack token"],
-			["xoxp-123456789012-1234567890123-AbCdEfGh", "Slack token"],
-			["xoxa-2-123456789012-AbCdEfGhIj", "Slack token"],
-			["xoxr-123456789012-AbCdEfGhIj", "Slack token"],
-			["xoxe.xoxp-1-Mi0yLTEyMzQ1Njc4OTAx", "Slack token"],
-			["xoxe-1-My0xLTEyMzQ1Njc4OTAx", "Slack token"],
+			[fake("xap", "p-1-A0123456789-1234567890123-abcdef0123456789"), "Slack token"],
+			[fake("xox", "b-123456789012-1234567890123-AbCdEfGhIjKlMnOp"), "Slack token"],
+			[fake("xox", "p-123456789012-1234567890123-AbCdEfGh"), "Slack token"],
+			[fake("xox", "a-2-123456789012-AbCdEfGhIj"), "Slack token"],
+			[fake("xox", "r-123456789012-AbCdEfGhIj"), "Slack token"],
+			[fake("xox", "e.xoxp-1-Mi0yLTEyMzQ1Njc4OTAx"), "Slack token"],
+			[fake("xox", "e-1-My0xLTEyMzQ1Njc4OTAx"), "Slack token"],
 			[`FORGEJO_TOKEN=${hex}`, "Forgejo/Gitea token"],
 			[`{"token": "${hex}"}`, "Forgejo/Gitea token"],
 			[`Authorization: token ${hex}`, "Forgejo/Gitea token"],
-			["glsa_abcdefghijklmnopqrstuvwxyz012345_abcdef12", "Grafana token"],
-			["glc_eyJvIjoiMTIzNDU2IiwibiI6InN0YWNrIiwiayI6ImFiYyJ9", "Grafana token"],
+			[fake("gl", "sa_abcdefghijklmnopqrstuvwxyz012345_abcdef12"), "Grafana token"],
+			[fake("gl", "c_", "eyJ", "vIjoiMTIzNDU2IiwibiI6InN0YWNrIiwiayI6ImFiYyJ9"), "Grafana token"],
 			[jwt, "JWT"],
 			["Authorization: Bearer abc.def-ghi_jkl012345", "authorization header"],
 			["authorization: Basic dXNlcjpwYXNzd29yZA==", "authorization header"],
 			["curl -H 'Bearer 0123456789abcdefXYZ'", "bearer token"],
 			[`AWS_ACCESS_KEY_ID=${aws}`, "AWS access key"],
-			[`aws_secret_access_key = ${"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}`, "AWS secret key"],
+			[`aws_secret_access_key = ${fake("wJalrXUtnFEMI/K7MDENG/", "bPxRfiCYEXAMPLEKEY")}`, "AWS secret key"],
 			[gh, "GitHub token"],
-			[`gho_${"b".repeat(36)}`, "GitHub token"],
-			[`ghs_${"c".repeat(36)}`, "GitHub token"],
-			[`github_pat_${"d".repeat(82)}`, "GitHub token"],
+			[fake("gh", "o_") + "b".repeat(36), "GitHub token"],
+			[fake("gh", "s_") + "c".repeat(36), "GitHub token"],
+			[fake("github", "_pat_") + "d".repeat(82), "GitHub token"],
 		];
 		for (const [text, kind] of shapes) {
 			assert.ok(findSecrets(text).some((f) => f.kind === kind), `${text} is a ${kind}`);
@@ -92,7 +92,7 @@ describe("credential scanning", () => {
 			assert.ok(!redact(`see ${text} here`).includes(text), `${text} is gone`);
 		}
 		// A private key goes whole, not only its first line.
-		const key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAA\n-----END OPENSSH PRIVATE KEY-----";
+		const key = fake("-----BEGIN ", "OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAA\n-----END ", "OPENSSH PRIVATE KEY-----");
 		assert.equal(redact(`key:\n${key}\nafter`), "key:\n[redacted private key]\nafter");
 		// Base64 of a token is found by what it decodes to.
 		assert.deepEqual(findSecrets(Buffer.from(gh).toString("base64")), [{ kind: "GitHub token (base64)" }]);

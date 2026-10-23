@@ -3,6 +3,14 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+/**
+ * Fake credentials in tests are built at run time from parts, never written as one literal, so no source file holds a
+ * string that looks like a real token. Secret scanners (GitHub push protection, gitleaks) match the literal text and
+ * flag the repository even for obviously fake values. Join the parts where a prefix would otherwise sit next to its
+ * filler: `fake("xox", "b-", "123456789012-abcdef")`.
+ */
+export const fake = (...parts: string[]): string => parts.join("");
+
 export const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
 
 const made: string[] = [];

@@ -4,6 +4,7 @@ import { delivery } from "../src/etiquette.ts";
 import { frontmatter } from "../src/profile.ts";
 import { type ChatMessage, describeStep, finalMessage, progressMessage, SAYINGS, ThreadView } from "../src/render.ts";
 import { mentionNames, slackChannelName } from "../src/slack.ts";
+import { fake } from "./helpers.ts";
 
 describe("render", () => {
 	it("describes steps briefly", () => {
@@ -28,7 +29,7 @@ describe("render", () => {
 	});
 
 	it("takes anything that looks like a credential out of an error before the thread sees it", () => {
-		const error = "the model didn't answer (401: invalid x-api-key sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123)";
+		const error = `the model didn't answer (401: invalid x-api-key ${fake("sk-", "ant-api03-abcdefghijklmnopqrstuvwxyz0123")})`;
 		for (const run of [{ startedAt: 0, steps: [], error }, { startedAt: 0, steps: [], text: "Half done.", error }]) {
 			const message = finalMessage(run, 1000);
 			assert.doesNotMatch(message.text + JSON.stringify(message.blocks), /sk-ant-/);

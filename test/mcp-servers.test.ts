@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ciTools } from "../mcp/forgejo-ci.ts";
+import { fake } from "./helpers.ts";
 import { gatusTools } from "../mcp/gatus.ts";
 
 /** A fetch that answers from a table of path → body, and remembers what it was asked. */
@@ -41,7 +42,7 @@ describe("Scout's MCP servers", () => {
 		const log = [
 			"2026-10-19T01:00:00.0000000Z setup",
 			"2026-10-19T01:00:01.0000000Z npm test",
-			"2026-10-19T01:00:02.0000000Z using token ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+			`2026-10-19T01:00:02.0000000Z using token ${fake("gh", "p_abcdefghijklmnopqrstuvwxyz0123456789")}`,
 			"2026-10-19T01:00:03.0000000Z FAIL test/cart.test.ts",
 			"2026-10-19T01:00:04.0000000Z done",
 			"2026-10-19T01:00:05.0000000Z bye",

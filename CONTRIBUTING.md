@@ -19,6 +19,9 @@ says what Scout copies from River, what it decided, and what it left out on purp
   and, where needed, fake Gatus and Grafana (test/fake-*.ts); timers are off, so a test runs housekeeping, alerts or CI
   with `service.tick`. Wait with `until` (test/helpers.ts), never a fixed sleep: to show something didn't happen,
   wait for the work to be over (an awaited tick, `waitForIdle`), then look.
+- Fake credentials in tests are built at run time with `fake("xox", "b-...")` (test/helpers.ts), never written as one
+  literal: secret scanners (GitHub push protection, gitleaks) match the text, flag the repository even for obvious fakes,
+  and someone then has to allow them by hand. Run `gitleaks dir .` before pushing a test that needs a token-shaped string.
 - Update `docs/operations.md` (and `.env.example`, for a new setting) in the same pull request.
 - Behaviour people should be able to tune belongs in the profile, not in code.
 - Text people see in Slack or on the code host reads like a colleague wrote it, not a service.

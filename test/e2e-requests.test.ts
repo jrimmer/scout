@@ -7,7 +7,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/provid
 import { threadKey } from "../src/threads.ts";
 import { type E2e, type E2eOptions, startScout } from "./e2e.ts";
 import { ANN, BOB, ELSEWHERE_CHANNEL, SCOUT, SECRET_CHANNEL, TEAM_CHANNEL } from "./fake-slack.ts";
-import { git, tempDir, until } from "./helpers.ts";
+import { fake, git, tempDir, until } from "./helpers.ts";
 
 const toolUse = { stopReason: "toolUse" } as const;
 const WAIT = 20_000;
@@ -317,7 +317,7 @@ describe("e2e: requests", () => {
 		await withScout({}, async (e2e) => {
 			let refusal = "";
 			e2e.faux.setResponses([
-				commit("config.txt", "aws_key=AKIAIOSFODNN7EXAMPLE"),
+				commit("config.txt", `aws_key=${fake("AK", "IAIOSFODNN7EXAMPLE")}`),
 				openPull("Add the config"),
 				(transcript) => {
 					refusal = lastSaid(transcript);
