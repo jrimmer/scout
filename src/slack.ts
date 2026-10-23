@@ -66,10 +66,13 @@ export class Slack {
 	/** For answers Slack wants within three seconds: two seconds, and no trying again. */
 	readonly #quick: webApi.WebClient;
 	readonly #botToken: string;
+	/** In tests, the fake Slack's address, which serves files too. */
+	readonly #filesOrigin: string | undefined;
 
 	/** `receiver` and `apiUrl` are for tests: Slack's events from somewhere other than Socket Mode, its Web API elsewhere. */
 	constructor(tokens: { botToken: string; appToken: string }, test: { receiver?: Receiver; apiUrl?: string } = {}) {
 		this.#botToken = tokens.botToken;
+		this.#filesOrigin = test.apiUrl === undefined ? undefined : new URL(test.apiUrl).origin;
 		const api = test.apiUrl === undefined ? {} : { slackApiUrl: test.apiUrl };
 		this.app = new App({
 			token: tokens.botToken,
@@ -491,11 +494,41 @@ export class Slack {
 		};
 	}
 
-	/** A file shared in Slack; private file URLs need the bot's token. */
-	async download(url: string): Promise<Uint8Array> {
-		const response = await fetch(url, { headers: { authorization: `Bearer ${this.#botToken}` } });
+	/**
+	 * A file shared in Slack, up to `limit` bytes; private file URLs need the bot's token. A file's URL comes from the
+	 * event, and a remote file's can point anywhere: the token goes only to Slack's own file host, over https.
+	 */
+	async download(url: string, limit: number): Promise<Uint8Array> {
+		if (!this.#slackFile(url)) throw new Error(`not a Slack file URL: ${url}`);
+		// Redirects are followed by hand, so the token goes only where the same rule allows (Slack's "Downloading files").
+		let response = await fetch(url, { headers: { authorization: `Bearer ${this.#botToken}` }, redirect: "manual" });
+		for (let hops = 0; response.status >= 300 && response.status < 400 && response.headers.has("location"); hops++) {
+			if (hops === 3) throw new Error("Slack redirected the file too often");
+			url = new URL(response.headers.get("location")!, url).href;
+			if (!this.#slackFile(url)) throw new Error(`Slack redirected the file away from Slack: ${url}`);
+			response = await fetch(url, { headers: { authorization: `Bearer ${this.#botToken}` }, redirect: "manual" });
+		}
 		if (!response.ok) throw new Error(`Slack answered ${response.status}`);
-		return new Uint8Array(await response.arrayBuffer());
+		// Counted as it arrives: the size the event claims is only a claim.
+		const chunks: Uint8Array[] = [];
+		let total = 0;
+		for await (const chunk of response.body ?? []) {
+			total += chunk.length;
+			if (total > limit) throw new Error(`the file is over ${limit} bytes`);
+			chunks.push(chunk);
+		}
+		return Buffer.concat(chunks);
+	}
+
+	#slackFile(url: string): boolean {
+		let parsed: URL;
+		try {
+			parsed = new URL(url);
+		} catch {
+			return false;
+		}
+		if (this.#filesOrigin !== undefined && parsed.origin === this.#filesOrigin) return true;
+		return parsed.protocol === "https:" && parsed.port === "" && parsed.username === "" && parsed.hostname === "files.slack.com";
 	}
 
 	/** Members of a Slack user group (needs usergroups:read). */

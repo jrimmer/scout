@@ -28,7 +28,9 @@ const REPO = { type: "string", description: "owner/name, e.g. acme/web" };
 export function ciTools(api: string, token: string, fetch: typeof globalThis.fetch = globalThis.fetch): Tool[] {
 	const headers = { authorization: `token ${token}` };
 	const repoPath = (repo: unknown) => {
-		if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error("repo must look like owner/name");
+		// Forgejo's characters for owners and repositories; `.` and `..` would walk out of /repos/ once the URL is resolved.
+		const parts = typeof repo === "string" ? repo.split("/") : [];
+		if (parts.length !== 2 || parts.some((p) => !/^[\w.-]+$/.test(p) || p === "." || p === "..")) throw new Error("repo must look like owner/name");
 		return `${api}/repos/${repo}`;
 	};
 	return [

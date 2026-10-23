@@ -290,7 +290,7 @@ export async function startService(options: ServiceOptions) {
 		waitingFor: (conversationId) => scout.waitingFor(conversationId),
 		...(scout.breakers === undefined ? {} : { fallbackNotice: (conversationId: number) => scout.fallbackNotice(conversationId) }),
 		modelFor: scout.modelFor,
-		download: (url) => slack.download(url),
+		download: (url, limit) => slack.download(url, limit),
 		saveAttachment: (id, name, bytes) => workspaces.saveAttachment(id, name, bytes),
 	});
 

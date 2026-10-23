@@ -83,6 +83,17 @@ A change to any of these that needs people to act is a major version. Everything
 - **Slack outages:** Slack's client tried a failed call again for about half an hour while the thread sat silent. It now tries for five minutes. A final answer Slack still won't take is tried again every two minutes for up to six hours, and after a restart the thread still gets it.
 - **Docker sandboxes:** the sandbox's user couldn't write its own `/work`, so every Docker sandbox failed at its first file write. Docker gave the empty volume root's ownership each time a container mounted it. Found by the Docker tests' first run.
 
+### Security
+- **Files shared in Slack:** Scout sent its bot token to whatever URL a shared file named, and a remote file's can point anywhere. The token now goes only to `https://files.slack.com`, redirects included, and anything else isn't fetched at all. What Scout reads is capped by the bytes that arrive, not by the size the event claims.
+- **The dashboard could be crashed:** a request for `/static/constructor` (or `__proto__`, `toString`) ended the whole Scout process. Those are 404s now, and a dashboard request that fails answers 500 instead of taking Scout down.
+- **Dashboard logins:** each request ran scrypt on Scout's event loop, so a flood of wrong passwords stalled Slack and every run. Logins are now checked off the event loop, one at a time (others get a 429), and the last login that passed is remembered, so a logged-in browser doesn't pay for scrypt per request.
+- **DNS rebinding:** a dashboard on loopback with no login answered any `Host`, so a web page could read `/status.json` by pointing its own name at 127.0.0.1. It now answers only `localhost`, `127.0.0.1` and `[::1]` (403 otherwise; `/healthz` still answers anyone).
+- **Live views:** `/stream` takes at most 20 viewers at once (503 after that), and a viewer that stops reading is let go instead of its updates piling up in Scout's memory.
+- **The metrics token's reach:** `SCOUT_METRICS_TOKEN` read the whole `/status.json`, notes, schedules and each run's last step included. With the token it now returns only what the doctor and monitors check (uptime, what's working, capacity, backups, which model is answering, problems with credentials redacted); the whole snapshot takes the dashboard's login. **A monitor that read other fields of `/status.json` with the token needs the login now.**
+- **The CI tools for MCP (`mcp/forgejo-ci.ts`):** a repository named like `../admin` reached API paths outside `/repos/`. Owner and name are now each checked on their own, and `.` and `..` refused.
+- **Errors in threads:** a model's or provider's error text is redacted for credentials before Scout posts it.
+- **Docs:** `docs/security.md` and `docs/operations.md` say the dashboard speaks plain HTTP and what to do about it off loopback (a TLS reverse proxy or a private network), and what the metrics token opens.
+
 ## Before 1.0 (2026-10-19 to 2026-10-21)
 
 Everything Scout did before its first release, built over its first three days. Grouped by area:

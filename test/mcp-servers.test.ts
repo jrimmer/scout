@@ -29,7 +29,12 @@ describe("Scout's MCP servers", () => {
 		assert.match(text, /^#1 \(run 101\) failure · ci\.yml · feature @ abcdef10/);
 		assert.doesNotMatch(text, /#2|#3/);
 		assert.equal(forge.asked[0]?.auth, "token tok");
-		await assert.rejects(runs!.run({ repo: "../../admin" }), /owner\/name/);
+		for (const repo of ["../../admin", "../admin", "team/..", "./app", "team/app/../x", "team", "team/a pp", 7]) {
+			await assert.rejects(runs!.run({ repo }), /owner\/name/, String(repo));
+		}
+		assert.equal(forge.asked.length, 1, "nothing asked of the code host for those");
+		await runs!.run({ repo: "team/.profile" }).catch(() => {});
+		assert.equal(forge.asked[1]?.path, "/api/v1/repos/team/.profile/actions/runs?limit=50", "a dot is fine inside a name");
 	});
 
 	it("shows a job log's matching lines with context, unstamped and with credentials redacted", async () => {

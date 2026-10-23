@@ -48,6 +48,28 @@ the damage:
 Be careful with public repositories (anyone can open an issue or comment) and with MCP servers that can write:
 keep those behind approval.
 
+## The dashboard
+
+The dashboard is the only thing Scout listens on, and it shows what Scout is doing: channels, the last step of each
+run, notes, schedules, pull requests. It speaks plain HTTP.
+
+- **On loopback** (the default) it has no login and answers only requests addressed to a loopback name (`localhost`,
+  `127.0.0.1`, `[::1]`), which stops a web page from reading it through DNS rebinding. Anyone with a shell on the
+  host can still read it.
+- **Off loopback** it requires a login, and the login and the metrics token cross the network in the clear with every
+  request. Put it behind a reverse proxy that speaks TLS, or keep it on a private network (WireGuard, Tailscale).
+  Logins are checked one at a time, off Scout's event loop, so a flood of wrong passwords can't stall Scout.
+- **The metrics token** (`SCOUT_METRICS_TOKEN`) opens `/metrics`, and the part of `/status.json` the doctor needs:
+  no notes, schedules, threads or steps, and problems and model errors with credentials redacted. Everything else needs
+  the login.
+- `/healthz` answers `ok` to anyone, and says nothing else.
+
+## Slack files
+
+A file shared in a thread is fetched with Scout's bot token only from Slack's own file host (`https://files.slack.com`),
+redirects included. A remote file's link can point anywhere, so Scout doesn't follow it with the token; it says it
+couldn't download the file. What it reads is capped by the bytes that actually arrive, not the size Slack reports.
+
 ## Data
 
 Thread transcripts, notes, schedules and the audit trail are in Scout's data directory (SQLite). Retention
