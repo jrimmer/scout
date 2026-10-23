@@ -24,7 +24,7 @@ Scout runs as a user of its own, which can use Docker. Make it, then do the rest
 ```bash
 sudo useradd -m -s /bin/bash -G docker scout
 sudo -iu scout
-git clone <this repository> scout && cd scout   # a read-only clone; it needs no account
+git clone https://github.com/jrimmer/scout.git scout && cd scout   # a read-only clone; it needs no account
 npm ci                                          # its deprecation and install-scripts warnings don't stop anything
 cp .env.example .env && chmod 600 .env          # .env will hold secrets
 ```
@@ -111,7 +111,7 @@ For the learning loop, push the starter to a new, empty repository on the code h
 git config --global user.name Scout && git config --global user.email scout@example.com   # once, if Scout's user has none
 cp -r profile ~/scout-profile && cd ~/scout-profile
 git init -b main && git add . && git commit -m "Scout's profile"
-git push ssh://git@<code host>/team/scout-profile.git main
+GIT_SSH_COMMAND='ssh -i ~/.ssh/scout_ed25519' git push ssh://git@<code host>/team/scout-profile.git main   # with Scout's key (step 3)
 ```
 
 Then set `SCOUT_PROFILE_REPO_URL` (that URL) and `SCOUT_PROFILE_REPO_SLUG` (`team/scout-profile`). Scout clones it

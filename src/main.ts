@@ -3,12 +3,13 @@ import { join } from "node:path";
 import { loadConfig, useScoutsKey } from "./config.ts";
 import { resolveSecrets, rotate } from "./secrets.ts";
 import { type Signal, startService } from "./service.ts";
-import { ConfigError, startupProblem } from "./startup.ts";
+import { ConfigError, refusedToken, startupProblem } from "./startup.ts";
 
 // Secrets first: references (op://, file:, cred:, NAME_FILE) become values before anything reads them.
 // A start-up that fails on a setting says so in a sentence; a bug keeps its stack.
 process.on("uncaughtException", (error) => {
-	const problem = startupProblem(error);
+	// Bolt checks the bot token in its constructor, on a promise nothing awaits: Slack refusing it lands here, not in start-up.
+	const problem = startupProblem(refusedToken(error, "SLACK_BOT_TOKEN"));
 	console.error(problem ?? error);
 	process.exit(1);
 });
