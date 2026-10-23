@@ -65,9 +65,10 @@ export type Config = {
 	/**
 	 * The nightly benchmark (bench.ts), off unless SCOUT_BENCH_MODELS names models: each night after `hour`, every
 	 * model runs the tasks in `tasksDir` once. They come from the team's own repositories, so they live with the install
-	 * (the data directory's bench/ by default), never in Scout's repository.
+	 * (the data directory's bench/ by default), never in Scout's repository. `repos`: the repositories whose merged
+	 * fixes become tasks (bench-mine.ts), if not all of them.
 	 */
-	bench?: { models: { provider: string; modelId: string }[]; hour: number; tasksDir: string };
+	bench?: { models: { provider: string; modelId: string }[]; hour: number; tasksDir: string; repos?: string[] };
 	/**
 	 * Fallback models (capacity.ts `ModelBreakers`), off unless SCOUT_FALLBACK_MODELS names some: after `after` failed
 	 * calls in a row, a model's calls go to the first of `models` that's answering, and after `minutes` one call tries
@@ -273,6 +274,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	const benchHour = Number(env.SCOUT_BENCH_HOUR ?? 1);
 	if (!Number.isInteger(benchHour) || benchHour < 0 || benchHour > 23) throw new ConfigError(`SCOUT_BENCH_HOUR should be an hour, 0 to 23, not "${env.SCOUT_BENCH_HOUR}"`);
 	const benchModels = modelList(env, "SCOUT_BENCH_MODELS");
+	const benchRepos = (env.SCOUT_BENCH_REPOS ?? "").split(",").map((r) => r.trim()).filter(Boolean);
 	const fallbackModels = modelList(env, "SCOUT_FALLBACK_MODELS");
 	if (fallbackModels.some((m) => m.provider === provider && m.modelId === modelId)) {
 		throw new ConfigError(`SCOUT_FALLBACK_MODELS names SCOUT_MODEL (${provider}/${modelId}): a fallback has to be another model`);
@@ -322,7 +324,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			// A name, with or without `#` (in an env file an unquoted `#` starts a comment, so `scout` is the safe spelling).
 			...(env.SCOUT_REFLECT_CHANNEL?.replace(/^#/, "") ? { channel: env.SCOUT_REFLECT_CHANNEL.replace(/^#/, "") } : {}),
 		},
-		...(benchModels.length === 0 ? {} : { bench: { models: benchModels, hour: benchHour, tasksDir: resolve(env.SCOUT_BENCH_TASKS ?? join(dataDir, "bench")) } }),
+		...(benchModels.length === 0 ? {} : { bench: { models: benchModels, hour: benchHour, tasksDir: resolve(env.SCOUT_BENCH_TASKS ?? join(dataDir, "bench")), ...(benchRepos.length === 0 ? {} : { repos: benchRepos }) } }),
 		...(fallbackModels.length === 0 ? {} : { fallback: { models: fallbackModels, after: fallbackAfter, minutes: fallbackFor } }),
 		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
 		pullUpkeep: {

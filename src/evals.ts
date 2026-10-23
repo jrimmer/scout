@@ -528,9 +528,12 @@ export async function runTask(
 		if (task.check.suite !== undefined) {
 			const { output: touched } = await sh(`git diff --name-only ${task.ref}; git ls-files --others --exclude-standard`, 60);
 			if (touched.trim() !== "") {
-				// The hidden tests are judged by `command`; here only what was there already counts.
-				const tests = (task.check.hidden?.paths ?? []).filter((p) => p.endsWith(".test.ts"));
-				if (tests.length > 0) await sh(`rm -f ${tests.map((p) => `'${p}'`).join(" ")}`, 30);
+				// The hidden tests are judged by `command`; here only what was there already counts, so any the work wrote
+				// in their place go back to how they were (or go, if they weren't there).
+				for (const path of task.check.hidden?.paths ?? []) {
+					const p = `'${path.replace(/'/g, `'\\''`)}'`;
+					await sh(`git cat-file -e ${task.ref}:${p} 2>/dev/null && git checkout ${task.ref} -- ${p} || rm -f ${p}`, 30);
+				}
 				const { code, output } = await sh(task.check.suite, 900);
 				regressed = code !== 0;
 				if (regressed) why.push(`the change broke the repository's tests: ${output.trim().split("\n").slice(-3).join(" ").slice(0, 300)}`);

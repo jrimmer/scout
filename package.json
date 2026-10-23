@@ -9,6 +9,7 @@
     "job": "node --env-file-if-exists=.env src/job.ts",
     "eval": "node --env-file-if-exists=.env src/eval-cli.ts",
     "bench": "node --env-file-if-exists=.env src/bench-cli.ts",
+    "bench:mine": "node --env-file-if-exists=.env src/bench-mine.ts",
     "doctor": "node --env-file-if-exists=.env src/doctor-cli.ts",
     "dash-password": "node src/dash/server.ts",
     "audit": "node --env-file-if-exists=.env src/audit.ts",

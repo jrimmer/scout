@@ -101,9 +101,15 @@ the page says so. They're chosen as public benchmarks choose theirs:
   doesn't read as a slow model. And 90 minutes in all, so a slow night can't run into the day: a task cut short by
   that, whose calls kept failing, or that never reached the model, isn't scored as the model's. It counts under
   "Tasks not lost" instead.
-- A candidate is a merged change with a small fix and its tests, kept only when its tests fail before the fix and
-  pass after it, and the rest of the tests pass before it. Each is a JSON file with the eval task's fields; `repo`
-  names one of the team's repositories. A bigger pool comes round less often.
+- **Finding them:** `npm run bench:mine` (and each night, three before the runs) reads the fixes merged into each
+  repository's base branch (`SCOUT_BENCH_REPOS` names which; else all of them): commits whose subject says they fix
+  something, changing at most 4 source files and 200 lines of one language (Go or Elixir so far) and coming with
+  tests. One is kept only when, in a sandbox, its tests fail on the commit before it (not because they don't build)
+  and pass with it. Each makes a change task, its commit message as the request, and one fixed in a single file also
+  makes a locate task. The package's tests are its suite when they pass with the fix. Fixes from Scout's own pull
+  requests count the same, and so does a correction, once the corrected fix is merged. What was tried is kept in
+  `mined.jsonl` beside the tasks, so nothing is tried twice. Each task is a JSON file with the eval task's fields,
+  and can be edited or deleted by hand. A bigger pool comes round less often.
 
 **The charts.** What a model can do is scored 0 to 100 on fixed scales, so a score means the same thing from week to
 week and a model added later compares fairly. What it's like to work with is shown as the measurements themselves,

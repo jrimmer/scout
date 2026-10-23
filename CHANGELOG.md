@@ -17,6 +17,11 @@ A change to any of these that needs people to act is a major version. Everything
   `SCOUT_BENCH_TASKS`), and the tasks from Scout's own history are gone. With no tasks yet, a night runs nothing and
   the Benchmark page says so. The page's note says where the tasks come from and now spans the page's full width.
 
+### Added
+- **`npm run bench:mine` finds the benchmark's tasks** in fixes merged into the team's repositories
+  (`SCOUT_BENCH_REPOS`), keeping each fix whose tests fail without it and pass with it, in a sandbox. Each night tries
+  three new ones before the runs, so the pool grows as fixes merge.
+
 ### Fixed
 - **A request's reaction shows Scout's steps again behind a slow model.** A phase showed only once it had lasted 1.5 s.
   When the model takes many seconds to start answering, a run is long thinking with quick reads and edits between, so

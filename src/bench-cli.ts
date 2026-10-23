@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { BenchStore, benchRow } from "./bench.ts";
+import { mine } from "./bench-mine.ts";
 import { loadConfig, useScoutsKey } from "./config.ts";
 import { type EvalTask, evalConfig, evalRepos, fakeCodeHost, loadTasks, measures, runTask } from "./evals.ts";
 import { localDay } from "./reflect.ts";
@@ -28,6 +29,9 @@ import { resolveSecrets } from "./secrets.ts";
  */
 const TASK_LIMIT_MS = 30 * 60_000;
 const TASK_WALL_MS = 90 * 60_000;
+
+/** Merged fixes tried as new tasks each night: each takes a sandbox and two runs of its tests. */
+const MINE_PER_NIGHT = 3;
 
 /** Tasks a night, by kind: enough to tell models apart, few enough that the slowest finishes by morning. */
 const PER_NIGHT = { change: 3, locate: 4 } as const;
@@ -56,23 +60,7 @@ if (import.meta.main) {
 		process.exit(2);
 	}
 	useScoutsKey(config.git.sshKey);
-	const pool = loadTasks(config.bench.tasksDir).filter((t) => only === undefined || t.name.includes(only));
-	if (pool.length === 0) {
-		// No tasks yet is a quiet night, not a failure; a filter that matches nothing is a mistake.
-		if (only !== undefined) {
-			console.error(`no benchmark tasks in ${config.bench.tasksDir} matching "${only}"`);
-			process.exit(2);
-		}
-		console.log(`bench: no tasks in ${config.bench.tasksDir} yet, so no runs tonight`);
-		process.exit(0);
-	}
-	const night = localDay(new Date());
-	const store = new BenchStore(join(config.dataDir, "bench.sqlite"));
-	// Tonight's draw is made before anything runs, so every model gets the same tasks.
-	const tasks = only === undefined ? tonight(pool, night, store.lastRuns()) : pool;
-	console.log(`bench: tonight's tasks: ${tasks.map((t) => t.name).join(", ")}`);
 	const work = mkdtempSync(join(tmpdir(), "scout-bench-"));
-	const host = await fakeCodeHost();
 	let current: Awaited<ReturnType<typeof openScout>> | undefined;
 	// Scout stops this run when it stops itself: leave no sandbox or copies behind. Stopping can bring the signal twice
 	// (from systemd and from Scout), and the second mustn't cut the clean-up short.
@@ -87,6 +75,28 @@ if (import.meta.main) {
 			process.exit(1);
 		});
 	}
+	// New fixes become tasks as they're merged: a few tried each night, before the draw (bench-mine.ts).
+	if (only === undefined) {
+		await mine(config, { max: MINE_PER_NIGHT, work, opened: (scout) => (current = scout) }).catch((error) => console.error(`bench: finding new tasks stopped: ${error instanceof Error ? error.message : error}`));
+	}
+	const pool = loadTasks(config.bench.tasksDir).filter((t) => only === undefined || t.name.includes(only));
+	if (pool.length === 0) {
+		// No tasks yet is a quiet night, not a failure; a filter that matches nothing is a mistake.
+		if (only !== undefined) {
+			console.error(`no benchmark tasks in ${config.bench.tasksDir} matching "${only}"`);
+			rmSync(work, { recursive: true, force: true });
+			process.exit(2);
+		}
+		console.log(`bench: no tasks in ${config.bench.tasksDir} yet, so no runs tonight`);
+		rmSync(work, { recursive: true, force: true });
+		process.exit(0);
+	}
+	const night = localDay(new Date());
+	const store = new BenchStore(join(config.dataDir, "bench.sqlite"));
+	// Tonight's draw is made before anything runs, so every model gets the same tasks.
+	const tasks = only === undefined ? tonight(pool, night, store.lastRuns()) : pool;
+	console.log(`bench: tonight's tasks: ${tasks.map((t) => t.name).join(", ")}`);
+	const host = await fakeCodeHost();
 	try {
 		const { repos, nameOf, fileAt } = await evalRepos(config, tasks, join(work, "repos"));
 		for (const model of config.bench.models) {
