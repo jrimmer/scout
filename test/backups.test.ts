@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { backupGauge, backupState, describeBackup, FRESH, GRACE, startNotice, weekLine } from "../src/backups.ts";
+import { tempDir } from "./helpers.ts";
 
 const MINUTE = 60_000;
 const NOW = Date.UTC(2026, 9, 22, 12);
 
 /** A data directory: each database written `changed` ms before NOW, with Litestream's copy `copied` ms before (none: no copy). */
 function dataDir(dbs: Record<string, { changed: number; copied?: number }>): string {
-	const dir = mkdtempSync(join(tmpdir(), "scout-backups-"));
+	const dir = tempDir("scout-backups-");
 	for (const [db, at] of Object.entries(dbs)) {
 		writeFileSync(join(dir, db), "");
 		writeFileSync(join(dir, `${db}-wal`), "");
@@ -48,7 +48,7 @@ describe("backups", () => {
 		assert.deepEqual(neither.problems, ["no Litestream copy of pi.sqlite or scout.sqlite"]);
 		const stale = backupState(dataDir({ "pi.sqlite": { changed: MINUTE, copied: MINUTE }, "scout.sqlite": { changed: MINUTE, copied: 3 * 60 * MINUTE } }), "litestream", NOW);
 		assert.deepEqual(stale.problems, ["Litestream last copied scout.sqlite 3h ago, and it has changed since"]);
-		const empty = mkdtempSync(join(tmpdir(), "scout-backups-"));
+		const empty = tempDir("scout-backups-");
 		assert.deepEqual(backupState(empty, "litestream", NOW).problems, [`there's no pi.sqlite in ${empty}`, `there's no scout.sqlite in ${empty}`]);
 	});
 

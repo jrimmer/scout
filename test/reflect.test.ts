@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -14,6 +13,7 @@ import { Pulls } from "../src/pulls.ts";
 import { ThreadDoc } from "../src/docs.ts";
 import { branchForDay, Reflector, reflectionExtensions, renderTranscript } from "../src/reflect.ts";
 import { threadKey, Threads } from "../src/threads.ts";
+import { tempDir } from "./helpers.ts";
 
 const toolUse = { stopReason: "toolUse" } as const;
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
@@ -46,7 +46,7 @@ describe("renderTranscript", () => {
 });
 
 describe("nightly reflection", () => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-reflect-")));
+	const root = tempDir("scout-reflect-");
 	const remote = join(root, "profile.git");
 	const seed = join(root, "seed");
 	git("init", "--quiet", "--bare", "--initial-branch=main", remote);

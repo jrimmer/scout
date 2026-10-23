@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -11,13 +10,13 @@ import { MemoryStorage } from "@earendil-works/pi-durable";
 import { loadConfig } from "../src/config.ts";
 import { evalConfig, evalRepos, fakeCodeHost, guard, LOCATE_FORMAT, loadTasks, located, measures, parseTask, report, type RunResult, runTask } from "../src/evals.ts";
 import { openScout } from "../src/scout.ts";
-import { bareRepo } from "./helpers.ts";
+import { bareRepo, tempDir } from "./helpers.ts";
 
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
 
 describe("evals", () => {
 	it("reads tasks, and says which file is wrong and how", () => {
-		const dir = mkdtempSync(join(tmpdir(), "scout-evals-"));
+		const dir = tempDir("scout-evals-");
 		writeFileSync(join(dir, "a.json"), JSON.stringify({ name: "fix-median", repo: "playground", ref: "abc1234", request: "fix median", check: { command: "python3 -m unittest", expect: { changed: ["tally/stats.py"] } } }));
 		writeFileSync(join(dir, "notes.md"), "not a task");
 		assert.deepEqual(loadTasks(dir), [{ name: "fix-median", repo: "playground", ref: "abc1234", request: "fix median", check: { command: "python3 -m unittest", expect: { changed: ["tally/stats.py"] } } }]);
@@ -76,7 +75,7 @@ describe("evals", () => {
 	});
 
 	it("runs a task hermetically in a sandbox on its own copy, and checks the result there", async () => {
-		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-eval-run-")));
+		const root = tempDir("scout-eval-run-");
 		const remote = bareRepo(root, "app");
 		const ref = git("--git-dir", remote, "rev-parse", "main");
 		// The repository moves on after the task's commit: the run must start from `ref`, not the tip.
@@ -129,7 +128,7 @@ describe("evals", () => {
 	});
 
 	it("replays a commit: its tests hidden while the work runs, a failing test given for a locate task, and what the run used", async () => {
-		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-eval-replay-")));
+		const root = tempDir("scout-eval-replay-");
 		const remote = bareRepo(root, "app");
 		const seed = join(root, "app-seed");
 		const commit = (message: string) => {

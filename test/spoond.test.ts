@@ -1,17 +1,16 @@
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { SpoondDriver } from "../src/drivers/spoond.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { fakeSpoond } from "./fake-spoond.ts";
-import { bareRepo } from "./helpers.ts";
+import { bareRepo, tempDir } from "./helpers.ts";
 
 describe("spoond driver", () => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-spoond-")));
+	const root = tempDir("scout-spoond-");
 	const remote = bareRepo(root, "app");
 	let spoond: Awaited<ReturnType<typeof fakeSpoond>>;
 	let workspaces: Workspaces;
@@ -131,7 +130,7 @@ describe("spoond driver", () => {
 });
 
 describe("repository images", () => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-images-")));
+	const root = tempDir("scout-images-");
 	const remote = bareRepo(root, "app");
 	const seed = join(root, "app-seed");
 	const commit = (message: string) => {
@@ -251,7 +250,7 @@ describe("spoond driver when spoond is full", () => {
  */
 const real = process.env.SCOUT_SPOOND_TESTS === "1";
 describe("spoond driver against spoond", { skip: !real && "set SCOUT_SPOOND_TESTS=1 with SCOUT_SPOOND_URL and SCOUT_SPOOND_TOKEN" }, () => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-spoond-real-")));
+	const root = tempDir("scout-spoond-real-");
 	const remote = bareRepo(root, "app");
 	const workspaces = new Workspaces({
 		dataDir: join(root, "data"),
@@ -273,5 +272,6 @@ describe("spoond driver against spoond", { skip: !real && "set SCOUT_SPOOND_TEST
 		assert.match(out, /scout\/test\d+-1\nok/);
 		const bundle = await workspaces.exportBranch(1);
 		assert.ok(bundle !== undefined);
+		rmSync(dirname(bundle), { recursive: true, force: true });
 	});
 });

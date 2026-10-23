@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -12,12 +11,13 @@ import { createWriteTool } from "@earendil-works/pi-durable/tools";
 import { createCodeHostExtension } from "../src/codehost.ts";
 import { parseReview, reviewAsSubtask, reviewEnv, reviewExtension } from "../src/review.ts";
 import { ConfinedEnv, Mirror } from "../src/sandbox.ts";
+import { tempDir } from "./helpers.ts";
 
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
 const toolUse = { stopReason: "toolUse" } as const;
 
 async function setup(options: { maxChangedLines?: number }) {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-review-")));
+	const root = tempDir("scout-review-");
 	const remote = join(root, "remote.git");
 	const seed = join(root, "seed");
 	git("init", "--quiet", "--bare", "--initial-branch=main", remote);

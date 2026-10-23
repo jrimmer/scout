@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { describe, it } from "node:test";
 import { loadConfig } from "../src/config.ts";
 import { checkBackups, reachHint, checkCodeHost, checkDashboard, checkDirectory, checkGateway, checkGitRemote, checkModel, checkProfileDir, checkRestarts, checkRunning, checkSlack, checkSpoond, doctor, fetchRunning, formatChecks, restartsOf, type Running, unitOf } from "../src/doctor.ts";
+import { tempDir } from "./helpers.ts";
 
 /** A fetch that answers by URL: a status, a JSON body, and headers. */
 function answering(routes: Record<string, { status?: number; body?: unknown; headers?: Record<string, string> } | Error>): typeof fetch {
@@ -86,7 +86,7 @@ describe("doctor", () => {
 	});
 
 	it("fails the profile directory start-up would refuse, and passes one it can clone into", () => {
-		const root = mkdtempSync(join(tmpdir(), "scout-doctor-"));
+		const root = tempDir("scout-doctor-");
 		const url = "ssh://git@host/o/profile.git";
 		mkdirSync(join(root, "example"));
 		writeFileSync(join(root, "example", "system.md"), "x");
@@ -156,7 +156,7 @@ describe("doctor", () => {
 	});
 
 	it("asks the running Scout about backups first, since a unit can set its data directory outside .env", async () => {
-		const dataDir = mkdtempSync(join(tmpdir(), "scout-doctor-"));
+		const dataDir = tempDir("scout-doctor-");
 		const env = { SCOUT_REPO_URL: "git@host:o/web.git", SCOUT_REPO_SLUG: "o/web", SCOUT_CODEHOST_TOKEN: "t", SCOUT_CODEHOST_API: "http://forge/api/v1", SCOUT_DATA_DIR: dataDir, SCOUT_DASH_ADDR: "off" };
 		const deps = { fetch: answering({}), git: async () => "abc\trefs/heads/main\n" };
 		const ran = (running: Running | Error) => ({ ...deps, running: async () => (running instanceof Error ? Promise.reject(running) : running) });

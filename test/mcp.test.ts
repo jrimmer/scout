@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -12,6 +11,7 @@ import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durab
 import { z } from "zod";
 import { ThreadDoc } from "../src/docs.ts";
 import { Approvals, connectMcp, loadMcpConfig, mcpExtension, type Writes } from "../src/mcp.ts";
+import { tempDir } from "./helpers.ts";
 
 function warehouse() {
 	const server = new McpServer({ name: "warehouse", version: "1" });
@@ -28,7 +28,7 @@ function warehouse() {
 
 describe("MCP tools", () => {
 	it("reads the server file, filling in secrets from the environment", () => {
-		const path = join(mkdtempSync(join(tmpdir(), "scout-mcp-")), "mcp.json");
+		const path = join(tempDir("scout-mcp-"), "mcp.json");
 		writeFileSync(
 			path,
 			JSON.stringify({ servers: { warehouse: { command: "wh", env: { TOKEN: "${WH_TOKEN}" }, channels: ["data"] } } }),
@@ -42,7 +42,7 @@ describe("MCP tools", () => {
 	});
 
 	it("keeps approvals across a restart: who approved, a change waiting, and the answer that asked", () => {
-		const path = join(mkdtempSync(join(tmpdir(), "scout-approvals-")), "scout.sqlite");
+		const path = join(tempDir("scout-approvals-"), "scout.sqlite");
 		const before = new Approvals(path);
 		before.grant(1, "UANN");
 		before.ask(2);

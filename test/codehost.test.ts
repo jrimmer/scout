@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createCodeHostExtension, createOrFindPull } from "../src/codehost.ts";
 import { Mirror } from "../src/sandbox.ts";
-import { bareRepo } from "./helpers.ts";
+import { bareRepo, tempDir } from "./helpers.ts";
 
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
 
@@ -29,7 +28,7 @@ describe("code host", () => {
 	});
 
 	it("never pushes over someone else's commits on its branch: a clone on the host gets them merged in, or is told they conflict", async () => {
-		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-push-")));
+		const root = tempDir("scout-push-");
 		const remote = bareRepo(root, "profile");
 		const mirror = new Mirror(join(root, "mirror.git"), remote);
 		const dir = join(root, "reflection");

@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { DockerDriver } from "../src/drivers/docker.ts";
 import { Workspaces } from "../src/workspaces.ts";
-import { bareRepo } from "./helpers.ts";
+import { bareRepo, tempDir } from "./helpers.ts";
 
 /**
  * The Docker driver for real: isolation the local driver can't show. Needs Docker and the sandbox image:
@@ -16,7 +14,7 @@ import { bareRepo } from "./helpers.ts";
 const enabled = process.env.SCOUT_DOCKER_TESTS === "1";
 
 describe("docker driver", { skip: !enabled && "set SCOUT_DOCKER_TESTS=1" }, () => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-docker-")));
+	const root = tempDir("scout-docker-");
 	const remote = bareRepo(root, "app");
 	const workspaces = new Workspaces({
 		dataDir: join(root, "data"),

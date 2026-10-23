@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { codeSearchExtension, readCode, searchCode } from "../src/codesearch.ts";
 import { Mirror } from "../src/sandbox.ts";
-import { bareRepo } from "./helpers.ts";
+import { bareRepo, tempDir } from "./helpers.ts";
 
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" });
 
 describe("code search across repositories", async () => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-codesearch-")));
+	const root = tempDir("scout-codesearch-");
 	const commit = (name: string, files: Record<string, string>, branch = "main") => {
 		const seed = join(root, `${name}-seed`);
 		for (const [path, text] of Object.entries(files)) {

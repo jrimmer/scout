@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type RequestListener, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { ciVerdict, piMove, slugOn } from "../src/deploy.ts";
+import { tempDir } from "./helpers.ts";
 
 describe("deploying", () => {
 	it("deploys a commit only once everything that reports CI on it has passed", () => {
@@ -71,7 +71,7 @@ describe("deploying with scripts/deploy.sh", { skip: process.platform !== "linux
 	 * main process is a wrapper with Scout as its child, as under `litestream replicate -exec`.
 	 */
 	async function server(lock: string, options: { execStartPre?: string; wrapped?: boolean } = {}) {
-		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-deploy-")));
+		const root = tempDir("scout-deploy-");
 		const [origin, seed, install, bin] = ["origin.git", "seed", "install", "bin"].map((d) => join(root, d)) as [string, string, string, string];
 		const events = join(root, "events");
 		const mainPid = join(root, "mainpid");

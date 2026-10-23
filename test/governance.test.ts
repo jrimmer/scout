@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, it } from "node:test";
@@ -20,6 +18,7 @@ import { findSecrets, redact, secretsInDiff } from "../src/scan.ts";
 import { resolveSecrets, rotate } from "../src/secrets.ts";
 import { Counters, Tracer } from "../src/telemetry.ts";
 import { Threads, threadKey } from "../src/threads.ts";
+import { tempDir } from "./helpers.ts";
 
 const toolUse = { stopReason: "toolUse" } as const;
 
@@ -66,7 +65,7 @@ describe("credential scanning", () => {
 
 describe("audit trail", () => {
 	it("is append-only, redacts, and filters", () => {
-		const path = join(mkdtempSync(join(tmpdir(), "scout-audit-")), "scout.sqlite");
+		const path = join(tempDir("scout-audit-"), "scout.sqlite");
 		const audit = new Audit(path);
 		audit.record("request", { actor: "U1", conversationId: 1, channel: "team", detail: { text: `use ${"ghp_" + "b".repeat(36)}` } }, 1000);
 		audit.record("pull_opened", { actor: "scout", detail: { url: "u" } }, 2000);

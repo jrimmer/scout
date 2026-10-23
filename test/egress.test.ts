@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { allowInReposFile, EgressRequests, egressExtension, hostOf } from "../src/egress.ts";
+import { tempDir } from "./helpers.ts";
 
 describe("asking for network access", () => {
 	it("takes just the host from what a log or Scout says", () => {
@@ -30,7 +30,7 @@ describe("asking for network access", () => {
 	});
 
 	it("adds an allowed host to the repository's egress list in the repos file, keeping a backup", () => {
-		const dir = mkdtempSync(join(tmpdir(), "scout-egress-"));
+		const dir = tempDir("scout-egress-");
 		const file = join(dir, "repos.json");
 		writeFileSync(file, JSON.stringify([{ name: "web", gitUrl: "g", slug: "o/web", egress: ["github.com"] }, { name: "api", gitUrl: "g", slug: "o/api" }]));
 		assert.equal(allowInReposFile(file, "web", "registry.npmjs.org"), true);

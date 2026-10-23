@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -12,7 +10,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { limitModels, ModelLimiter } from "../src/capacity.ts";
 import { drain } from "../src/drain.ts";
 import { reviewAsSubtask } from "../src/review.ts";
-import { until } from "./helpers.ts";
+import { tempDir, until } from "./helpers.ts";
 
 const MODEL = { provider: "faux", modelId: "m" };
 
@@ -66,7 +64,7 @@ describe("draining for a restart", () => {
 	});
 
 	it("waits for the current step, then lets messages that came meanwhile run after the restart", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "scout-drain-"));
+		const dir = tempDir("scout-drain-");
 		const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }] });
 		const models = createModels();
 		models.setProvider(faux.provider);
@@ -139,7 +137,7 @@ describe("draining for a restart", () => {
 	});
 
 	it("waits for a model call that's answering, and keeps its answer", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "scout-drain-"));
+		const dir = tempDir("scout-drain-");
 		const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }] });
 		const models = createModels();
 		models.setProvider(faux.provider);
@@ -169,7 +167,7 @@ describe("draining for a restart", () => {
 	});
 
 	it("lets the model calls a running tool waits on go ahead, so the tool can finish", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "scout-drain-"));
+		const dir = tempDir("scout-drain-");
 		const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }] });
 		const models = createModels();
 		models.setProvider(faux.provider);
@@ -205,7 +203,7 @@ describe("draining for a restart", () => {
 	});
 
 	it("stops waiting at the cap, with what was still going", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "scout-drain-"));
+		const dir = tempDir("scout-drain-");
 		const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }] });
 		const models = createModels();
 		models.setProvider(faux.provider);

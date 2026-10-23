@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -13,12 +11,12 @@ import { ThreadDoc } from "../src/docs.ts";
 import { LocalDriver } from "../src/drivers/local.ts";
 import type { ChatMessage } from "../src/render.ts";
 import { Workspaces } from "../src/workspaces.ts";
-import { bareRepo } from "./helpers.ts";
+import { bareRepo, tempDir } from "./helpers.ts";
 
 const toolUse = { stopReason: "toolUse" } as const;
 
 describe("trying several approaches (experimental)", () => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-approaches-")));
+	const root = tempDir("scout-approaches-");
 	const remote = bareRepo(root, "app");
 	const workspaces = new Workspaces({
 		dataDir: join(root, "data"),

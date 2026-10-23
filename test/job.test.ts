@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -10,6 +9,7 @@ import { MemoryStorage } from "@earendil-works/pi-durable";
 import { loadConfig } from "../src/config.ts";
 import { reportLine, runJob } from "../src/job.ts";
 import { openScout } from "../src/scout.ts";
+import { tempDir } from "./helpers.ts";
 
 describe("job mode", () => {
 	it("reduces a failed command's report to the line it ended on, not its stack", () => {
@@ -19,7 +19,7 @@ describe("job mode", () => {
 	});
 
 	it("runs one task without Slack, reports progress, and answers", async () => {
-		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-job-")));
+		const root = tempDir("scout-job-");
 		mkdirSync(join(root, "profile"));
 		const config = loadConfig({
 			SCOUT_MODEL: "faux/m",
@@ -47,7 +47,7 @@ describe("job mode", () => {
 	});
 
 	it("says why when the model won't answer", async () => {
-		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-job-")));
+		const root = tempDir("scout-job-");
 		mkdirSync(join(root, "profile"));
 		const config = loadConfig({
 			SCOUT_MODEL: "faux/m",

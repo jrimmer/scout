@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, watch, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { loadConfig } from "../src/config.ts";
 import { cloneProfile, watchProfile } from "../src/profile.ts";
-import { until } from "./helpers.ts";
+import { tempDir, until } from "./helpers.ts";
 
 describe("profile", () => {
 	it("reloads when the profile's files change, not when a pull only touches .git", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "scout-profile-"));
+		const dir = tempDir("scout-profile-");
 		mkdirSync(join(dir, ".git"));
 		writeFileSync(join(dir, "system.md"), "You are Scout.");
 		let reloads = 0;
@@ -38,7 +37,7 @@ describe("profile", () => {
 		assert.equal(loadConfig(withRepo).profileDir, "/srv/scout/profile");
 		assert.equal(loadConfig({ ...withRepo, SCOUT_PROFILE_DIR: "/srv/mine" }).profileDir, "/srv/mine");
 
-		const dir = mkdtempSync(join(tmpdir(), "scout-profile-"));
+		const dir = tempDir("scout-profile-");
 		writeFileSync(join(dir, "system.md"), "not a clone");
 		await assert.rejects(cloneProfile(dir, { gitUrl: "ssh://git@h/o/p.git", base: "main" }), /exists but is not a clone of ssh:\/\/git@h\/o\/p.git/);
 	});

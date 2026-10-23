@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -21,6 +20,7 @@ import { Pricing } from "../src/pricing.ts";
 import { type ChatMessage, ThreadView } from "../src/render.ts";
 import { openScout } from "../src/scout.ts";
 import { busy } from "./fixtures/snapshot.ts";
+import { tempDir } from "./helpers.ts";
 
 const MINUTE = 60_000;
 const PRIMARY = "gateway/lunaroute/deepseek-4.1-flash";
@@ -164,7 +164,7 @@ describe("fallback models", () => {
 	});
 
 	it("runs on the fallback in a real run, records its spend at its price, and refuses a fallback that doesn't exist", async () => {
-		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-fallback-")));
+		const root = tempDir("scout-fallback-");
 		mkdirSync(join(root, "profile"));
 		writeFileSync(join(root, "prices.json"), JSON.stringify({ "faux/m": { input: 1, output: 1 }, "faux/f": { input: 1_000_000, output: 0 } }));
 		const env = {

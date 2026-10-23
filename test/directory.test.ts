@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -11,6 +10,7 @@ import { loadConfig } from "../src/config.ts";
 import { openScout } from "../src/scout.ts";
 import { AutheliaFile, approversOf, parseAutheliaUsers } from "../src/directory.ts";
 import { Permissions } from "../src/permissions.ts";
+import { tempDir } from "./helpers.ts";
 
 const USERS = `---
 users:
@@ -72,7 +72,7 @@ describe("the identity provider", () => {
 	});
 
 	it("lets people ask for work by their groups, found by the people file or their Slack email", async () => {
-		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-roles-")));
+		const root = tempDir("scout-roles-");
 		const remote = join(root, "remote.git");
 		execFileSync("git", ["init", "--quiet", "--bare", "--initial-branch=main", remote]);
 		mkdirSync(join(root, "profile"));

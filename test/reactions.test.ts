@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { loadProfile } from "../src/profile.ts";
 import { DEFAULT_EMOJI, StatusReactions, toolPhase } from "../src/reactions.ts";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./helpers.ts";
 
 function harness() {
 	let now = 0;
@@ -84,7 +84,7 @@ describe("the request's reaction follows the work", () => {
 	});
 
 	it("takes the emoji for each phase from the profile, and says what it can't use", () => {
-		const dir = mkdtempSync(join(tmpdir(), "scout-reactions-"));
+		const dir = tempDir("scout-reactions-");
 		writeFileSync(join(dir, "system.md"), "You are Scout.");
 		writeFileSync(join(dir, "reactions.md"), "---\ntesting: :microscope:\nthinking: thought_balloon\nsleeping: zzz\nreading: 📖\n---\n");
 		const profile = loadProfile(dir);

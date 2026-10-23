@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { ConfinedEnv } from "../src/sandbox.ts";
+import { tempDir } from "./helpers.ts";
 
 function setup() {
-	const data = realpathSync(mkdtempSync(join(tmpdir(), "scout-sandbox-")));
+	const data = tempDir("scout-sandbox-");
 	const root = join(data, "threads", "t-1");
 	const paths = { root, repo: join(root, "repo"), tmp: join(root, "tmp") };
 	mkdirSync(paths.repo, { recursive: true });

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Alert, AlertLog, AlertWatcher, alertMatches, DEFAULT_ALERT_POLICY, gatusAlerts, grafanaAlerts, parseAlertPolicy } from "../src/alerts.ts";
 import { loadProfile } from "../src/profile.ts";
+import { tempDir } from "./helpers.ts";
 
 const check = (success: boolean, timestamp = "2026-10-20T06:00:00Z") => ({ success, timestamp, status: success ? 200 : 502, conditionResults: [{ condition: "[STATUS] < 400", success }] });
 const answer = (body: unknown) => (async () => Response.json(body)) as unknown as typeof fetch;
@@ -75,7 +75,7 @@ describe("alerts", () => {
 	});
 
 	it("upgrades an alert table from before flapping was handled", () => {
-		const path = join(mkdtempSync(join(tmpdir(), "scout-alerts-")), "scout.sqlite");
+		const path = join(tempDir("scout-alerts-"), "scout.sqlite");
 		const old = new DatabaseSync(path);
 		old.exec("CREATE TABLE alerts (key TEXT PRIMARY KEY, alert TEXT NOT NULL, opened_at INTEGER NOT NULL, channel TEXT, thread_ts TEXT)");
 		old.prepare("INSERT INTO alerts VALUES (?, ?, ?, NULL, NULL)").run("gatus:x", JSON.stringify({ key: "gatus:x", source: "gatus", title: "x", detail: "", labels: {} }), 1);
@@ -176,7 +176,7 @@ describe("alerts", () => {
 	});
 
 	it("takes the alert policy from responder.md's frontmatter and keeps it out of the instructions", () => {
-		const dir = mkdtempSync(join(tmpdir(), "scout-profile-"));
+		const dir = tempDir("scout-profile-");
 		writeFileSync(join(dir, "system.md"), "You are Scout.");
 		writeFileSync(join(dir, "responder.md"), "---\n# Only wake people for what matters: see docs/operations.md\ngrafana.investigate: severity=critical\n---\nLook into it calmly.\n");
 		const profile = loadProfile(dir);

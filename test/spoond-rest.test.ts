@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
@@ -9,7 +8,7 @@ import { createEnvConformance } from "@earendil-works/pi-durable/testing";
 import { SpoondDriver } from "../src/drivers/spoond.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { fakeSpoond } from "./fake-spoond.ts";
-import { bareRepo, until } from "./helpers.ts";
+import { bareRepo, tempDir, until } from "./helpers.ts";
 
 const spec = { image: "dev-base", network: { mode: "none" as const }, labels: {} };
 
@@ -54,7 +53,7 @@ function conformance(name: string, start: () => Promise<{ connect: (cwd: string)
 
 for (const modern of [true, false]) {
 	conformance(`spoond REST environment conformance${modern ? "" : " (older spoond: no ranged reads or error codes)"}`, async () => {
-		const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-spoond-rest-")));
+		const root = tempDir("scout-spoond-rest-");
 		const spoond = await fakeSpoond("sdt-test", { ranges: modern, codes: modern });
 		const driver = new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest"), transport: "rest" });
 		const handle = await driver.open("conformance", spec);
@@ -71,7 +70,7 @@ conformance("spoond REST environment conformance against spoond", async () => {
 }, true, process.env.SCOUT_SPOOND_TESTS === "1" ? undefined : "set SCOUT_SPOOND_TESTS=1 with SCOUT_SPOOND_URL and SCOUT_SPOOND_TOKEN");
 
 describe("spoond REST environment", () => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-spoond-rest-")));
+	const root = tempDir("scout-spoond-rest-");
 	let spoond: Awaited<ReturnType<typeof fakeSpoond>>;
 	let env: ExecutionEnv;
 	before(async () => {
@@ -229,7 +228,7 @@ describe("spoond REST environment", () => {
 });
 
 describe("workspaces over spoond's REST API", () => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-spoond-rest-ws-")));
+	const root = tempDir("scout-spoond-rest-ws-");
 	const remote = bareRepo(root, "app");
 	let spoond: Awaited<ReturnType<typeof fakeSpoond>>;
 	let workspaces: Workspaces;
@@ -260,6 +259,7 @@ describe("workspaces over spoond's REST API", () => {
 		assert.ok(!spoond.calls.some((c) => c.includes("/.scout/pi-env-")), "no daemon uploaded");
 		const bundle = await workspaces.exportBranch(1);
 		assert.ok(bundle !== undefined);
+		rmSync(dirname(bundle), { recursive: true, force: true }); // the caller of exportBranch deletes the bundle's directory
 		assert.equal(await workspaces.status(1), "");
 	});
 });

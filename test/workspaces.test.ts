@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createCodeHostExtension } from "../src/codehost.ts";
 import { LocalDriver } from "../src/drivers/local.ts";
 import { Workspaces } from "../src/workspaces.ts";
-import { bareRepo } from "./helpers.ts";
+import { bareRepo, tempDir } from "./helpers.ts";
 
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
 
@@ -20,7 +19,7 @@ async function run(env: Awaited<ReturnType<Workspaces["env"]>>, command: string)
 }
 
 describe("workspaces (local driver)", () => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-ws-")));
+	const root = tempDir("scout-ws-");
 	const api = bareRepo(root, "api");
 	const web = bareRepo(root, "web", "develop");
 	const workspaces = new Workspaces({
@@ -139,6 +138,7 @@ describe("workspaces (local driver)", () => {
 		git("clone", "--quiet", "--branch", "their-feature", api, check);
 		git("-C", check, "fetch", "--quiet", bundle, "HEAD");
 		assert.equal(git("-C", check, "rev-list", "--count", "their-feature..FETCH_HEAD"), "1", "just the fix, on top of their branch");
+		rmSync(dirname(bundle), { recursive: true, force: true }); // the caller of exportBranch deletes the bundle's directory
 	});
 
 	it("saves attachments beside the repository, never in it", async () => {

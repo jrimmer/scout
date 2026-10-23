@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -15,7 +14,7 @@ import { Approvals } from "../src/mcp.ts";
 import { ThreadSearch } from "../src/search.ts";
 import type { ChatMessage, ChatSurface } from "../src/render.ts";
 import { threadKey, Threads } from "../src/threads.ts";
-import { until } from "./helpers.ts";
+import { tempDir, until } from "./helpers.ts";
 
 const BOT = "UBOT";
 
@@ -65,7 +64,7 @@ describe("bridge", () => {
 		faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model", input: ["text", "image"] }, { id: "faux-big" }] });
 		const models = createModels();
 		models.setProvider(faux.provider);
-		const profileDir = mkdtempSync(join(tmpdir(), "scout-profile-"));
+		const profileDir = tempDir("scout-profile-");
 		writeFileSync(join(profileDir, "system.md"), "You are Scout.");
 		mkdirSync(join(profileDir, "channels", "team"), { recursive: true });
 		writeFileSync(join(profileDir, "channels", "team", "instructions.md"), "We use pnpm.");

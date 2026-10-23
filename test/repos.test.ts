@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -11,10 +10,10 @@ import { loadProfile, profileExtension } from "../src/profile.ts";
 import { ThreadDoc } from "../src/docs.ts";
 import { LocalDriver } from "../src/drivers/local.ts";
 import { openScout } from "../src/scout.ts";
-import { bareRepo } from "./helpers.ts";
+import { bareRepo, tempDir } from "./helpers.ts";
 
 describe("repositories and zones", () => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "scout-repos-")));
+	const root = tempDir("scout-repos-");
 	const api = bareRepo(root, "api", "main");
 	const web = bareRepo(root, "web", "develop");
 	const profileDir = join(root, "profile");

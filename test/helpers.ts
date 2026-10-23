@@ -1,13 +1,24 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 export const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
 
-/** A new directory of its own under the system's temporary one, with symlinks resolved (macOS's /tmp is one). */
+const made: string[] = [];
+process.once("exit", () => {
+	for (const dir of made) rmSync(dir, { recursive: true, force: true });
+});
+
+/**
+ * A new directory of its own under the system's temporary one, with symlinks resolved (macOS's /tmp is one). It is
+ * removed when the test file's process exits, so tests never need to clean up after themselves (and a test that
+ * fails halfway doesn't leave one behind). Close servers and databases in the test; this only deletes files.
+ */
 export function tempDir(prefix = "scout-test-"): string {
-	return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+	made.push(dir);
+	return dir;
 }
 
 /**
