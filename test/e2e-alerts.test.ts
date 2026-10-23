@@ -347,7 +347,7 @@ describe("end to end: Scout's own initiative in threads", () => {
 			await said(e2e, "left-pad and right-pad");
 			const roots = postsMatching(e2e, /Schedule #1/);
 			assert.deepEqual(roots.map((p) => [p.channel, p.thread, p.text]), [
-				[TEAM_CHANNEL, undefined, `⏰ Schedule #1, every day at 14:30: Check for dependency updates and report what you find.\nSet up by <@${ANN}>. Anyone here can ask me to change, pause or stop it.`],
+				[TEAM_CHANNEL, undefined, `⏰ Schedule #1, every day at 14:30: Check for dependency updates and report what you find.\nFor <@${ANN}>, who set it up. Anyone here can ask me to change, pause or stop it.`],
 			]);
 
 			// The same minute again does not run it again; the next day does.

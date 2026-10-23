@@ -19,7 +19,10 @@ export type Schedule = {
 	/** The time in words, as Scout read it back ("every Monday at 9:00"). */
 	when: string;
 	task: string;
-	/** Who set it up (a Slack user ID), and who last changed it. */
+	/**
+	 * Who set it up (a Slack user ID), and who last changed it. Its runs are its owner's requests: whoever last changed
+	 * it, or else set it up. "scout" (nobody had asked in the thread) owns nothing, so such a schedule pauses (service.ts).
+	 */
 	createdBy: string;
 	changedBy?: string;
 	paused: boolean;
@@ -83,6 +86,11 @@ export class Schedules {
 			.prepare(`UPDATE schedules SET cron = ?, "when" = ?, task = ?, paused = ?, changed_by = ? WHERE id = ?`)
 			.run(change.cron?.trim() ?? current.cron, change.when ?? current.when, change.task ?? current.task, (change.paused ?? current.paused) ? 1 : 0, by, id);
 		return this.get(id);
+	}
+
+	/** Paused by Scout itself (its owner may no longer ask for it): who owns it doesn't change until someone resumes it. */
+	pause(id: number): void {
+		this.#db.prepare("UPDATE schedules SET paused = 1 WHERE id = ?").run(id);
 	}
 
 	remove(id: number, by: string, now = Date.now()): boolean {

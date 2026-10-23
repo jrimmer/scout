@@ -227,7 +227,7 @@ describe("e2e: approvals", () => {
 			await ended(e2e, 2);
 			await idle(e2e);
 			assert.deepEqual(written, []);
-			assert.match(told[1] ?? "", /Ann: @Scout I'm declining that change: please don't make it\./);
+			assert.match(told[1] ?? "", /<@U0ANN00001> \(Ann\): @Scout I'm declining that change: please don't make it\./);
 			assert.equal(e2e.service.scout.approvals.waiting(Number(conversationId)), false, "nothing is waiting for approval any more");
 			// A late Approve finds nothing waiting.
 			const late = await press(e2e, "approve", conversationId, ANN);

@@ -151,7 +151,7 @@ describe("e2e: requests", () => {
 			await saidSoon(e2e, "the build step is mentioned too");
 			await ended(e2e, 2);
 			await idle(e2e);
-			assert.match(seen, /Bob Example: also mention the build step/, "the model saw Bob's words with its next step");
+			assert.match(seen, /<@U0BOB00001> \(Bob Example\): also mention the build step/, "the model saw Bob's words with its next step");
 			assert.equal(e2e.faux.getPendingResponseCount(), 0);
 			assert.equal(reactionsByMessage(e2e).get(bobTs)?.at(-1), "white_check_mark", "Bob's message was marked as answered too");
 		});
@@ -252,7 +252,7 @@ describe("e2e: requests", () => {
 			await saidSoon(e2e, "Back now: the answer is 42.");
 			await ended(e2e, 2);
 			await idle(e2e);
-			assert.match(retried, /Bob Example: @Scout 🔁 please try that again, picking up where it stopped\./);
+			assert.match(retried, /<@U0BOB00001> \(Bob Example\): @Scout 🔁 please try that again, picking up where it stopped\./);
 		});
 	});
 
@@ -275,7 +275,7 @@ describe("e2e: requests", () => {
 			await saidSoon(e2e, "Updated both files.");
 			await ended(e2e, 1);
 			await idle(e2e);
-			assert.match(seen, /Ann edited their request: @Scout update the docs and the changelog/, "only the person who asked can steer by editing");
+			assert.match(seen, /<@U0ANN00001> \(Ann\) edited their request: @Scout update the docs and the changelog/, "only the person who asked can steer by editing");
 			assert.equal(seen.match(/edited their request/g)?.length, 1);
 		});
 	});
@@ -305,7 +305,7 @@ describe("e2e: requests", () => {
 				await saidSoon(e2e, "The edited one is done.");
 				await ended(e2e, 2);
 				await idle(e2e);
-				assert.match(seen, /Bob Example: @Scout second job, as corrected/);
+				assert.match(seen, /<@U0BOB00001> \(Bob Example\): @Scout second job, as corrected/);
 				assert.equal(e2e.faux.getPendingResponseCount(), 0, "the deleted request never reached the model");
 			} finally {
 				hold.open();
@@ -387,7 +387,7 @@ describe("e2e: declines", () => {
 				const marks = await ended(e2e, 1);
 				await idle(e2e);
 				// Kept as context for the thread, like anything said there, but not taken up as a request: no 👀 or ✅ on it.
-				assert.match(seen, /Bob Example: delete the whole repository/);
+				assert.match(seen, /<@U0BOB00001> \(Bob Example\), who may not ask me for work here \(context only\): delete the whole repository/);
 				assert.equal(marks.has(bobTs), false, "Bob's message was not taken up as a request");
 				assert.equal(
 					inThread(e2e, ts).filter((c) => String(c.args.text).includes("can't change acme/app")).length,
@@ -521,8 +521,8 @@ describe("e2e: other ways in", () => {
 			await ended(e2e, 1);
 			const thread = "1700000000.000100";
 			assert.equal(inThread(e2e, thread)[0]?.args.text, "<@U0ANN00001> asked me about this: why did it fail?", "the thread says who asked, in the message's own thread");
-			assert.match(seen, /Ann: @Scout why did it fail\?/);
-			assert.match(seen, /About <@U0BOB00001>'s message:\\n> the deploy failed again/);
+			assert.match(seen, /<@U0ANN00001> \(Ann\):\\n> @Scout why did it fail\?/);
+			assert.match(seen, /> About <@U0BOB00001>'s message:\\n> > the deploy failed again/);
 			assert.ok(e2e.service.scout.threads.get(threadKey(TEAM_CHANNEL, thread)), "Scout follows that thread now");
 		});
 	});
@@ -572,8 +572,8 @@ describe("e2e: other ways in", () => {
 			await ended(e2e, 1);
 			const thread = "1700000000.000200";
 			assert.equal(inThread(e2e, thread)[0]?.args.text, "<@U0ANN00001> asked me to look into this.");
-			assert.match(seen, /Ann: @Scout Look into this\./);
-			assert.match(seen, /About <@U0BOB00001>'s message:\\n> the deploy failed again/);
+			assert.match(seen, /<@U0ANN00001> \(Ann\):\\n> @Scout Look into this\./);
+			assert.match(seen, /> About <@U0BOB00001>'s message:\\n> > the deploy failed again/);
 		});
 	});
 
@@ -657,7 +657,7 @@ describe("e2e: other ways in", () => {
 			await ended(e2e, 1);
 			const intro = e2e.slack.called("chat.postMessage")[0]!;
 			assert.equal(intro.args.text, "<@U0ANN00001> asked me: fix the flaky login test");
-			assert.match(seen, /Ann: @Scout fix the flaky login test/);
+			assert.match(seen, /<@U0ANN00001> \(Ann\): @Scout fix the flaky login test/);
 		});
 	});
 });
@@ -677,10 +677,10 @@ describe("e2e: approaches", () => {
 			return commit(`${mine.toLowerCase()}.txt`, mine);
 		}
 		if (/"role":"toolResult"/.test(last)) return fauxAssistantMessage(/Pull request:/.test(last) ? "Opened the pull request with the query fix." : "Both are up; pick one.");
-		if (/Ann: @Scout try/.test(last)) {
+		if (/<@U0ANN00001> \(Ann\): @Scout try/.test(last)) {
 			return fauxAssistantMessage([fauxToolCall("try_approaches", { request: "make the page faster", approaches: [{ name: "Cache", plan: "cache results" }, { name: "Query", plan: "fix the query" }] })], toolUse);
 		}
-		if (/Ann: @Scout open the pull request/.test(last)) return openPull("Fix the slow query");
+		if (/<@U0ANN00001> \(Ann\): @Scout open the pull request/.test(last)) return openPull("Fix the slow query");
 		return fauxAssistantMessage("APPROVE\nLooks right."); // the pull request's self-review
 	}
 

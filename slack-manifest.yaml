@@ -49,7 +49,8 @@ oauth_config:
       - users:read # display names
       - users:read.email # who someone is in the identity provider (SCOUT_DIRECTORY), for permissions and roles
       - usergroups:read # only if SCOUT_ALLOWED_USERGROUP limits who may ask for work
-# The Ask Scout step in Workflow Builder (paid plans): starts a Scout thread in a channel with a request.
+# The Ask Scout step in Workflow Builder (paid plans): starts a Scout thread in a channel with a request, for the
+# person who ran the workflow.
 functions:
   ask_scout:
     title: Ask Scout
@@ -60,10 +61,12 @@ functions:
         title: Channel
         description: A public channel Scout is in
         is_required: true
-      user_id:
-        type: slack#/types/user_id
-        title: Asked by
-        description: Who the request is from (usually "Person who used this workflow"); checked like any request
+      # Who's asking: the person who ran the workflow, from Slack. A builder can't fill it in, so a workflow can't ask
+      # as someone else; it needs a person to start it (a link, a shortcut, or a button after a schedule or webhook).
+      interactivity:
+        type: slack#/types/interactivity
+        title: Person who ran it
+        description: Scout works as whoever ran the workflow, checked like any request
         is_required: true
       request:
         type: string

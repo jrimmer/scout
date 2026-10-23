@@ -9,6 +9,7 @@ import type { CodeHost } from "./codehost.ts";
 import type { Config } from "./config.ts";
 import { parseAutheliaUsers } from "./directory.ts";
 import type { GatewayConfig } from "./gateway.ts";
+import { type LimitsConfig, loadLimits } from "./limits.ts";
 import { profileDirProblem } from "./profile.ts";
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { Snapshot } from "./dash/collect.ts";
@@ -153,6 +154,25 @@ export function checkDashboard(dash: Config["dash"]): Check {
 	return { name, status: "ok", detail: `${dash.addr}${loopback ? " (this machine only)" : ", behind a login"}` };
 }
 
+/**
+ * The limits file's weekly budgets. A per-channel budget applies to each channel by name, and anyone can make a public
+ * channel and invite Scout, so without a total each new channel brings a budget of its own: a warning.
+ */
+export function checkBudgets(path: string): Check {
+	const name = "Budgets";
+	let limits: LimitsConfig;
+	try {
+		limits = loadLimits(path);
+	} catch (error) {
+		return { name, status: "fail", detail: `can't read ${path} (${firstLine(error)})`, fix: "Check SCOUT_LIMITS_FILE: it should be JSON, as in docs/operations.md, Budgets and limits." };
+	}
+	const { total, perChannel } = limits.weekly ?? {};
+	if (perChannel !== undefined && total === undefined) {
+		return { name, status: "warn", detail: `$${perChannel} a week per channel and no total: every new channel Scout is invited to gets another $${perChannel}`, fix: `Set weekly.total in ${path} too, to cap all of Scout.` };
+	}
+	return { name, status: "ok", detail: total === undefined ? "no weekly total" : `$${total} a week in all${perChannel === undefined ? "" : `, $${perChannel} per channel`}` };
+}
+
 /** Whether Scout's databases are backed up off this machine (backups.ts): not is broken, off on purpose a warning. */
 export function checkBackups(backup: Backup): Check {
 	const name = "Backups";
@@ -255,6 +275,7 @@ export async function doctor(
 		}
 	}
 	checks.push(checkDashboard(config.dash));
+	if (config.governance.limitsFile !== undefined) checks.push(checkBudgets(config.governance.limitsFile));
 	const running = deps.running === undefined ? undefined : await deps.running().catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
 	// The running Scout knows its data directory for sure (a unit can set it outside .env); otherwise, this one's.
 	checks.push(checkBackups(running === undefined || running instanceof Error || running.backup === undefined ? backupState(config.dataDir, config.backup) : running.backup));

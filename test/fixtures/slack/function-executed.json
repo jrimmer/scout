@@ -28,8 +28,11 @@
 			"inputs": {
 				"channel_id": "C0TEAM0001",
 				"request": "Summarize yesterday's failed deploys",
-				"user_id": "U0ANN00001",
-				"about": "Deploy 42 failed at 03:10"
+				"about": "Deploy 42 failed at 03:10",
+				"interactivity": {
+					"interactivity_pointer": "1700000005.000100.abc123",
+					"interactor": { "id": "U0ANN00001", "secret": "c2VjcmV0" }
+				}
 			},
 			"function_execution_id": "Fx0EXEC0001",
 			"workflow_execution_id": "Wx0EXEC0001",
