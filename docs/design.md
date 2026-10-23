@@ -107,7 +107,9 @@ one-off:   job.ts ─▶ the same agent, no Slack, nothing kept
     people review it like anyone else's.
 - **Second look before people look.** Tobi's worry about agents is "slop grenades": output sent to colleagues who
   don't read it closely. So before any pull request:
-  - Scout reviews its own diff in a separate conversation that can only read the workspace (`review.md`).
+  - Scout reviews its own diff in a separate conversation that can only read the workspace (`review.md`). The
+    reviewer gets one round of reading, every file it asks for at once, then answers: two model calls, where one left
+    to explore made two to six. A diff too big to show whole leaves it reading as long as it needs.
   - Findings send it back to fix them, unless it explains in the description why not.
   - Changes over `SCOUT_PR_MAX_LINES` are refused, with a request to split them.
 - **Profiles are files in git**, so improving Scout is a reviewed change like any other:

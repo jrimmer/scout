@@ -9,6 +9,11 @@ Scout follows [semantic versioning](https://semver.org). The public interface is
 
 A change to any of these that needs people to act is a major version. Everything else is minor or a patch.
 
+## Unreleased
+
+### Changed
+- **The self-review is quicker.** It read files one round at a time until it chose to answer: two to six model calls in production, often re-reading a file the diff already showed. Behind a gateway whose first tokens are slow, each call is a wait, and the self-review took 45% of an eval run's time. Now the reviewer asks for every file it needs in one round, then answers with no more tools: two model calls (one if the diff is enough). Its verdict and findings work as before. A diff too big to show whole (over 60,000 characters) is reviewed as before, reading as long as it needs. The credential scan is unchanged.
+
 ## 1.0.0 (2026-10-22)
 
 Scout's first release: installable and runnable by people who didn't build it, with an end-to-end test suite and a
