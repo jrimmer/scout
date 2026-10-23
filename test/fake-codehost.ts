@@ -44,6 +44,8 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 	const deleted: string[] = [];
 	/** Calls to answer with an error instead, while `left` lasts (`fail`, below). */
 	const faults: { method: string; path: RegExp; status: number; left: number }[] = [];
+	/** Calls to hold before they take effect, while `left` lasts (`slow`, below). */
+	const delays: { method: string; path: RegExp; ms: number; left: number }[] = [];
 	let ids = 1000;
 	let notices = 0;
 	let port = 0;
@@ -219,6 +221,11 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 		const raw = await read(req);
 		const body = raw === "" ? {} : (JSON.parse(raw) as Record<string, unknown>);
 		const method = req.method ?? "GET";
+		const delay = delays.find((d) => d.left > 0 && d.method === method && d.path.test(path));
+		if (delay !== undefined) {
+			delay.left--;
+			await new Promise((resolve) => setTimeout(resolve, delay.ms));
+		}
 		calls.push({ method, path, body });
 		const fault = faults.find((f) => f.left > 0 && f.method === method && f.path.test(path));
 		if (fault !== undefined) fault.left--;
@@ -304,6 +311,8 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 		headOf: (slug: string, number: number) => pullJson(repo(slug), item(slug, number)!).head.sha,
 		/** Answer the next calls matching `method` and `path` with `status`, `times` times: an outage. */
 		fail: (method: string, path: RegExp, status = 500, times = 1) => void faults.push({ method, path, status, left: times }),
+		/** Hold matching calls `ms` before they take effect (a slow code host). */
+		slow: (method: string, path: RegExp, ms: number, times = 1) => void delays.push({ method, path, ms, left: times }),
 		close: () => {
 			server.closeAllConnections();
 			return new Promise<void>((resolve) => server.close(() => resolve()));

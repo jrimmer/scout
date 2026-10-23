@@ -237,6 +237,14 @@ export async function startService(options: ServiceOptions) {
 	// real call for features a plan may not include. Logged once at start, and whenever one turns out to be off.
 	const capabilities = new Capabilities(join(config.dataDir, "scout.sqlite"));
 
+	// Work an answer sets off after its run (copying it back to the code host): closing waits for it, so a stop or a
+	// drain right after an answer doesn't lose the copy.
+	const afterAnswers = new Set<Promise<unknown>>();
+	const finishing = (work: Promise<unknown>) => {
+		afterAnswers.add(work);
+		void work.finally(() => afterAnswers.delete(work));
+	};
+
 	const bridge = new Bridge({
 		harness,
 		threads,
@@ -263,9 +271,11 @@ export async function startService(options: ServiceOptions) {
 			if (thread !== undefined && scout.approvals.waiting(conversationId)) void askForApproval(conversationId, thread.channel, thread.threadTs);
 			const state = outcome === "problem" ? "Ran into a problem" : answer !== undefined && asksSomething(answer) ? "Waiting on someone" : "Answered";
 			void track(conversationId, { state, cost: scout.spend.spentOn(conversationId, 0).cost });
-			void (thread === undefined ? Promise.resolve(undefined) : slack.permalink(thread.channel, thread.threadTs))
-				.then((link) => inbox.answered(conversationId, answer, link))
-				.catch((error: unknown) => console.error("answering on the code host failed:", error));
+			finishing(
+				(thread === undefined ? Promise.resolve(undefined) : slack.permalink(thread.channel, thread.threadTs))
+					.then((link) => inbox.answered(conversationId, answer, link))
+					.catch((error: unknown) => console.error("answering on the code host failed:", error)),
+			);
 		},
 		costNote: (conversationId, since) => scout.limits.costNote(conversationId, since),
 		approvalAskedIn: (ts) => scout.approvals.askedIn(ts),
@@ -1379,6 +1389,8 @@ export async function startService(options: ServiceOptions) {
 	let closed: Promise<void> | undefined;
 	function close(): Promise<void> {
 		closed ??= (async () => {
+			// What answers set off, before the stores it writes to close; at most half a minute, so a stuck call can't hold a stop.
+			await Promise.race([Promise.allSettled([...afterAnswers]), new Promise((resolve) => setTimeout(resolve, 30_000).unref())]);
 			for (const timer of timers) clearInterval(timer);
 			clearTimeout(firstTick);
 			benchChild?.kill();

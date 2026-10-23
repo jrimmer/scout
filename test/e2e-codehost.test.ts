@@ -325,6 +325,27 @@ describe("end to end: work asked on the code host", () => {
 		}
 	});
 
+	it("copies the answer back to the issue even when Scout stops right after answering", async () => {
+		const e2e = await startScout(START);
+		try {
+			e2e.host.repo(SLUG, { private: true });
+			const number = e2e.host.issue(SLUG, { title: "How do we release?", body: "@scout how do we cut a release?", author: "ann" });
+			e2e.host.notify(SLUG, number);
+			e2e.faux.setResponses([fauxAssistantMessage("Tag main, then run the deploy script.")]);
+			await e2e.service.tick.inbox();
+			await until(() => commentsBy(e2e, number, "scout").length === 1, 20_000, "the pointer comment");
+			// A slow code host: the copied answer is still on its way when Scout stops.
+			e2e.host.slow("POST", /\/issues\/\d+\/comments$/, 1_500);
+			await until(() => e2e.said().some((t) => t.includes("Tag main, then run the deploy script.")), 20_000, "the answer in Slack");
+			// Stop at once, as a drain or SIGTERM would right after an answer: the copy to the issue still lands.
+			await e2e.service.close();
+			assert.equal(commentsBy(e2e, number, "scout").length, 2, "the pointer and the copied answer");
+			assert.match(commentsBy(e2e, number, "scout")[1] ?? "", /Tag main, then run the deploy script\./);
+		} finally {
+			await e2e.close();
+		}
+	});
+
 	it("on a public repository answers the issue with a pointer to the thread and the pull request it opened, never the answer", async () => {
 		const e2e = await startScout(START);
 		const prompts: string[] = [];

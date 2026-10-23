@@ -64,6 +64,7 @@ A change to any of these that needs people to act is a major version. Everything
   - update Scout's unit from `deploy/scout.service`: `ExecStart=/usr/bin/node src/main.ts`, no `KillMode=mixed`, and the restores reading `-config /etc/litestream.yml` and the keys from `/etc/litestream.env` (mode 640, Scout's group), which Scout's own environment no longer gets.
 
 ### Fixed
+- **Stopping right after an answer:** an answer to someone on the code host could miss being copied back to the issue or pull request if Scout stopped (a drain for a deploy, or a SIGTERM) just after it. Stopping now waits for that copy, for at most half a minute.
 - **Reflection:** the day after a proposal, a quiet day still started a reflection, about nothing but Scout's own announcement of the last one. Its announcement thread no longer counts as new activity.
 - **Approve buttons:** someone who isn't among a change's approvers could press Approve and see "Approved by" them, though the change was then refused. The button now checks the approvers for the waiting change first and says who can.
 - **Queue notice:** "I'm working on 1 things already" now reads "1 thing".
