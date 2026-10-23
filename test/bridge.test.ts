@@ -100,10 +100,11 @@ describe("bridge", () => {
 			agent: { model: { provider: "faux", modelId: "faux-model" } },
 			context,
 			search,
-			approve: (conversationId, user) => void approved.push(`${conversationId} ${user}`),
+			// As if a change were waiting: Approvals.grant says whether one is (mcp.test.ts).
+			approve: (conversationId, user) => approved.push(`${conversationId} ${user}`) > 0,
 			// As mcp.ts would record it: the run that's ending asked for approval.
 			answered: (conversationId, ts) => {
-				if (asking) approvals.ask(conversationId);
+				if (asking) approvals.ask(conversationId, { server: "grafana", tool: "rename_dashboard", args: {} });
 				asking = false;
 				approvals.answered(conversationId, ts);
 			},
@@ -171,6 +172,12 @@ describe("bridge", () => {
 
 		await bridge.onMessage(message({ user: "UBOB", text: "I don't approve", ts: "100.2", threadTs: "100.1" }));
 		await settle(thread.conversationId);
+		assert.deepEqual(approved, []);
+		// Answers to ordinary questions aren't approvals either.
+		for (const [i, text] of ["go ahead", "approved", "Go ahead!"].entries()) {
+			await bridge.onMessage(message({ user: "UBOB", text, ts: `100.2${i}`, threadTs: "100.1" }));
+			await settle(thread.conversationId);
+		}
 		assert.deepEqual(approved, []);
 
 		faux.setResponses([fauxAssistantMessage("Done: raised to 90%.")]);

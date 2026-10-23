@@ -33,8 +33,11 @@ export type SlackHandlers = {
 	onAsk?: (ask: { user: string; channel: string; channelName: string; ts: string; threadTs?: string; author?: string; text: string; request: string }) => Promise<void>;
 	/** 🔍 on a message: look into it, as if they'd used Ask Scout about this with "look into this". */
 	onLook?: (look: { user: string; channel: string; channelName: string; ts: string; threadTs?: string; author?: string; text: string }) => Promise<void>;
-	/** Someone pressed Approve or Decline on a change waiting for approval; returns what the message should now say. */
-	onDecision?: (decision: { user: string; channel: string; conversationId: number; approve: boolean }) => Promise<string>;
+	/**
+	 * Someone pressed Approve or Decline on a change waiting for approval; returns what the message should now say, or,
+	 * with `final: false`, what to tell just whoever pressed while the buttons stay.
+	 */
+	onDecision?: (decision: { user: string; channel: string; conversationId: number; approve: boolean }) => Promise<string | { text: string; final: boolean }>;
 	/** Someone pressed "Use" on one of a thread's approaches (approaches.ts): the comparison to show now, or a note why not. */
 	onUseApproach?: (use: { user: string; channel: string; parentId: number; index: number }) => Promise<ChatMessage | string>;
 	/**
@@ -356,8 +359,11 @@ export class Slack {
 				const conversationId = Number(b.actions[0]?.value);
 				if (handlers.onDecision === undefined || b.channel === undefined || !Number.isFinite(conversationId)) return;
 				try {
-					const said = await handlers.onDecision({ user: b.user.id, channel: b.channel.id, conversationId, approve });
-					await respond({ replace_original: true, text: said, blocks: [{ type: "context", elements: [{ type: "mrkdwn", text: said }] }] });
+					const decided = await handlers.onDecision({ user: b.user.id, channel: b.channel.id, conversationId, approve });
+					// A press that doesn't count is answered just to whoever pressed, and the buttons stay.
+					const said = typeof decided === "string" ? { text: decided, final: true } : decided;
+					if (said.final) await respond({ replace_original: true, text: said.text, blocks: [{ type: "context", elements: [{ type: "mrkdwn", text: said.text }] }] });
+					else await respond({ replace_original: false, response_type: "ephemeral", text: said.text });
 				} catch (error) {
 					console.error(`${action} failed:`, error);
 				}

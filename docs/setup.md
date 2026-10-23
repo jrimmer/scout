@@ -127,7 +127,8 @@ whoever runs it.
 By default anyone in a channel Scout is in may ask it for work. To narrow it, see "Who may ask for work" in
 [operations.md](operations.md): the code host's own permissions (`SCOUT_REQUESTER_CHECK=enforce`), or groups from your
 identity provider (`SCOUT_DIRECTORY`, `SCOUT_ROLES_FILE`), which also decide who may approve changes made through
-tools and network access for sandboxes. Set budgets (`SCOUT_LIMITS_FILE`) before you open it up widely.
+tools and network access for sandboxes. Nobody can allow a sandbox a new host from Slack until the roles file names
+egress approvers (`"approve": { "egress": ["admins"] }`). Set budgets (`SCOUT_LIMITS_FILE`) before you open it up widely.
 
 ## 9. How much Scout does on its own
 

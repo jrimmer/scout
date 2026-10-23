@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { allowInReposFile, EgressRequests, egressExtension, hostOf } from "../src/egress.ts";
+import { allowInReposFile, EgressRequests, egressExtension, hostOf, whyNotHost } from "../src/egress.ts";
 import { tempDir } from "./helpers.ts";
 
 describe("asking for network access", () => {
@@ -11,9 +11,69 @@ describe("asking for network access", () => {
 		assert.equal(hostOf("registry.npmjs.org"), "registry.npmjs.org");
 		assert.equal(hostOf("https://user:pw@Proxy.Golang.org:443/github.com/x/@v/list"), "proxy.golang.org");
 		assert.equal(hostOf("*.pythonhosted.org"), "*.pythonhosted.org");
-		assert.equal(hostOf("10.1.0.0/16"), "10.1.0.0/16");
+		assert.equal(hostOf("*.npmjs.org"), "*.npmjs.org");
+		assert.equal(hostOf("*.example.co.uk"), "*.example.co.uk");
+		assert.equal(hostOf("my-bucket.s3.amazonaws.com"), "my-bucket.s3.amazonaws.com", "one host on shared hosting is fine");
 		assert.equal(hostOf("not a host"), undefined);
 		assert.equal(hostOf("localhost"), undefined, "a name without a domain isn't something to allow");
+	});
+
+	it("refuses addresses, ranges, hosts inside the network and wide wildcards, so a click can't open the sandbox up", () => {
+		const refused = [
+			// IP literals and ranges, v4 and v6, however they're written
+			"10.1.0.0/16",
+			"0.0.0.0/0",
+			"127.0.0.1",
+			"8.8.8.8",
+			"169.254.169.254",
+			"http://169.254.169.254/latest/meta-data/",
+			"2130706433",
+			"127.1",
+			"0x7f.0.0.1",
+			"::1",
+			"fd00:ec2::254",
+			"[fd00:ec2::254]",
+			"http://[fd00:ec2::254]:80/latest",
+			"2001:db8::/32",
+			// names that stay inside the network, or resolve to whatever they say
+			"localhost.",
+			"api.localhost",
+			"*.localhost",
+			"metadata.google.internal",
+			"instance-data.ec2.internal",
+			"printer.local",
+			"nas.lan",
+			"router.home.arpa",
+			"169.254.169.254.nip.io",
+			"10.0.0.1.sslip.io",
+			"metadata",
+			// wildcards wider than one registrable domain, and wildcards over shared hosting
+			"*",
+			"*.com",
+			"*.co.uk",
+			"*.com.au",
+			"*.*.example.com",
+			"foo.*.example.com",
+			"*example.com",
+			"*.amazonaws.com",
+			"*.s3.amazonaws.com",
+			"*.github.io",
+			"*.herokuapp.com",
+			// public suffixes on their own
+			"co.uk",
+			"github.io",
+			// broken names
+			"-bad.example.com",
+			"bad-.example.com",
+			`${"a".repeat(64)}.example.com`,
+			"lease:abc",
+		];
+		for (const text of refused) assert.equal(hostOf(text), undefined, `${text} must be refused`);
+		assert.match(whyNotHost("169.254.169.254") ?? "", /IP address/);
+		assert.match(whyNotHost("10.0.0.0/8") ?? "", /range/);
+		assert.match(whyNotHost("metadata.google.internal") ?? "", /inside the network/);
+		assert.match(whyNotHost("*.com") ?? "", /wildcard/);
+		assert.equal(whyNotHost("registry.npmjs.org"), undefined);
 	});
 
 	it("asks once per host and repository, and decides once", () => {
@@ -53,5 +113,7 @@ describe("asking for network access", () => {
 		assert.match(JSON.stringify(said.output), /asked/);
 		assert.deepEqual(asked, ["9 registry.npmjs.org npm ci"]);
 		await assert.rejects(tool!.execute({ host: "the npm one", why: "x" } as never, { conversationId: 9 } as never, context), /isn't a host name/);
+		await assert.rejects(tool!.execute({ host: "169.254.169.254", why: "x" } as never, { conversationId: 9 } as never, context), /IP address/);
+		assert.deepEqual(asked, ["9 registry.npmjs.org npm ci"], "nothing refused was passed on");
 	});
 });

@@ -277,7 +277,7 @@ describe("e2e: approvals", () => {
 			await saidSoon(e2e, "Noted, I'll wait.");
 			await ended(e2e, 2);
 			await idle(e2e);
-			assert.equal(e2e.service.scout.approvals.by(Number(conversationId)), undefined, "no approval was recorded");
+			assert.equal(e2e.service.scout.approvals.approver(Number(conversationId)), undefined, "no approval was recorded");
 			assert.deepEqual(written, []);
 		});
 	});
@@ -291,17 +291,163 @@ describe("e2e: approvals", () => {
 				// A bare "approve" from Bob is only kept as context: it is not a request, so he isn't answered either.
 				const posts = inThread(e2e, ts).length;
 				await say(e2e, ts, BOB, "approve");
-				assert.equal(e2e.service.scout.approvals.by(Number(conversationId)), undefined, "nothing was recorded");
+				assert.equal(e2e.service.scout.approvals.approver(Number(conversationId)), undefined, "nothing was recorded");
 				assert.equal(inThread(e2e, ts).length, posts);
 				// Asking Scout outright gets the reason.
 				await e2e.mention("approve", { user: BOB, threadTs: ts });
 				await until(() => inThread(e2e, ts).some((c) => /<@U0BOB00001> You \(bob\) can't change acme\/app/.test(String(c.args.text))), WAIT, "Bob to be told no");
-				assert.equal(e2e.service.scout.approvals.by(Number(conversationId)), undefined, "still nothing recorded");
+				assert.equal(e2e.service.scout.approvals.approver(Number(conversationId)), undefined, "still nothing recorded");
 				assert.deepEqual(written, []);
 				await idle(e2e);
 			},
 			{ roles: { approve: { "*": ["admins", "users"] } }, env: { SCOUT_REQUESTER_CHECK: "enforce" } },
 		);
+	});
+});
+
+/** Two servers whose tools change things, grafana's write_rules and billing's refund_all; `written` records each change. */
+async function twoServers() {
+	const written: string[] = [];
+	const make = (name: string, tool: string) => {
+		const server = new McpServer({ name, version: "1" });
+		server.registerTool(tool, { description: tool, annotations: { readOnlyHint: false } }, async () => {
+			written.push(`${name}:${tool}`);
+			return { content: [{ type: "text", text: "done" }] };
+		});
+		return server;
+	};
+	const servers: Record<string, McpServer> = { grafana: make("grafana", "write_rules"), billing: make("billing", "refund_all") };
+	const mcp = await connectMcp({ servers: { grafana: { command: "unused", writes: "approve" }, billing: { command: "unused", writes: "approve" } } }, (name) => {
+		const [client, other] = InMemoryTransport.createLinkedPair();
+		void servers[name]!.connect(other);
+		return client;
+	});
+	return { mcp, written, close: () => Promise.all(mcp.map((c) => c.client.close())) };
+}
+
+async function withTwoServers(body: (e2e: E2e, written: string[]) => Promise<void>, options: { roles?: unknown; env?: Record<string, string> } = {}): Promise<void> {
+	const s = await twoServers();
+	try {
+		await withScout({ ...options, mcp: s.mcp }, (e2e) => body(e2e, s.written));
+	} finally {
+		await s.close();
+	}
+}
+
+const refundAll = () => fauxAssistantMessage([fauxToolCall("mcp__billing__refund_all", {})], toolUse);
+const buttonsPosted = (e2e: E2e) => e2e.slack.called("chat.postMessage").filter((c) => JSON.stringify(c.args.blocks ?? []).includes("scout_approve")).length;
+
+/** What an approval covers: a change that was asked for and is waiting, exactly as asked, until it's used or declined. */
+describe("e2e: an approval covers what was asked, and nothing else", () => {
+	it("takes no approval when nothing is waiting: \"go ahead\" or \"approve\" to a question doesn't let the next change through", async () => {
+		await withTwoServers(async (e2e, written) => {
+			for (const reply of ["go ahead", "approve"]) {
+				e2e.faux.setResponses([fauxAssistantMessage("Want me to look at the alert rules? I'd only read them.")]);
+				const ts = await e2e.mention("can you look at the disk alert?");
+				await saidSoon(e2e, "I'd only read them");
+				await idle(e2e);
+				const told: string[] = [];
+				e2e.faux.setResponses([refundAll(), remember(told, `Refunding needs approval (${reply}).`)]);
+				await e2e.mention(reply, { threadTs: ts });
+				await saidSoon(e2e, `Refunding needs approval (${reply}).`);
+				await idle(e2e);
+				assert.deepEqual(written, [], `"${reply}" with nothing waiting approved nothing`);
+				assert.match(told[0] ?? "", /needs a person's approval first/);
+			}
+			await until(() => buttonsPosted(e2e) === 2, WAIT, "each change to be asked for, with buttons");
+		});
+	});
+
+	it("doesn't spend an approval for one server's change on another's, and asks for that one", async () => {
+		await withTwoServers(async (e2e, written) => {
+			const told: string[] = [];
+			e2e.faux.setResponses([writeRules(), remember(told, "Raising the threshold needs approval. Reply approve.")]);
+			const ts = await e2e.mention("raise the disk alert threshold");
+			await until(() => buttonsPosted(e2e) === 1, WAIT, "the approval buttons");
+			await idle(e2e);
+			// Approved for grafana; the run calls billing instead.
+			e2e.faux.setResponses([refundAll(), remember(told, "REFUND-NEEDS-ITS-OWN")]);
+			await say(e2e, ts, ANN, "approve");
+			await saidSoon(e2e, "REFUND-NEEDS-ITS-OWN");
+			await idle(e2e);
+			assert.deepEqual(written, [], "the approval for grafana didn't cover billing");
+			assert.match(told[1] ?? "", /needs a person's approval first/);
+			await until(() => buttonsPosted(e2e) === 2, WAIT, "the refund to be asked for in its own right");
+			// Approving the refund itself lets that one through.
+			e2e.faux.setResponses([refundAll(), remember(told, "REFUNDED")]);
+			await say(e2e, ts, ANN, "approve");
+			await saidSoon(e2e, "REFUNDED");
+			await idle(e2e);
+			assert.deepEqual(written, ["billing:refund_all"]);
+		});
+	});
+
+	it("doesn't let an approval cover a call that changed since it was asked for (a steer in between)", async () => {
+		await withGrafana(async (e2e, written) => {
+			const told: string[] = [];
+			e2e.faux.setResponses([
+				fauxAssistantMessage([fauxToolCall("mcp__grafana__write_rules", { threshold: 90 })], toolUse),
+				remember(told, "I'd set the disk alert to 90%. Reply approve, or react 👍."),
+			]);
+			await e2e.mention("raise the disk alert threshold to 90%");
+			await until(() => buttonsPosted(e2e) === 1, WAIT, "the approval buttons");
+			await idle(e2e);
+			const answerTs = String(e2e.slack.called("chat.update").at(-1)?.args.ts);
+			// Ann approves 90%; the run (steered meanwhile) calls it with 10%.
+			e2e.faux.setResponses([fauxAssistantMessage([fauxToolCall("mcp__grafana__write_rules", { threshold: 10 })], toolUse), remember(told, "10% needs its own approval.")]);
+			await react(e2e, "+1", answerTs, ANN);
+			await saidSoon(e2e, "10% needs its own approval.");
+			await idle(e2e);
+			assert.deepEqual(written, [], "the approval for 90% didn't cover 10%");
+			assert.match(told[1] ?? "", /needs a person's approval first/);
+		});
+	});
+
+	it("doesn't let someone who may not approve the change press Decline", async () => {
+		await withGrafana(
+			async (e2e, written) => {
+				e2e.host.collaborator("acme/app", "ann", "write");
+				e2e.host.collaborator("acme/app", "bob", "read");
+				const { conversationId } = await askForChange(e2e);
+				const refused = await press(e2e, "decline", conversationId, BOB);
+				assert.doesNotMatch(String(refused.text), /Declined by/);
+				assert.match(String(refused.text), /can't decline this one/);
+				assert.equal(e2e.service.scout.approvals.waiting(Number(conversationId)), true, "the change is still waiting");
+				// Ann still can approve it.
+				e2e.faux.setResponses([writeRules(), fauxAssistantMessage("Done.")]);
+				const approved = await press(e2e, "approve", conversationId, ANN);
+				assert.match(String(approved.text), /Approved by <@U0ANN00001>/);
+				await saidSoon(e2e, "Done.");
+				await idle(e2e);
+				assert.deepEqual(written, ["rules"]);
+			},
+			{ roles: {}, env: { SCOUT_REQUESTER_CHECK: "enforce" } },
+		);
+	});
+
+	it("takes back an approval not yet used when someone presses Decline", async () => {
+		await withGrafana(async (e2e, written) => {
+			const told: string[] = [];
+			const { ts, conversationId } = await askForChange(e2e, told);
+			// Ann approves, but the run checks something first and doesn't make the change yet.
+			e2e.faux.setResponses([remember(told, "Let me check the current value first.")]);
+			await say(e2e, ts, ANN, "approve");
+			await saidSoon(e2e, "Let me check the current value first.");
+			await ended(e2e, 2);
+			await idle(e2e);
+			// Then someone who may approve it declines: the approval is gone.
+			e2e.faux.setResponses([remember(told, "Understood, I won't.")]);
+			const declined = await press(e2e, "decline", conversationId, ANN);
+			assert.equal(declined.text, "✋ Declined by <@U0ANN00001>.");
+			await saidSoon(e2e, "Understood, I won't.");
+			await idle(e2e);
+			e2e.faux.setResponses([writeRules(), remember(told, "That needs approving again.")]);
+			await e2e.mention("go on then", { threadTs: ts });
+			await saidSoon(e2e, "That needs approving again.");
+			await idle(e2e);
+			assert.deepEqual(written, [], "the declined approval didn't let the change through");
+			assert.match(told.at(-1) ?? "", /needs a person's approval first/);
+		});
 	});
 });
 
@@ -315,11 +461,11 @@ describe("e2e: network access for sandboxes", () => {
 		});
 	}
 
-	const needsNetwork = (host = "registry.npmjs.org") => fauxAssistantMessage([fauxToolCall("ask_for_network", { host, why: "npm ci couldn't fetch packages" })], toolUse);
+	const needsNetwork = (host = "registry.npmjs.org", why = "npm ci couldn't fetch packages") => fauxAssistantMessage([fauxToolCall("ask_for_network", { host, why })], toolUse);
 
 	/** Ann asks for something that needs the network; waits for the question in the home channel; returns its buttons' request id. */
-	async function askForHost(e2e: E2e, told: string[], host = "registry.npmjs.org"): Promise<{ ts: string; id: string; question: string }> {
-		e2e.faux.setResponses([needsNetwork(host), remember(told, `I've asked for ${host}; I'll carry on when it's decided.`)]);
+	async function askForHost(e2e: E2e, told: string[], host = "registry.npmjs.org", why?: string): Promise<{ ts: string; id: string; question: string; blocks: string }> {
+		e2e.faux.setResponses([needsNetwork(host, why), remember(told, `I've asked for ${host}; I'll carry on when it's decided.`)]);
 		const ts = await e2e.mention("install the dependencies");
 		const posted = () => e2e.slack.called("chat.postMessage").find((c) => c.args.channel === HOME && JSON.stringify(c.args.blocks ?? []).includes("scout_egress_allow"));
 		await until(() => posted() !== undefined, WAIT, "the question in the home channel");
@@ -329,7 +475,7 @@ describe("e2e: network access for sandboxes", () => {
 		const blocks = posted()!.args.blocks as { elements?: { action_id?: string; value?: string }[] }[];
 		const id = blocks.flatMap((b) => b.elements ?? []).find((el) => el.action_id === "scout_egress_allow")?.value;
 		assert.ok(id !== undefined);
-		return { ts, id, question: String(posted()!.args.text) };
+		return { ts, id, question: String(posted()!.args.text), blocks: JSON.stringify(blocks) };
 	}
 
 	/** Someone presses Allow or Decline on the question (fixtures: action-egress-allow, action-egress-decline). */
@@ -347,10 +493,16 @@ describe("e2e: network access for sandboxes", () => {
 	it("asks the home channel when a sandbox can't reach a host, and an admin's Allow saves it to the repositories file and tells the thread", async () => {
 		await withHome(async (e2e, files, file) => {
 			const told: string[] = [];
-			const { ts, id, question } = await askForHost(e2e, told);
+			const { ts, id, question, blocks } = await askForHost(e2e, told, "registry.npmjs.org", "npm ci couldn't fetch packages <!channel> <https://evil.example|click here>");
 			assert.match(told[0] ?? "", /I've asked whoever runs me to allow registry\.npmjs\.org for app's sandboxes\. I'll say here when they decide\./);
-			assert.match(question, /A thread|<https?:\/\/[^|]+\|A thread>/);
-			assert.match(question, /in \*app\* couldn't reach `registry\.npmjs\.org`: npm ci couldn't fetch packages\nAllow `registry\.npmjs\.org` for app's sandboxes\?/);
+			// The host comes first and plainly, with what allowing it means; the reason is labelled as Scout's, in plain text.
+			assert.equal(question, "Allow `registry.npmjs.org` for app's sandboxes?");
+			assert.match(blocks, /lets every new sandbox for app connect to `registry\.npmjs\.org` from now on/);
+			const parsed = JSON.parse(blocks) as { type: string; text?: { type: string; text: string }; elements?: { type: string; text?: string }[] }[];
+			const reason = parsed.flatMap((b) => b.elements ?? []).find((e) => e.text?.startsWith("Scout's reason: "));
+			assert.equal(reason?.type, "plain_text", "the model's words aren't rendered as markup");
+			assert.equal(reason?.text, "Scout's reason: npm ci couldn't fetch packages <!channel> <https://evil.example|click here>");
+			assert.doesNotMatch(JSON.stringify(parsed.filter((b) => b.text?.type === "mrkdwn")), /evil\.example|<!channel>/, "nothing of it in the markup");
 
 			// A person who isn't an approver can't decide it, and is told so privately; it stays open.
 			const refused = await decide(e2e, true, id, BOB);
@@ -384,6 +536,43 @@ describe("e2e: network access for sandboxes", () => {
 			assert.equal(declined.text, "✋ Declined by <@U0ANN00001>: `example.org` for app.");
 			await until(() => inThread(e2e, ts).some((c) => /<@U0ANN00001> declined `example\.org` for app's sandboxes, so I'll have to do without it\./.test(String(c.args.text))), WAIT, "the thread to be told");
 			assert.equal(JSON.parse(readFileSync(file, "utf8"))[0].egress, undefined);
+		});
+	});
+
+	it("lets nobody allow a host until the roles file names egress approvers (approvers for every server don't count)", async () => {
+		await withScout({ roles: { approve: { "*": ["admins"] } }, env: { SCOUT_REFLECT_CHANNEL: "scout" } }, async (e2e, files) => {
+			e2e.slack.channels.set(HOME, { id: HOME, name: "scout", is_channel: true, is_private: false, is_member: true });
+			const told: string[] = [];
+			e2e.faux.setResponses([needsNetwork(), remember(told, "I've asked.")]);
+			await e2e.mention("install the dependencies");
+			await saidSoon(e2e, "I've asked.");
+			await ended(e2e, 1);
+			await idle(e2e);
+			const home = e2e.slack.called("chat.postMessage").filter((c) => c.args.channel === HOME && String(c.args.text).includes("registry.npmjs.org"));
+			assert.equal(home.length, 1, "the home channel hears about it");
+			assert.equal(JSON.stringify(home[0]!.args.blocks ?? []).includes("scout_egress_allow"), false, "with no Allow button");
+			assert.match(String(home[0]!.args.text), /egress approvers/);
+			assert.match(told[0] ?? "", /nobody is named to decide network access/);
+			// Ann, an admin (approver for every server), presses an Allow from before: refused.
+			const refused = await decide(e2e, true, "1", ANN);
+			assert.match(String(refused.text), /name egress approvers/);
+			assert.equal(JSON.parse(readFileSync(join(files.dir, "repos.json"), "utf8"))[0].egress, undefined, "nothing was saved");
+			assert.equal(e2e.service.config.repos.find((r) => r.name === "app")?.egress, undefined);
+		});
+	});
+
+	it("won't ask for an address, a range, or a host inside the network, and says why", async () => {
+		await withHome(async (e2e) => {
+			const told: string[] = [];
+			for (const host of ["0.0.0.0/0", "169.254.169.254", "metadata.google.internal", "*.amazonaws.com"]) {
+				e2e.faux.setResponses([needsNetwork(host), remember(told, `Couldn't ask for ${host}.`)]);
+				await e2e.mention(`fetch from ${host}`);
+				await saidSoon(e2e, `Couldn't ask for ${host}.`);
+				await idle(e2e);
+			}
+			assert.equal(told.length, 4);
+			for (const t of told) assert.match(t, /isn't something I can ask to allow/);
+			assert.equal(e2e.slack.called("chat.postMessage").some((c) => c.args.channel === HOME && JSON.stringify(c.args.blocks ?? []).includes("scout_egress")), false, "nothing was asked");
 		});
 	});
 

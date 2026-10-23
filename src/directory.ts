@@ -94,9 +94,10 @@ function unquote(value: string): string {
  * Roles, by the identity provider's groups. The operator's file, not the profile Scout edits:
  * - `request`: who may ask for work (start, steer, approve) in a repository, by its name or `*`. With it, Scout checks
  *   groups instead of asking the code host (which tells only its admins what permission someone else has).
- * - `approve`: who may approve a change made through a tool (mcp.ts `writes: "approve"`), per MCP server or `*`.
+ * - `approve`: who may approve a change made through a tool (mcp.ts `writes: "approve"`), per MCP server or `*`; and,
+ *   under `egress`, who may let a repository's sandboxes reach a new host (egress.ts). `*` doesn't cover egress.
  *
- *     { "request": { "*": ["admins", "users"] }, "approve": { "*": ["admins"] } }
+ *     { "request": { "*": ["admins", "users"] }, "approve": { "*": ["admins"], "egress": ["admins"] } }
  */
 export type Roles = { request?: Record<string, string[]>; approve?: Record<string, string[]> };
 
@@ -108,6 +109,18 @@ export function loadRoles(path: string | undefined): Roles {
 export function approversOf(roles: Roles, server: string): string[] | undefined {
 	return roles.approve?.[server] ?? roles.approve?.["*"];
 }
+
+/**
+ * The groups that may widen a sandbox's network (egress.ts): only those named for `egress` itself, never `*`.
+ * Undefined when none are named, and then nobody may.
+ */
+export function egressApproversOf(roles: Roles): string[] | undefined {
+	const groups = roles.approve?.egress;
+	return groups === undefined || groups.length === 0 ? undefined : groups;
+}
+
+export const NO_EGRESS_APPROVERS =
+	"nobody is named to decide network access yet. Whoever runs me has to name egress approvers in the roles file (`\"approve\": { \"egress\": [groups] }` in SCOUT_ROLES_FILE).";
 
 /** The groups that may ask for work in `repo`; undefined when the roles file says nothing (the code host decides). */
 export function requestersOf(roles: Roles, repo: string): string[] | undefined {

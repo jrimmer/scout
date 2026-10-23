@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -20,9 +21,8 @@ import { redact } from "./scan.ts";
  *
  * Changes go through code by default: a server's tools that don't say they're read-only (MCP's `readOnlyHint`) aren't
  * offered, so a team keeps what Scout may change in a repository and reviews it as a pull request. `writes: "approve"`
- * offers them, but each call waits for a person in the thread to reply "approve" (one approval, one change, within 15
- * minutes); `writes: "allow"`
- * offers every tool as it is, for a trusted server that doesn't mark its tools.
+ * offers them, but each call waits for a person in the thread to reply "approve" (one approval for that exact call,
+ * within 15 minutes); `writes: "allow"` offers every tool as it is, for a trusted server that doesn't mark its tools.
  *
  * `SCOUT_MCP_FILE` lists the servers. `${NAME}` in `env` and `headers` is read from Scout's environment:
  *
@@ -45,9 +45,34 @@ export type McpServerConfig = {
 
 export type Writes = "off" | "approve" | "allow";
 
+/** A change a tool would make: the server and tool it goes to, and its arguments. */
+export type Change = { server: string; tool: string; args: unknown };
+
+/** What an approval is bound to: server, tool, and a hash of the arguments (keys sorted, so their order doesn't matter). */
+export function changeKey(change: Change): string {
+	const canonical = (value: unknown): unknown =>
+		Array.isArray(value)
+			? value.map(canonical)
+			: value !== null && typeof value === "object"
+				? Object.fromEntries(
+						Object.keys(value)
+							.sort()
+							.map((k) => [k, canonical((value as Record<string, unknown>)[k])]),
+					)
+				: value;
+	const hash = createHash("sha256")
+		.update(JSON.stringify(canonical(change.args ?? {})))
+		.digest("hex");
+	return `${change.server}/${change.tool}/${hash}`;
+}
+
+const serverOf = (key: string | null | undefined) => (key === null || key === undefined ? undefined : key.slice(0, key.indexOf("/")));
+
 /**
- * Approvals, kept in Scout's database so a restart loses none: who approved a change in which thread (until it's used
- * or 15 minutes pass), whether a change is waiting for one, and which of Scout's answers asked, where a 👍 approves.
+ * Approvals, kept in Scout's database so a restart loses none. A tool call that needs one records the change it would
+ * make (`ask`); when the run ends, that change is what waits in its answer (`answered`), where a 👍 approves. An
+ * approval is given only while a change waits, and only for that change: the same server, tool and arguments, so a
+ * run steered in between can't spend it on something else. Using it ends it, and so do 15 minutes and a Decline.
  */
 export class Approvals {
 	readonly #db: DatabaseSync;
@@ -67,62 +92,106 @@ export class Approvals {
 				given_until INTEGER
 			);
 		`);
-		// Which server's change is waiting, so an Approve button can check the right approvers (added after 1.0's first data).
-		const columns = this.#db.prepare("PRAGMA table_info(approvals)").all() as { name: string }[];
-		if (!columns.some((c) => c.name === "asked_for")) this.#db.exec("ALTER TABLE approvals ADD COLUMN asked_for TEXT");
+		const columns = () => (this.#db.prepare("PRAGMA table_info(approvals)").all() as { name: string }[]).map((c) => c.name);
+		// The server alone, from before approvals were bound to the change; no longer read.
+		if (!columns().includes("asked_for")) this.#db.exec("ALTER TABLE approvals ADD COLUMN asked_for TEXT");
+		if (!columns().includes("waiting_for")) {
+			// The change asked for in the run going on now, the one waiting in its answer, and the one approved (changeKey).
+			// What was asked or approved before these were kept isn't bound to a change, so it's dropped: Scout asks again.
+			this.#db.exec(`
+				ALTER TABLE approvals ADD COLUMN asking TEXT;
+				ALTER TABLE approvals ADD COLUMN waiting_for TEXT;
+				ALTER TABLE approvals ADD COLUMN given_for TEXT;
+				UPDATE approvals SET asked = 0, asked_in = NULL, given_by = NULL, given_until = NULL;
+			`);
+		}
 	}
 
-	/** A change to `server` in this thread waited for approval: the answer Scout gives next is where people can react 👍. */
-	ask(conversationId: number, server?: string): void {
+	/** This change waited for approval in the run going on now: the answer Scout gives next is where people approve it. */
+	ask(conversationId: number, change: Change): void {
 		this.#db
-			.prepare("INSERT INTO approvals (conversation_id, asked, asked_for) VALUES (?, 1, ?) ON CONFLICT DO UPDATE SET asked = 1, asked_for = excluded.asked_for")
-			.run(conversationId, server ?? null);
+			.prepare("INSERT INTO approvals (conversation_id, asked, asking) VALUES (?, 1, ?) ON CONFLICT DO UPDATE SET asked = 1, asking = excluded.asking")
+			.run(conversationId, changeKey(change));
 	}
 
-	/** The server whose change the conversation's latest request for approval is for, if known. */
+	/** The server whose change is waiting for approval (or approved and not yet made), if any. */
 	askedFor(conversationId: number): string | undefined {
-		const row = this.#db.prepare("SELECT asked_for FROM approvals WHERE conversation_id = ?").get(conversationId) as { asked_for: string | null } | undefined;
-		return row?.asked_for ?? undefined;
+		const row = this.#db.prepare("SELECT waiting_for, given_for FROM approvals WHERE conversation_id = ?").get(conversationId) as
+			| { waiting_for: string | null; given_for: string | null }
+			| undefined;
+		return serverOf(row?.waiting_for) ?? serverOf(row?.given_for);
 	}
 
 	/** A run ended with its answer in message `ts`: that's where a 👍 approves if the run asked, else nowhere. */
 	answered(conversationId: number, ts: string | undefined): void {
 		this.#db
-			.prepare("UPDATE approvals SET asked_in = CASE WHEN asked = 1 THEN ? END, asked = 0 WHERE conversation_id = ?")
+			.prepare(
+				`UPDATE approvals SET asked_in = CASE WHEN asked = 1 THEN ? END, waiting_for = CASE WHEN asked = 1 THEN asking END,
+				 asking = NULL, asked = 0 WHERE conversation_id = ?`,
+			)
 			.run(ts ?? null, conversationId);
 	}
 
 	/** Whether the conversation's latest answer asked for approval of a change. */
 	waiting(conversationId: number): boolean {
-		return this.#db.prepare("SELECT 1 FROM approvals WHERE conversation_id = ? AND asked_in IS NOT NULL").get(conversationId) !== undefined;
+		return this.#db.prepare("SELECT 1 FROM approvals WHERE conversation_id = ? AND asked_in IS NOT NULL AND waiting_for IS NOT NULL").get(conversationId) !== undefined;
 	}
 
 	/** The conversation whose answer in message `ts` asked for approval, if one did. */
 	askedIn(ts: string): number | undefined {
-		const row = this.#db.prepare("SELECT conversation_id FROM approvals WHERE asked_in = ?").get(ts) as { conversation_id: number } | undefined;
+		const row = this.#db.prepare("SELECT conversation_id FROM approvals WHERE asked_in = ? AND waiting_for IS NOT NULL").get(ts) as { conversation_id: number } | undefined;
 		return row?.conversation_id;
 	}
 
-	grant(conversationId: number, by: string, now = Date.now(), forMs = 15 * 60 * 1000): void {
-		this.#db
+	/** `by` approves the change waiting in this conversation, and only that one; false when nothing is waiting. */
+	grant(conversationId: number, by: string, now = Date.now(), forMs = 15 * 60 * 1000): boolean {
+		const done = this.#db
 			.prepare(
-				`INSERT INTO approvals (conversation_id, given_by, given_until) VALUES (?, ?, ?)
-				 ON CONFLICT DO UPDATE SET given_by = excluded.given_by, given_until = excluded.given_until`,
+				`UPDATE approvals SET given_by = ?, given_until = ?, given_for = waiting_for
+				 WHERE conversation_id = ? AND asked_in IS NOT NULL AND waiting_for IS NOT NULL`,
 			)
-			.run(conversationId, by, now + forMs);
+			.run(by, now + forMs, conversationId);
+		return done.changes > 0;
 	}
 
-	/** Who approved, while it lasts and hasn't been used. */
-	by(conversationId: number, now = Date.now()): string | undefined {
+	/** Who approved exactly this change, while it lasts and hasn't been used. */
+	by(conversationId: number, change: Change, now = Date.now()): string | undefined {
 		const row = this.#db
-			.prepare("SELECT given_by FROM approvals WHERE conversation_id = ? AND given_until > ?")
+			.prepare("SELECT given_by FROM approvals WHERE conversation_id = ? AND given_until > ? AND given_for = ?")
+			.get(conversationId, now, changeKey(change)) as { given_by: string } | undefined;
+		return row?.given_by;
+	}
+
+	/** Who approved this conversation's change, whatever it is, while it lasts and hasn't been used. */
+	approver(conversationId: number, now = Date.now()): string | undefined {
+		const row = this.#db
+			.prepare("SELECT given_by FROM approvals WHERE conversation_id = ? AND given_until > ? AND given_for IS NOT NULL")
 			.get(conversationId, now) as { given_by: string } | undefined;
 		return row?.given_by;
 	}
 
-	/** An approval covers one change: using it ends it, so the next change needs its own. */
+	/** Whether a change waits for a decision here, or was approved and not yet made: what a Decline can stop. */
+	pending(conversationId: number, now = Date.now()): boolean {
+		return this.waiting(conversationId) || this.approver(conversationId, now) !== undefined;
+	}
+
+	/** An approval covers one change: using it ends it (and the wait for that change), so the next needs its own. */
 	use(conversationId: number): void {
-		this.#db.prepare("UPDATE approvals SET given_by = NULL, given_until = NULL WHERE conversation_id = ?").run(conversationId);
+		this.#db
+			.prepare(
+				`UPDATE approvals SET given_by = NULL, given_until = NULL, given_for = NULL,
+				 asked_in = CASE WHEN waiting_for = given_for THEN NULL ELSE asked_in END,
+				 waiting_for = CASE WHEN waiting_for = given_for THEN NULL ELSE waiting_for END
+				 WHERE conversation_id = ?`,
+			)
+			.run(conversationId);
+	}
+
+	/** Declined: nothing waits any more, and an approval given but not yet used is taken back. */
+	decline(conversationId: number): void {
+		this.#db
+			.prepare("UPDATE approvals SET given_by = NULL, given_until = NULL, given_for = NULL, asked_in = NULL, waiting_for = NULL WHERE conversation_id = ?")
+			.run(conversationId);
 	}
 
 	close(): void {
@@ -227,16 +296,25 @@ export async function mcpExtension(
 					description: `${tool.description ?? tool.name} (from ${connection.name}${gated ? "; it changes things, so a person in the thread has to approve first" : ""})`,
 					parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
 					execute: async (args, api, context) => {
-						const approver = gated ? approvals?.by(api.conversationId) : undefined;
-						if (gated && approver === undefined) {
-							approvals?.ask(api.conversationId, connection.name);
-							throw new Error(
-								`${tool.name} changes ${connection.name}, so it needs a person's approval first. Say exactly what you'll change and why, ask the people in this thread to reply "approve" or react 👍 to your answer, and call it again once someone has. An approval covers this one change, for 15 minutes; each further change needs its own.`,
-							);
+						if (gated) {
+							// An approval covers exactly the call it was asked for: this server, this tool, these arguments.
+							const change = { server: connection.name, tool: tool.name, args };
+							const approver = approvals?.by(api.conversationId, change);
+							if (approver === undefined) {
+								approvals?.ask(api.conversationId, change);
+								throw new Error(
+									`${tool.name} changes ${connection.name}, so it needs a person's approval first. Say exactly what you'll change and why, ask the people in this thread to reply "approve" or react 👍 to your answer, and once someone has, call it again with the same arguments. An approval covers this one call as you asked for it, for 15 minutes; a different call, or each further change, needs its own.`,
+								);
+							}
+							const refused = await refuseApprover?.(approver, connection.name);
+							if (refused !== undefined) {
+								// Not theirs to give: it's spent, and the change waits for someone who may.
+								approvals?.use(api.conversationId);
+								approvals?.ask(api.conversationId, change);
+								throw new Error(`The approval doesn't cover this: ${refused} Ask someone who may to reply "approve" or react 👍.`);
+							}
+							approvals?.use(api.conversationId);
 						}
-						const refused = approver === undefined ? undefined : await refuseApprover?.(approver, connection.name);
-						if (refused !== undefined) throw new Error(`The approval doesn't cover this: ${refused} Ask someone who may to reply "approve" or react 👍.`);
-						if (gated) approvals?.use(api.conversationId);
 						if (connection.channels !== undefined) {
 							const channel = (await api.snapshot(ThreadDoc, api.conversationId as ConversationId, context))?.channelName ?? "";
 							if (!connection.channels.includes(channel)) {
