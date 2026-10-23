@@ -33,6 +33,7 @@ const run = promisify(execFile);
  *
  *     npm run bench:mine                          # up to 20 commits
  *     npm run bench:mine -- --max 50 --repo spoond
+ *     npm run bench:mine -- --again               # once more, those whose tests failed even with the fix
  */
 
 /** What a language's fixes look like, and how its tests run. Only languages the team's repositories use. */
@@ -268,8 +269,8 @@ export async function draft(mirror: string, c: Candidate): Promise<EvalTask[]> {
 
 /**
  * Whether a candidate's tests fail before the fix (and not for want of building) and pass with it, in a sandbox of the
- * repository at the fix's parent with its tests put in, as a change task's are after the work; and whether the packages it changed pass their tests with it,
- * so a later change breaking them means something. `scout` must have the candidate's repository at that commit, under
+ * repository at the fix's parent with its tests put in, as a change task's are after the work; and whether the packages
+ * it changed pass their tests with it, so a later change breaking them means something. `scout` must have the candidate's repository at that commit, under
  * `repoName` (evalRepos).
  */
 export async function validate(
@@ -279,7 +280,7 @@ export async function validate(
 	repoName: string,
 	fileAt: (task: EvalTask, ref: string, path: string) => Promise<Uint8Array>,
 	context: Context = BACKGROUND_CONTEXT,
-): Promise<{ ok: true; suite: boolean } | { ok: false; why: string }> {
+): Promise<{ ok: true; suite: boolean } | { ok: false; why: string; again?: boolean; detail?: string }> {
 	const conversation = await scout.harness.createConversation(
 		{
 			ownership: { kind: "ownerless" },
@@ -302,46 +303,57 @@ export async function validate(
 		for (const path of c.tests) await copyIn(env, `${root}/${path}`, await fileAt(task, c.commit, path));
 		const before = await sh(command!);
 		if (before.code === 0) return { ok: false, why: "its tests pass without the fix" };
-		if (LANGS[c.lang]!.broken.test(before.output)) return { ok: false, why: "its tests don't build without the fix" };
 		for (const change of c.changes) {
 			if (change.deleted) await sh(`rm -f ${quote(change.path)}`, 30);
 			else await copyIn(env, `${root}/${change.path}`, await fileAt(task, c.commit, change.path));
 		}
 		const after = await sh(command!);
-		if (after.code !== 0) return { ok: false, why: "its tests fail with the fix too" };
+		// Failing with the fix too is most often the sandbox (a download it can't reach), not the fix: worth another try.
+		if (after.code !== 0) return { ok: false, why: "its tests fail with the fix too", again: true, detail: firstError(after.output) };
+		// Judged only once they run with the fix, so a sandbox that can't build anything isn't taken for this.
+		if (LANGS[c.lang]!.broken.test(before.output)) return { ok: false, why: "its tests don't build without the fix" };
 		return { ok: true, suite: suite !== undefined && (await sh(suite)).code === 0 };
 	} finally {
 		await scout.workspaces.remove(conversation.id).catch(() => {});
 	}
 }
 
-/** What was tried, one line each: never tried again. */
-type Tried = { repo: string; commit: string; at: string; tasks?: string[]; why?: string };
+/** The line of a failed run's output that most likely says why, for the record. */
+function firstError(output: string): string {
+	const lines = output.split("\n").map((l) => l.trim()).filter(Boolean);
+	return (lines.find((l) => /error|EOF|refused|denied|timeout|not found|cannot|unable/i.test(l)) ?? lines.at(-1) ?? "").slice(0, 300);
+}
 
-function tried(dir: string): Set<string> {
+/**
+ * What was tried, one line each: never tried again, except (with `again`) those whose tests didn't pass even with the
+ * fix, which is most often the sandbox, after it's been put right. A later line for a commit stands for it.
+ */
+type Tried = { repo: string; commit: string; at: string; tasks?: string[]; why?: string; again?: boolean; detail?: string };
+
+function tried(dir: string, again: boolean): Set<string> {
 	const path = join(dir, "mined.jsonl");
 	if (!existsSync(path)) return new Set();
-	return new Set(
-		readFileSync(path, "utf8")
-			.split("\n")
-			.filter(Boolean)
-			.map((line) => (JSON.parse(line) as Tried).commit),
-	);
+	const last = new Map<string, Tried>();
+	for (const line of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
+		const t = JSON.parse(line) as Tried;
+		last.set(t.commit, t);
+	}
+	return new Set([...last.values()].filter((t) => !(again && t.again)).map((t) => t.commit));
 }
 
 /**
  * Up to `max` new candidates from `repos` (SCOUT_BENCH_REPOS; else every configured repository), taken in turn from
  * each repository, newest first; each checked in a sandbox, and its tasks written to the tasks directory if it holds.
- * Returns the tasks added. `opened` hears of each Scout it opens for a check, and copies go under `work`, so a stop can clear both.
+ * `again` tries once more the commits whose tests failed even with the fix. Returns the tasks added. `opened` hears of each Scout it opens for a check, and copies go under `work`, so a stop can clear both.
  */
-export async function mine(config: Config, options: { max: number; repos?: string[]; log?: (line: string) => void; work?: string; opened?: (scout: Scout | undefined) => void }): Promise<string[]> {
+export async function mine(config: Config, options: { max: number; repos?: string[]; log?: (line: string) => void; work?: string; again?: boolean; opened?: (scout: Scout | undefined) => void }): Promise<string[]> {
 	const log = options.log ?? console.log;
 	const bench = config.bench;
 	if (bench === undefined) throw new Error("the benchmark is off: set SCOUT_BENCH_MODELS");
 	const dir = bench.tasksDir;
 	mkdirSync(dir, { recursive: true });
 	const names = options.repos ?? bench.repos ?? config.repos.map((r) => r.name);
-	const done = tried(dir);
+	const done = tried(dir, options.again === true);
 	const queues: { repo: string; mirror: string; commits: { commit: string; subject: string }[] }[] = [];
 	for (const name of names) {
 		const repo = config.repos.find((r) => r.name === name);
@@ -388,12 +400,12 @@ export async function mine(config: Config, options: { max: number; repos?: strin
 					mcp: [],
 				});
 				options.opened?.(scout);
-				const verdict = await validate(scout, c, change, nameOf(change), fileAt).catch((error) => ({ ok: false as const, why: `the check broke: ${error instanceof Error ? error.message.split("\n")[0] : error}` }));
+				const verdict = await validate(scout, c, change, nameOf(change), fileAt).catch((error): Awaited<ReturnType<typeof validate>> => ({ ok: false, why: `the check broke: ${error instanceof Error ? error.message.split("\n")[0] : error}`, again: true }));
 				await scout.close();
 				scout = undefined;
 				options.opened?.(undefined);
 				if (!verdict.ok) {
-					record({ repo: q.repo, commit: c.commit, at, why: verdict.why });
+					record({ repo: q.repo, commit: c.commit, at, why: verdict.why, ...(verdict.again ? { again: true } : {}), ...(verdict.detail ? { detail: verdict.detail } : {}) });
 					log(`bench mine: ${q.repo} ${c.commit.slice(0, 10)}: no (${verdict.why})`);
 					continue;
 				}
@@ -424,7 +436,7 @@ if (import.meta.main) {
 	useScoutsKey(config.git.sshKey);
 	const max = Number(arg("--max") ?? 20);
 	const repo = arg("--repo");
-	const added = await mine(config, { max, ...(repo === undefined ? {} : { repos: [repo] }) });
+	const added = await mine(config, { max, again: process.argv.includes("--again"), ...(repo === undefined ? {} : { repos: [repo] }) });
 	console.log(`bench mine: ${added.length} task${added.length === 1 ? "" : "s"} added to ${config.bench!.tasksDir}`);
 	process.exit(0);
 }

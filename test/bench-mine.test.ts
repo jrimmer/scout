@@ -74,6 +74,10 @@ describe("finding benchmark tasks in the team's merged fixes", () => {
 	it("keeps a fix whose tests fail without it and pass with it, and tries no commit twice", { skip: !hasGo && "needs Go" }, async () => {
 		const root = tempDir("scout-mine-run-");
 		const repo = goRepo(root);
+		// Tests of what the fix adds can't build without it; tests that can't build at all are the sandbox's doing.
+		const adds = repo.commit({ "calc/calc.go": `${calc("+")}\nfunc Mul(a, b int) int {\n\treturn a * b\n}\n`, "calc/mul_test.go": `package calc\n\nimport "testing"\n\nfunc TestMul(t *testing.T) {\n\tif Mul(2, 3) != 6 {\n\t\tt.Fatal("2*3")\n\t}\n}\n` }, "fix: no way to multiply");
+		const nowhere = repo.commit({ "calc/calc.go": `${calc("+")}\nfunc Mul(a, b int) int {\n\treturn a * b\n}\n// again\n`, "calc/far_test.go": `package calc\n\nimport (\n\t"testing"\n\n\t"example.invalid/nowhere"\n)\n\nfunc TestFar(t *testing.T) { nowhere.X() }\n` }, "fix: far");
+		repo.push();
 		mkdirSync(join(root, "profile"));
 		const config = loadConfig({
 			SCOUT_MODEL: "faux/m",
@@ -91,9 +95,18 @@ describe("finding benchmark tasks in the team's merged fixes", () => {
 		const id = `app-${repo.fixed.slice(0, 10)}`;
 		assert.deepEqual(added, [`${id}-change`, `${id}-locate`], lines.join("\n"));
 		assert.deepEqual(loadTasks(config.bench!.tasksDir).map((t) => t.name).sort(), added.sort(), "the tasks it writes are tasks");
-		assert.ok(lines.some((l) => l.includes(`${repo.passing.slice(0, 10)}: no (its tests pass without the fix)`)), lines.join("\n"));
+		const said = (commit: string, why: string) => assert.ok(lines.some((l) => l.includes(`${commit.slice(0, 10)}: no (${why})`)), lines.join("\n"));
+		said(repo.passing, "its tests pass without the fix");
+		said(adds, "its tests don't build without the fix");
+		said(nowhere, "its tests fail with the fix too");
 		const tried = readFileSync(join(config.bench!.tasksDir, "mined.jsonl"), "utf8").trim().split("\n");
-		assert.equal(tried.length, 3);
-		assert.deepEqual(await mine(config, { max: 5 }), [], "nothing new");
+		assert.equal(tried.length, 5);
+		assert.equal(JSON.parse(tried.find((t) => t.includes(nowhere))!).again, true);
+		lines.length = 0;
+		assert.deepEqual(await mine(config, { max: 5, log: (line) => lines.push(line) }), [], "nothing new");
+		assert.equal(lines.length, 0);
+		assert.deepEqual(await mine(config, { max: 5, again: true, log: (line) => lines.push(line) }), []);
+		assert.equal(lines.length, 1, "only the one whose tests didn't run is tried again");
+		said(nowhere, "its tests fail with the fix too");
 	});
 });

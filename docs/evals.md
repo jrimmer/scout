@@ -108,7 +108,8 @@ the page says so. They're chosen as public benchmarks choose theirs:
   and pass with it. Each makes a change task, its commit message as the request, and one fixed in a single file also
   makes a locate task. The package's tests are its suite when they pass with the fix. Fixes from Scout's own pull
   requests count the same, and so does a correction, once the corrected fix is merged. What was tried is kept in
-  `mined.jsonl` beside the tasks, so nothing is tried twice. Each task is a JSON file with the eval task's fields,
+  `mined.jsonl` beside the tasks, so nothing is tried twice; those whose tests failed even with the fix (most often a
+  download the sandbox couldn't reach) are tried once more with `--again`. Each task is a JSON file with the eval task's fields,
   and can be edited or deleted by hand. A bigger pool comes round less often.
 
 **The charts.** What a model can do is scored 0 to 100 on fixed scales, so a score means the same thing from week to
