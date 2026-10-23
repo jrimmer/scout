@@ -9,7 +9,35 @@ Scout follows [semantic versioning](https://semver.org). The public interface is
 
 A change to any of these that needs people to act is a major version. Everything else is minor or a patch.
 
-## Unreleased
+## 1.0.0 (2026-10-22)
+
+Scout's first release: installable and runnable by people who didn't build it, with an end-to-end test suite and a
+security review behind it.
+
+### Upgrading from an earlier build
+
+Do these before or as you deploy 1.0.0:
+- **Slack app:** paste `slack-manifest.yaml` into the app's settings again and reinstall. The Ask Scout workflow step
+  now acts as whoever ran the workflow: reopen and publish any workflow that uses it, and start it as a person.
+- **Who may ask is checked by default** (`SCOUT_REQUESTER_CHECK=enforce`). Map people to code host logins
+  (`SCOUT_PEOPLE_FILE` or `SCOUT_DIRECTORY`) or name groups in `SCOUT_ROLES_FILE` (`request`); `off` must now be set
+  on purpose, and any value other than `off`, `warn` or `enforce` stops Scout at start. On GitHub, list each person in
+  the people file (`SCOUT_CODEHOST_LOGINS=separate`).
+- **Network approvals need named approvers:** add `"approve": { "egress": ["<group>"] }` to the roles file, or nobody
+  can allow a sandbox a new host from Slack. `*` doesn't cover it.
+- **The systemd unit:** take `deploy/scout.service`'s `Restart=always`, the deploy lock (`ExecStartPre=/usr/bin/flock
+  <install dir>/.deploy.lock true`, `TimeoutStartSec=15min`), and run Litestream as its own service
+  (`deploy/litestream.yml`, `deploy/litestream.service.d/scout.conf`, `/etc/litestream.env`). Then deploy with
+  `npm run deploy`.
+- **Pi Durable 1.4.0 converts `pi.sqlite` for good:** back it up first; an earlier build can't open it afterwards.
+- **Your profile's `system.md`:** add the lines on the `<@ID> (name): text` message format and "context only" messages
+  from `profile/system.md`.
+- **Monitors reading `/status.json` with the metrics token** get a reduced view now; the full snapshot needs the
+  dashboard login. Scout's reviews of other people's pull requests are comments, never approvals, so they no longer
+  count towards required approvals.
+- **Schedules** run as their owner: ones recorded as set up by Scout itself pause when next due, until someone who may
+  ask in that channel resumes them.
+
 
 ### Added
 - **Scout says when its data isn't backed up off the machine** (`docs/operations.md#backups`). It looks for Litestream's directory beside `pi.sqlite` and `scout.sqlite` (`.pi.sqlite-litestream`) and fails a database with a change Litestream hasn't copied for 15 minutes. While either isn't backed up:

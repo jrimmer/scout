@@ -114,6 +114,20 @@ A file shared in a thread is fetched with Scout's bot token only from Slack's ow
 redirects included. A remote file's link can point anywhere, so Scout doesn't follow it with the token; it says it
 couldn't download the file. What it reads is capped by the bytes that actually arrive, not the size Slack reports.
 
+## Known limits
+
+What the controls above don't cover, so you can decide what else your deployment needs:
+- **Credential patterns:** the push scan and the redactor know common token shapes and the exact values of Scout's own
+  secrets. A credential with no known shape, a bare 40-character hex token with no label (it looks like a git commit
+  hash), or one reversed, split or encoded some other way gets through.
+- **The self-review** is a second look, not a gate (see above).
+- **Names that resolve to private addresses:** Scout refuses IP addresses, internal names and over-broad wildcards as
+  egress hosts, but a public name that resolves to a private address is the sandbox substrate's to block (spoond does
+  this when a sandbox connects).
+- **Stopping at the wrong instant:** a stop or a drain waits for an answer's copy to the code host, but in the moment
+  between the answer reaching Slack and the copy starting, the copy can be lost.
+- **The dashboard speaks plain HTTP:** off loopback, put it behind TLS or keep it on a private network.
+
 ## Data
 
 Thread transcripts, notes, schedules and the audit trail are in Scout's data directory (SQLite). Retention

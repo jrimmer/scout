@@ -1,6 +1,6 @@
 {
   "name": "scout",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "A public, multiplayer coding teammate that lives in Slack.",
   "scripts": {
     "start": "node --env-file-if-exists=.env src/main.ts",
