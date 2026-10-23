@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
@@ -33,6 +33,8 @@ export type E2eOptions = {
 	now?: () => number;
 	/** Gives the code host, the alert sources and the doctor this `fetch`; slack.com goes to fake Slack either way. */
 	fetch?: typeof fetch;
+	/** More scripted models besides `faux/m` (`f` is `faux/f`), for SCOUT_FALLBACK_MODELS and the like. */
+	models?: string[];
 };
 
 export async function startScout(options: E2eOptions = {}) {
@@ -63,7 +65,7 @@ export async function startScout(options: E2eOptions = {}) {
 		SCOUT_DASH_ADDR: "off",
 		...options.env,
 	};
-	const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }] });
+	const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }, ...(options.models ?? []).map((id) => ({ id }))] });
 	const models = createModels();
 	models.setProvider(faux.provider);
 	// The doctor asks Slack itself, at slack.com: here, that's fake Slack.
@@ -108,6 +110,8 @@ export async function startScout(options: E2eOptions = {}) {
 		},
 		/** Close Scout and start it again on the same data directory, as a restart does. */
 		restart: async (): Promise<Service> => {
+			// Catching up on what was said while it was away goes on in the background: let it finish talking to Slack first.
+			await service.caughtUp;
 			await service.close();
 			service = await start();
 			return service;
@@ -136,9 +140,12 @@ export async function startScout(options: E2eOptions = {}) {
 		said: (): string[] => slack.calls.filter((c) => c.method === "chat.postMessage" || c.method === "chat.update").map((c) => String(c.args.text)),
 		/** Stop Scout, then the fakes this start made. */
 		close: async () => {
+			await service.caughtUp;
 			await service.close();
 			if (options.host === undefined) await host.close();
 			if (options.slack === undefined) await slack.close(starts);
+			// Repositories, sandboxes and data: thousands of files a run, which /tmp runs out of room for over a day.
+			rmSync(root, { recursive: true, force: true });
 		},
 	};
 }
