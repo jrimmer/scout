@@ -6,7 +6,8 @@ import { dirname, join, posix } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { MemoryStorage } from "@earendil-works/pi-durable";
+import type { Models } from "@earendil-works/pi-ai/models";
+import { AssistantEntry, MemoryStorage } from "@earendil-works/pi-durable";
 import type { Config } from "./config.ts";
 import { ThreadDoc } from "./docs.ts";
 import { type EvalTask, evalConfig, evalRepos, fakeCodeHost, loadTasks } from "./evals.ts";
@@ -21,8 +22,9 @@ const run = promisify(execFile);
  * repository's base branch that came with tests. A candidate is a commit whose subject says it fixes something, that
  * changes a few source files of one language and the tests that show it. It's kept only if, in a sandbox, its tests
  * fail on its parent (and not because they don't build: tests of something the fix adds would ask for what the request
- * can't say) and pass with the fix. Each makes a change task (the fix's tests hidden until after the work, its
- * description as the request) and, when it fixed one file, a locate task (its tests given; which functions it changed).
+ * can't say) and pass with the fix. Each makes a change task (the fix's tests hidden until after the work) and, when it
+ * fixed one file, a locate task (its tests given; which functions it changed). The request is the problem as someone
+ * might have reported it before the fix (`problem`), not the commit message, which often says how it was fixed.
  *
  * Fixes that Scout's own pull requests made count the same, and so does a thread where someone corrected Scout, once
  * the corrected fix is merged.
@@ -233,15 +235,14 @@ async function commands(mirror: string, c: Candidate): Promise<{ command: string
 }
 
 /** The tasks a candidate makes, unchecked: a change, and a locate when the fix was in one file's functions. */
-export async function draft(mirror: string, c: Candidate): Promise<EvalTask[]> {
+export async function draft(mirror: string, c: Candidate, problem: string): Promise<EvalTask[]> {
 	const { command, suite } = await commands(mirror, c);
 	const id = `${c.repo}-${c.commit.slice(0, 10)}`;
-	const body = bodyText(c.body);
 	const change: EvalTask = {
 		name: `${id}-change`,
 		repo: c.repo,
 		ref: c.parent,
-		request: [described(c.subject), body].filter(Boolean).join("\n\n"),
+		request: problem,
 		check: { hidden: { ref: c.commit, paths: c.tests }, command, ...(suite === undefined ? {} : { suite }) },
 	};
 	const tasks = [change];
@@ -250,21 +251,64 @@ export async function draft(mirror: string, c: Candidate): Promise<EvalTask[]> {
 	if (c.sources.length === 1 && functions.length > 0) {
 		const named = Object.entries(c.testNames).flatMap(([f, names]) => names.map((n) => `"${n}" (${f})`));
 		const failing = named.length === 0 ? `The tests in ${Object.keys(c.testNames).join(", ")} fail.` : `${named.length === 1 ? "The test" : "The tests"} ${named.join(", ")} ${named.length === 1 ? "fails" : "fail"}.`;
-		// What the fix was for helps, unless it gives the answer away.
-		const what = described(c.subject);
-		const base = posix.basename(file!).replace(/\.[^.]+$/, "");
-		const gives = [base, ...functions].some((w) => new RegExp(`\\b${w.replace(/[^\w]/g, "\\$&")}\\b`, "i").test(what));
 		tasks.push({
 			name: `${id}-locate`,
 			kind: "locate",
 			repo: c.repo,
 			ref: c.parent,
 			given: { ref: c.commit, paths: c.tests },
-			request: `${failing}${gives || what === "" ? "" : ` They were written for this fix: "${what.replace(/\.$/, "")}".`} Where does that need fixing?`,
+			request: `${failing}\n\n${problem}\n\nWhere does that need fixing?`,
 			check: { locate: { file: file!, functions } },
 		});
 	}
 	return tasks;
+}
+
+/**
+ * The problem a fix solved, as a teammate might have reported it before anyone fixed it: what goes wrong and what
+ * should happen, written by Scout's model from the commit message and the fix's tests. Not the commit message itself:
+ * here those often say how the fix was made, which would make a coding task one of copying it out (SWE-bench's requests
+ * are the issues, written before the fix). Nothing it names may be what the fix changed (`gives`), and no people or
+ * ticket numbers. Undefined if the model didn't manage that in two tries.
+ */
+export async function problem(scout: Scout, c: Candidate, tests: string, context: Context = BACKGROUND_CONTEXT): Promise<string | undefined> {
+	const ask = [
+		"A bug was fixed in this repository. From the commit message and the tests that came with the fix, write the issue a teammate might have filed before anyone fixed it.",
+		"- Say what goes wrong, when, and what should happen instead, in a few plain sentences.",
+		"- Don't say how to fix it, and don't name the files, functions, types or variables the fix changed. Name only what someone using the software sees: commands, flags, settings, endpoints, messages.",
+		"- Leave out people's names, ticket and issue numbers, and dates.",
+		"Reply with the issue's text only.",
+		`The commit message:\n${described(c.subject)}\n\n${bodyText(c.body)}`.trim(),
+		`The tests that came with the fix (a diff):\n${tests.slice(0, 15_000)}`,
+	].join("\n\n");
+	let note = "";
+	for (let tries = 0; tries < 2; tries++) {
+		const text = (await answer(scout, `${ask}${note}`, context)).trim();
+		if (text === "") continue;
+		const named = gives(c, text);
+		if (named === undefined) return text;
+		note = `\n\nAn earlier draft named ${named}, which the fix changed: leave it out.`;
+	}
+	return undefined;
+}
+
+/** What in `text` names something the fix changed: a source file, or a function with a name too particular to be prose. */
+export function gives(c: Candidate, text: string): string | undefined {
+	const files = c.sources.flatMap((s) => [s, posix.basename(s)]);
+	const functions = Object.values(c.functions).flat().filter((f) => /[a-z][A-Z]|_/.test(f) || f.length >= 8);
+	return files.find((f) => text.includes(f)) ?? functions.find((f) => new RegExp(`\\b${f.replace(/[^\w]/g, "\\$&")}\\b`).test(text));
+}
+
+/** One answer from Scout's model to `prompt`, with no tools. */
+async function answer(scout: Scout, prompt: string, context: Context): Promise<string> {
+	const conversation = await scout.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: scout.workAgent.model!, extensions: [] } }, context);
+	// Pi asks for a workspace for every conversation that runs, so this one gets a sandbox it doesn't use: it goes after.
+	const settled = await (await conversation.submit({ type: "input", content: prompt }, context))
+		.wait(context)
+		.finally(() => scout.workspaces.remove(conversation.id).catch(() => {}));
+	if (settled.status !== "done" || settled.type !== "input") return "";
+	const entry = await conversation.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
+	return (entry?.model?.[0] as { content?: { type: string; text?: string }[] } | undefined)?.content?.flatMap((b) => (b.type === "text" && b.text !== undefined ? [b.text] : [])).join("\n") ?? "";
 }
 
 /**
@@ -344,9 +388,9 @@ function tried(dir: string, again: boolean): Set<string> {
 /**
  * Up to `max` new candidates from `repos` (SCOUT_BENCH_REPOS; else every configured repository), taken in turn from
  * each repository, newest first; each checked in a sandbox, and its tasks written to the tasks directory if it holds.
- * `again` tries once more the commits whose tests failed even with the fix. Returns the tasks added. `opened` hears of each Scout it opens for a check, and copies go under `work`, so a stop can clear both.
+ * `again` tries once more the commits whose tests failed even with the fix, or whose request couldn't be written. Returns the tasks added. `opened` hears of each Scout it opens for a check, and copies go under `work`, so a stop can clear both.
  */
-export async function mine(config: Config, options: { max: number; repos?: string[]; log?: (line: string) => void; work?: string; again?: boolean; opened?: (scout: Scout | undefined) => void }): Promise<string[]> {
+export async function mine(config: Config, options: { max: number; repos?: string[]; log?: (line: string) => void; work?: string; again?: boolean; models?: Models; opened?: (scout: Scout | undefined) => void }): Promise<string[]> {
 	const log = options.log ?? console.log;
 	const bench = config.bench;
 	if (bench === undefined) throw new Error("the benchmark is off: set SCOUT_BENCH_MODELS");
@@ -385,8 +429,8 @@ export async function mine(config: Config, options: { max: number; repos?: strin
 					continue;
 				}
 				checked++;
-				const tasks = (await draft(q.mirror, c)).filter((t) => !existing.has(t.name));
-				const [change] = tasks;
+				// The request comes once the fix holds: no model call for one that doesn't.
+				const [change] = (await draft(q.mirror, c, "(to come)")).filter((t) => !existing.has(t.name));
 				if (change === undefined) continue;
 				const { repos, nameOf, fileAt } = await evalRepos(config, [change], join(work, "repos"));
 				const dataDir = join(work, `data-${checked}`);
@@ -398,9 +442,16 @@ export async function mine(config: Config, options: { max: number; repos?: strin
 					context: BACKGROUND_CONTEXT,
 					watchProfile: false,
 					mcp: [],
+					...(options.models === undefined ? {} : { models: options.models }),
 				});
 				options.opened?.(scout);
-				const verdict = await validate(scout, c, change, nameOf(change), fileAt).catch((error): Awaited<ReturnType<typeof validate>> => ({ ok: false, why: `the check broke: ${error instanceof Error ? error.message.split("\n")[0] : error}`, again: true }));
+				let verdict = await validate(scout, c, change, nameOf(change), fileAt).catch((error): Awaited<ReturnType<typeof validate>> => ({ ok: false, why: `the check broke: ${error instanceof Error ? error.message.split("\n")[0] : error}`, again: true }));
+				let text: string | undefined;
+				if (verdict.ok) {
+					const tests = await git(q.mirror, ["diff", "--no-renames", c.parent, c.commit, "--", ...c.tests]);
+					text = await problem(scout, c, tests).catch(() => undefined);
+					if (text === undefined) verdict = { ok: false, why: "its request couldn't be written without giving the fix away", again: true };
+				}
 				await scout.close();
 				scout = undefined;
 				options.opened?.(undefined);
@@ -409,8 +460,9 @@ export async function mine(config: Config, options: { max: number; repos?: strin
 					log(`bench mine: ${q.repo} ${c.commit.slice(0, 10)}: no (${verdict.why})`);
 					continue;
 				}
+				const tasks = (await draft(q.mirror, c, text!)).filter((t) => !existing.has(t.name));
 				// A suite that fails with the fix already would blame a later change for it.
-				if (!verdict.suite) delete change.check.suite;
+				if (!verdict.suite) delete tasks[0]!.check.suite;
 				for (const task of tasks) writeFileSync(join(dir, `${task.name}.json`), `${JSON.stringify(task, null, "\t")}\n`);
 				record({ repo: q.repo, commit: c.commit, at, tasks: tasks.map((t) => t.name) });
 				added.push(...tasks.map((t) => t.name));

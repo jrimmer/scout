@@ -19,8 +19,9 @@ A change to any of these that needs people to act is a major version. Everything
 
 ### Added
 - **`npm run bench:mine` finds the benchmark's tasks** in fixes merged into the team's repositories
-  (`SCOUT_BENCH_REPOS`), keeping each fix whose tests fail without it and pass with it, in a sandbox. Each night tries
-  three new ones before the runs, so the pool grows as fixes merge.
+  (`SCOUT_BENCH_REPOS`), keeping each fix whose tests fail without it and pass with it, in a sandbox. A task's request
+  is the problem as it might have been reported before the fix, written by Scout's model, never the commit message
+  that says how it was fixed. Each night tries three new ones before the runs, so the pool grows as fixes merge.
 
 ### Fixed
 - **A request's reaction shows Scout's steps again behind a slow model.** A phase showed only once it had lasted 1.5 s.

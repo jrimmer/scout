@@ -3,7 +3,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { bodyText, candidate, described, draft, fixes, fixSubject, mine } from "../src/bench-mine.ts";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import { bodyText, type Candidate, candidate, described, draft, fixes, fixSubject, gives, mine } from "../src/bench-mine.ts";
 import { loadConfig } from "../src/config.ts";
 import { loadTasks } from "../src/evals.ts";
 import { seedRepo, tempDir } from "./helpers.ts";
@@ -43,6 +45,14 @@ describe("finding benchmark tasks in the team's merged fixes", () => {
 		assert.equal(bodyText("WHAT: x\nWHY: y\n\nLR-T: a\nCo-Authored-By: b <c>\nSigned-off-by: d"), "WHAT: x\nWHY: y");
 	});
 
+	it("won't take a request that names what the fix changed", () => {
+		const c = { sources: ["pkg/lane.go"], functions: { "pkg/lane.go": ["spoondPhase", "Open", "settle_all"] } } as unknown as Candidate;
+		assert.equal(gives(c, "Restarting after a change leaves lane.go confused."), "lane.go");
+		assert.equal(gives(c, "spoondPhase reports the wrong phase."), "spoondPhase");
+		assert.equal(gives(c, "settle_all runs twice."), "settle_all");
+		assert.equal(gives(c, "Open a lane and the phase is wrong: the lane should report running."), undefined, "a plain word isn't a name");
+	});
+
 	it("reads a fix that came with tests as a change task and, fixed in one file, a locate task", async () => {
 		const root = tempDir("scout-mine-");
 		const repo = goRepo(root);
@@ -57,18 +67,18 @@ describe("finding benchmark tasks in the team's merged fixes", () => {
 		assert.deepEqual(c.tests, ["calc/calc_test.go"]);
 		assert.deepEqual(c.functions, { "calc/calc.go": ["Add"] });
 		assert.deepEqual(c.testNames, { "calc/calc_test.go": ["TestAdd"] });
-		const [change, locate] = await draft(repo.remote, c);
+		const [change, locate] = await draft(repo.remote, c, "Adding two numbers gives their difference.");
 		assert.deepEqual(change, {
 			name: `app-${repo.fixed.slice(0, 10)}-change`,
 			repo: "app",
 			ref: repo.broken,
-			request: "Sums came out as differences.\n\nWHAT: the operator was wrong.",
+			request: "Adding two numbers gives their difference.",
 			check: { hidden: { ref: repo.fixed, paths: ["calc/calc_test.go"] }, command: "go test -count=1 -run '^(TestAdd)$' './calc'", suite: "go test -count=1 './calc'" },
 		});
 		assert.equal(locate?.kind, "locate");
 		assert.deepEqual(locate?.given, { ref: repo.fixed, paths: ["calc/calc_test.go"] });
 		assert.deepEqual(locate?.check, { locate: { file: "calc/calc.go", functions: ["Add"] } });
-		assert.equal(locate?.request, `The test "TestAdd" (calc/calc_test.go) fails. They were written for this fix: "Sums came out as differences". Where does that need fixing?`);
+		assert.equal(locate?.request, `The test "TestAdd" (calc/calc_test.go) fails.\n\nAdding two numbers gives their difference.\n\nWhere does that need fixing?`);
 	});
 
 	it("keeps a fix whose tests fail without it and pass with it, and tries no commit twice", { skip: !hasGo && "needs Go" }, async () => {
@@ -90,11 +100,28 @@ describe("finding benchmark tasks in the team's merged fixes", () => {
 			SCOUT_SANDBOX_DRIVER: "local",
 			SCOUT_BENCH_MODELS: "faux/m",
 		});
+		// The request is the problem, rewritten until it doesn't name what the fix changed.
+		const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }] });
+		const models = createModels();
+		models.setProvider(faux.provider);
+		let asked = "";
+		faux.setResponses([
+			(transcript) => {
+				asked = JSON.stringify(transcript);
+				return fauxAssistantMessage("calc.go subtracts when it should add.");
+			},
+			fauxAssistantMessage("Adding two numbers gives their difference; it should give their sum."),
+		]);
 		const lines: string[] = [];
-		const added = await mine(config, { max: 5, log: (line) => lines.push(line) });
+		const added = await mine(config, { max: 5, models, log: (line) => lines.push(line) });
 		const id = `app-${repo.fixed.slice(0, 10)}`;
 		assert.deepEqual(added, [`${id}-change`, `${id}-locate`], lines.join("\n"));
-		assert.deepEqual(loadTasks(config.bench!.tasksDir).map((t) => t.name).sort(), added.sort(), "the tasks it writes are tasks");
+		const tasks = loadTasks(config.bench!.tasksDir);
+		assert.deepEqual(tasks.map((t) => t.name).sort(), added.sort(), "the tasks it writes are tasks");
+		assert.equal(tasks.find((t) => t.kind === undefined)?.request, "Adding two numbers gives their difference; it should give their sum.");
+		assert.ok(asked.includes("sums came out as differences") || asked.includes("Sums came out as differences"), "written from the commit message");
+		assert.ok(asked.includes("TestAdd"), "and the fix's tests");
+		assert.ok(!asked.includes("Co-Authored-By"), "trailers left out");
 		const said = (commit: string, why: string) => assert.ok(lines.some((l) => l.includes(`${commit.slice(0, 10)}: no (${why})`)), lines.join("\n"));
 		said(repo.passing, "its tests pass without the fix");
 		said(adds, "its tests don't build without the fix");
@@ -103,9 +130,9 @@ describe("finding benchmark tasks in the team's merged fixes", () => {
 		assert.equal(tried.length, 5);
 		assert.equal(JSON.parse(tried.find((t) => t.includes(nowhere))!).again, true);
 		lines.length = 0;
-		assert.deepEqual(await mine(config, { max: 5, log: (line) => lines.push(line) }), [], "nothing new");
+		assert.deepEqual(await mine(config, { max: 5, models, log: (line) => lines.push(line) }), [], "nothing new");
 		assert.equal(lines.length, 0);
-		assert.deepEqual(await mine(config, { max: 5, again: true, log: (line) => lines.push(line) }), []);
+		assert.deepEqual(await mine(config, { max: 5, models, again: true, log: (line) => lines.push(line) }), []);
 		assert.equal(lines.length, 1, "only the one whose tests didn't run is tried again");
 		said(nowhere, "its tests fail with the fix too");
 	});
