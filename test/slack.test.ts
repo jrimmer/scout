@@ -148,6 +148,21 @@ describe("slack", () => {
 			assert.deepEqual(seen.reaction, [{ channel: TEAM_CHANNEL, ts: "1700000000.000900", name: "+1", user: ANN, eventTs: "1700000003.000100" }]);
 		});
 
+		it("ignores reactions from bots and other apps: no stop, retry, approval or 🔍 from them", async () => {
+			await start({ onLook: record("look") });
+			fake.users.set("U0OTHERBOT", { id: "U0OTHERBOT", name: "deploybot", is_bot: true, profile: { display_name: "", real_name: "Deploy Bot", email: "" } } as never);
+			for (const reaction of ["octagonal_sign", "repeat", "+1"]) await deliver("reaction-added", (p) => Object.assign(event(p), { user: "U0OTHERBOT", reaction }));
+			await deliver("reaction-added", (p) => Object.assign(event(p), { user: ANN, bot_id: "B0OTHER001" }));
+			await deliver("reaction-look", (p) => Object.assign(event(p), { user: "U0OTHERBOT" }));
+			assert.equal(seen.reaction, undefined);
+			assert.equal(seen.look, undefined);
+			// When Slack can't say who reacted, only a stop counts: stopping is always safe.
+			fake.queue("users.info", { ok: false, error: "fatal_error" }, { ok: false, error: "fatal_error" });
+			await deliver("reaction-added", (p) => Object.assign(event(p), { user: "U0UNKNOWN1", reaction: "+1" }));
+			await deliver("reaction-added", (p) => Object.assign(event(p), { user: "U0UNKNOWN2", reaction: "octagonal_sign" }));
+			assert.deepEqual((seen.reaction as { name: string; user: string }[]).map((r) => [r.name, r.user]), [["octagonal_sign", "U0UNKNOWN2"]]);
+		});
+
 		it("looks into a message on 🔍, finding a reply through its thread", async () => {
 			await start({ onLook: record("look") });
 			// History has only top-level messages: the reply is found in its thread.
@@ -379,16 +394,16 @@ describe("slack", () => {
 			assert.equal(done?.token, "xwfp-test-function-token");
 		});
 
-		it("fails the workflow step without a request or who's asking, or when starting fails", async () => {
+		it("fails the workflow step without a request or a person who ran it, or when starting fails", async () => {
 			await start({ onWorkflowAsk: async () => Promise.reject(new Error("Invite Scout to the channel first.")) });
 			await deliver("function-executed", (p) => Object.assign(event(p).inputs as object, { request: "  " }));
-			await deliver("function-executed", (p) => void delete (event(p).inputs as Record<string, unknown>).user_id);
+			await deliver("function-executed", (p) => void delete (event(p).inputs as Record<string, unknown>).interactivity);
 			await deliver("function-executed");
 			assert.deepEqual(
 				fake.called("functions.completeError").map((c) => c.args.error),
 				[
-					"Ask Scout needs a channel, a request, and who's asking (usually “Person who used this workflow”).",
-					"Ask Scout needs a channel, a request, and who's asking (usually “Person who used this workflow”).",
+					"Ask Scout needs a channel and a request.",
+					"Ask Scout acts for the person who runs the workflow, so a person has to start it: from a link, a shortcut or a button, not a schedule or a webhook.",
 					"Invite Scout to the channel first.",
 				],
 			);

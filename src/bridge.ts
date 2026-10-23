@@ -263,7 +263,8 @@ export class Bridge {
 		const name = await this.#options.nameOf(edit.user);
 		const text = edit.text.replaceAll(`<@${this.#options.botUserId}>`, "@Scout").trim();
 		const conversation = await harness.conversation(thread.conversationId as ConversationId, context);
-		await conversation?.submit({ type: "input", content: `${name} edited their request: ${text}`, whenBusy: "steer", requestId: `slack-edit:${edit.channel}:${edit.ts}:${text.length}` }, context);
+		const content = spoken(`${speaker(edit.user, name)} edited their request`, text);
+		await conversation?.submit({ type: "input", content, whenBusy: "steer", requestId: `slack-edit:${edit.channel}:${edit.ts}:${text.length}` }, context);
 		view.tookIn(name);
 	}
 
@@ -392,7 +393,10 @@ export class Bridge {
 		const name = await this.#options.nameOf(message.user);
 		const text = message.text.replaceAll(`<@${this.#options.botUserId}>`, "@Scout").trim();
 		const attached = await this.#attachments(thread.conversationId, message);
-		const said = [`${name}: ${text}`, ...attached.notes].join("\n");
+		// Context from someone who may not ask for work here says so, so the model doesn't take it as a request.
+		const outsider = how === "note" && !(await this.#admit(message, false, threadRepo)).ok;
+		const label = `${speaker(message.user, name)}${outsider ? ", who may not ask me for work here (context only)" : ""}`;
+		const said = [spoken(label, text), ...attached.notes].join("\n");
 		const content = attached.images.length === 0 ? said : [{ type: "text" as const, text: said }, ...attached.images];
 		const data = { user: message.user, name, text, ts: message.ts, ...(attached.notes.length > 0 ? { files: attached.notes } : {}) };
 		const requestId = `slack:${message.channel}:${message.ts}`;
@@ -471,11 +475,11 @@ export class Bridge {
 	 * A thread Scout started itself, such as a pull request review's summary: its conversation starts knowing `context`
 	 * (what Scout did and said there), so whoever replies can ask about it and Scout answers with that in mind.
 	 */
-	async openThread(thread: { channel: string; channelName: string; threadTs: string; context: string; about?: string; base?: string }): Promise<void> {
+	async openThread(thread: { channel: string; channelName: string; threadTs: string; context: string; about?: string; base?: string; repo?: string }): Promise<void> {
 		const { harness, threads, context } = this.#options;
 		const key = threadKey(thread.channel, thread.threadTs);
 		if (threads.get(key) !== undefined) return;
-		const row = await this.#startThread(key, { channel: thread.channel, channelName: thread.channelName, ts: thread.threadTs, user: "scout", text: thread.about ?? thread.context }, thread.base);
+		const row = await this.#startThread(key, { channel: thread.channel, channelName: thread.channelName, ts: thread.threadTs, user: "scout", text: thread.about ?? thread.context }, thread.base, thread.repo);
 		const conversation = await harness.conversation(row.conversationId as ConversationId, context);
 		await conversation?.submit(
 			{
@@ -516,36 +520,41 @@ export class Bridge {
 
 	/**
 	 * Work Scout starts itself, such as an alert's investigation: a thread it opened, with `context`, then `prompt` as a
-	 * request. It answers to budgets and concurrency like any request; if they say no, the thread says why.
+	 * request. It answers to budgets and concurrency like any request; if they say no, the thread says why. With `user`,
+	 * it's that person's request (a schedule's owner): admitted, audited and attributed as theirs. `repo` fixes the
+	 * repository, rather than the one the prompt names.
 	 */
-	async investigate(thread: { channel: string; channelName: string; threadTs: string; context: string; prompt: string; requestId: string; base?: string }): Promise<void> {
+	async investigate(thread: { channel: string; channelName: string; threadTs: string; context: string; prompt: string; requestId: string; base?: string; user?: string; repo?: string }): Promise<void> {
 		// The request, not the instructions around it, says which of the channel's repositories it's about.
 		await this.openThread({ ...thread, about: thread.prompt });
 		const row = this.#options.threads.get(threadKey(thread.channel, thread.threadTs));
-		if (row !== undefined) await this.work(row.conversationId, thread.prompt, thread.requestId, "look into this");
+		if (row !== undefined) await this.work(row.conversationId, thread.prompt, thread.requestId, "look into this", thread.user);
 	}
 
 	/**
 	 * Work Scout asks of one of its threads itself (an alert to look into, a red build to fix): a request in that thread,
-	 * steering it if it's busy. It answers to budgets and concurrency; if they say no, the thread says why.
+	 * steering it if it's busy. It answers to budgets and concurrency; if they say no, the thread says why. `user`: it's
+	 * done for that person (a schedule's owner), so it's admitted as them, in the thread's repository, and theirs.
 	 */
-	async work(conversationId: number, prompt: string, requestId: string, doing: string): Promise<void> {
+	async work(conversationId: number, prompt: string, requestId: string, doing: string, user = "scout"): Promise<void> {
 		const { harness, threads, context } = this.#options;
 		const row = threads.byConversation(conversationId);
 		if (row === undefined) return;
-		const channelName = (await harness.snapshot(ThreadDoc, conversationId as ConversationId, context))?.channelName ?? "";
+		const doc = await harness.snapshot(ThreadDoc, conversationId as ConversationId, context);
+		const channelName = doc?.channelName ?? "";
 		const view = await this.#view(row);
-		const admission = (await this.#options.admit?.({ user: "scout", channelName, starting: !view.busy })) ?? { ok: true };
+		const admission = (await this.#options.admit?.({ user, channelName, ...(user === "scout" || doc?.repo === undefined ? {} : { repo: doc.repo }), starting: !view.busy })) ?? { ok: true };
 		if (!admission.ok) {
 			await this.#options.surface.post(row.channel, row.threadTs, plain(`I'd ${doing}, but ${admission.reason}`));
 			return;
 		}
 		const conversation = await harness.conversation(conversationId as ConversationId, context);
 		await conversation?.submit({ type: "input", content: prompt, whenBusy: "steer", requestId }, context);
-		this.#options.audit?.record("request", { actor: "scout", conversationId, channel: channelName, detail: { as: "self", text: prompt.slice(0, 200) } });
+		if (user !== "scout") threads.asked(row.key, user);
+		this.#options.audit?.record("request", { actor: user, conversationId, channel: channelName, detail: { as: user === "scout" ? "self" : "scheduled", text: prompt.slice(0, 200) } });
 	}
 
-	async #startThread(key: string, message: Pick<IncomingMessage, "channel" | "channelName" | "ts" | "user" | "text"> & { threadTs?: string }, base?: string): Promise<ThreadRow> {
+	async #startThread(key: string, message: Pick<IncomingMessage, "channel" | "channelName" | "ts" | "user" | "text"> & { threadTs?: string }, base?: string, fixedRepo?: string): Promise<ThreadRow> {
 		const { harness, threads, context } = this.#options;
 		const model = this.#options.modelFor?.(message.channelName);
 		const agent = model === undefined ? this.#options.agent : { ...this.#options.agent, model };
@@ -559,7 +568,7 @@ export class Bridge {
 					doc.channel = message.channel;
 					doc.channelName = message.channelName;
 					doc.threadTs = threadTs;
-					const repo = this.#options.repoFor?.(message.channelName, message.text);
+					const repo = fixedRepo ?? this.#options.repoFor?.(message.channelName, message.text);
 					if (repo !== undefined) doc.repo = repo;
 					if (base !== undefined) doc.base = base;
 				},
@@ -647,6 +656,16 @@ export class Bridge {
  * ahead" or "approved": those answer ordinary questions too, and an approval should be meant as one.
  */
 const APPROVAL = /^approve[.!]*$/i;
+
+/** Who said something, as the model reads it: their Slack ID, which nobody can choose, then their display name, which anyone can. */
+function speaker(user: string, name: string): string {
+	return `<@${user}> (${name.replace(/\s+/g, " ").trim()})`;
+}
+
+/** What someone said, after `label`; more than one line is quoted, so no line in it passes for someone else's label. */
+function spoken(label: string, text: string): string {
+	return text.includes("\n") ? `${label}:\n${text.split("\n").map((line) => `> ${line}`).join("\n")}` : `${label}: ${text}`;
+}
 
 function plain(text: string): ChatMessage {
 	return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };

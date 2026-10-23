@@ -256,7 +256,7 @@ describe("bridge", () => {
 		]);
 		await bridge.onMessage(message({}));
 		await settle(threads.get(threadKey("C1", "100.1"))!.conversationId);
-		assert.match(seen, /ann: @Scout what does the build do\?/);
+		assert.match(seen, /<@UANN> \(ann\): @Scout what does the build do\?/);
 		assert.match(seen, /We use pnpm\./);
 		assert.match(seen, /You are Scout\./);
 	});
@@ -288,8 +288,8 @@ describe("bridge", () => {
 		]);
 		await bridge.onMessage(message({ user: "UBOB", text: `<@${BOT}> summarize`, ts: "100.5", threadTs: "100.1" }));
 		await settle(thread.conversationId);
-		assert.match(seen, /bob: ann, lunch\?/);
-		assert.match(seen, /ann: sure/);
+		assert.match(seen, /<@UBOB> \(bob\): ann, lunch\?/);
+		assert.match(seen, /<@UANN> \(ann\): sure/);
 	});
 
 	for (const how of ["message", "reaction"] as const) {
@@ -427,7 +427,7 @@ describe("bridge", () => {
 		assert.match(surface.sent.at(-1)?.message.text ?? "", /<@UBOB> You can't change this repository\./);
 
 		// Ann can; Bob's words in her thread are context, not work.
-		faux.setResponses([fauxAssistantMessage("on it"), (t) => fauxAssistantMessage(JSON.stringify(t).includes("bob: @Scout delete prod") ? "saw bob" : "missed")]);
+		faux.setResponses([fauxAssistantMessage("on it"), (t) => fauxAssistantMessage(JSON.stringify(t).includes("<@UBOB> (bob), who may not ask me for work here (context only): @Scout delete prod") ? "saw bob" : "missed")]);
 		await gated.onMessage(message({ ts: "600.1" }));
 		const thread = threads.get(threadKey("C1", "600.1"))!;
 		await settleGated(thread.conversationId);

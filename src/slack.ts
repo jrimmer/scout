@@ -1,5 +1,5 @@
 import { App, LogLevel, type Receiver, webApi } from "@slack/bolt";
-import type { IncomingMessage, SharedFile } from "./bridge.ts";
+import { type IncomingMessage, type SharedFile, STOP_REACTIONS } from "./bridge.ts";
 import type { ChatMessage, ChatSurface } from "./render.ts";
 import { redact } from "./scan.ts";
 
@@ -417,10 +417,16 @@ export class Slack {
 			try {
 				const channel = String(inputs.channel_id ?? "");
 				const request = String(inputs.request ?? "").trim();
-				const user = typeof inputs.user_id === "string" ? inputs.user_id : "";
-				// A request is always someone's, checked like any other: never Scout's own, which would skip that check.
-				if (channel === "" || request === "" || user === "" || handlers.onWorkflowAsk === undefined) {
-					await fail({ error: "Ask Scout needs a channel, a request, and who's asking (usually “Person who used this workflow”)." });
+				// Who's asking is whoever ran the workflow, as Slack says (`interactivity`, which a workflow's builder can't fill
+				// in), never a person typed into the step. A request is always someone's, checked like any other.
+				const interactivity = inputs.interactivity as { interactor?: { id?: unknown } } | undefined;
+				const user = typeof interactivity?.interactor?.id === "string" ? interactivity.interactor.id : "";
+				if (channel === "" || request === "" || handlers.onWorkflowAsk === undefined) {
+					await fail({ error: "Ask Scout needs a channel and a request." });
+					return;
+				}
+				if (user === "") {
+					await fail({ error: "Ask Scout acts for the person who runs the workflow, so a person has to start it: from a link, a shortcut or a button, not a schedule or a webhook." });
 					return;
 				}
 				const link = await handlers.onWorkflowAsk({ channel, user, request, ...(typeof inputs.about === "string" && inputs.about !== "" ? { about: inputs.about } : {}) });
@@ -441,8 +447,11 @@ export class Slack {
 		});
 
 		this.app.event("reaction_added", async ({ event }) => {
-			// Scout's own (👀, ✅ on requests) are status, never instructions.
+			// Scout's own (👀, ✅ on requests) are status, never instructions; another app's or bot's aren't a person's.
 			if (event.item.type !== "message" || event.user === this.botUserId) return;
+			const bot = (event as { bot_id?: string }).bot_id !== undefined ? true : await this.#isBot(event.user).catch(() => undefined);
+			// When Slack can't say, only a stop counts: stopping work is always safe, starting or approving it isn't.
+			if (bot === true || (bot === undefined && !STOP_REACTIONS.has(event.reaction))) return;
 			if (LOOK_REACTIONS.has(event.reaction) && handlers.onLook !== undefined) {
 				const found = await this.messageAt(event.item.channel, event.item.ts);
 				const info = await this.app.client.conversations.info({ channel: event.item.channel }).catch(() => undefined);
@@ -542,6 +551,18 @@ export class Slack {
 	async groupMembers(group: string): Promise<Set<string>> {
 		const members = await this.app.client.usergroups.users.list({ usergroup: group });
 		return new Set(members.users ?? []);
+	}
+
+	readonly #bots = new Map<string, boolean>();
+
+	/** Whether a Slack user is a bot or an app (Slackbot, an integration's bot user), not a person; remembered. */
+	async #isBot(user: string): Promise<boolean> {
+		const known = this.#bots.get(user);
+		if (known !== undefined) return known;
+		const info = await this.app.client.users.info({ user });
+		const bot = info.user?.is_bot === true || user === "USLACKBOT";
+		this.#bots.set(user, bot);
+		return bot;
 	}
 
 	async nameOf(user: string): Promise<string> {

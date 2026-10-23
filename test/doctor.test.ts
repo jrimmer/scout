@@ -5,7 +5,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { describe, it } from "node:test";
 import { loadConfig } from "../src/config.ts";
-import { checkBackups, reachHint, checkCodeHost, checkDashboard, checkDirectory, checkGateway, checkGitRemote, checkModel, checkProfileDir, checkRequesters, checkRestarts, checkRunning, checkSlack, checkSpoond, doctor, fetchRunning, formatChecks, restartsOf, type Running, unitOf } from "../src/doctor.ts";
+import { checkBackups, checkBudgets, reachHint, checkCodeHost, checkDashboard, checkDirectory, checkGateway, checkGitRemote, checkModel, checkProfileDir, checkRequesters, checkRestarts, checkRunning, checkSlack, checkSpoond, doctor, fetchRunning, formatChecks, restartsOf, type Running, unitOf } from "../src/doctor.ts";
 import { tempDir } from "./helpers.ts";
 
 /** A fetch that answers by URL: a status, a JSON body, and headers. */
@@ -121,6 +121,22 @@ describe("doctor", () => {
 		assert.equal(checkDashboard({ addr: "0.0.0.0:8893" }).status, "fail");
 		assert.equal(checkDashboard({ addr: "0.0.0.0:8893", auth: { user: "u", passwordHash: "h" } }).status, "ok");
 		assert.equal(checkDashboard(undefined).detail, "off");
+	});
+
+	it("warns when channels have weekly budgets but Scout has no total, so each new channel brings its own", () => {
+		const dir = tempDir("scout-doctor-limits-");
+		const file = (limits: unknown) => {
+			const path = join(dir, `${Math.random()}.json`);
+			writeFileSync(path, typeof limits === "string" ? limits : JSON.stringify(limits));
+			return path;
+		};
+		const perChannelOnly = checkBudgets(file({ weekly: { perChannel: 50 } }));
+		assert.equal(perChannelOnly.status, "warn");
+		assert.match(perChannelOnly.detail, /every new channel Scout is invited to gets another \$50/);
+		assert.match(perChannelOnly.fix ?? "", /weekly\.total/);
+		assert.equal(checkBudgets(file({ weekly: { total: 500, perChannel: 50 } })).status, "ok");
+		assert.equal(checkBudgets(file({ weekly: { channels: { team: 20 } } })).status, "ok", "named channels only don't multiply");
+		assert.equal(checkBudgets(file("{ not json")).status, "fail");
 	});
 
 	it("fails when Scout's data isn't backed up off the machine, and only warns when that's on purpose", () => {

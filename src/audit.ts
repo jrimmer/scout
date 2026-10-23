@@ -30,6 +30,7 @@ export type AuditKind =
 	| "schedule_changed"
 	| "schedule_removed"
 	| "schedule_ran"
+	| "schedule_paused"
 	| "capabilities"
 	| "egress_requested"
 	| "egress_decided";

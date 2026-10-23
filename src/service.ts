@@ -198,6 +198,7 @@ export async function startService(options: ServiceOptions) {
 		config,
 		context,
 		fetch: doFetch,
+		admit: async (channel) => scout.limits.admit(channel, await runsNow()),
 		onReview: async (posted) => {
 			const channel = scout.channelOf(posted.repo)?.name;
 			const id = channel === undefined ? undefined : await slack.channelId(channel);
@@ -764,24 +765,46 @@ export async function startService(options: ServiceOptions) {
 	every(MINUTE, () => void ciTick());
 
 	// Scheduled work (schedules.ts): each schedule that's due starts a new thread in its channel, saying which one it is.
+	// A run is its owner's request (who set it up or last changed it), checked as theirs each time, in the repository its
+	// task names among the channel's. When they may not ask for that, it doesn't run: it pauses, and the channel hears
+	// why, once. A schedule nobody owns (from before owners were kept, or set up where nobody had asked) pauses the same way.
 	async function runSchedules(): Promise<void> {
 		for (const s of scout.schedules.due(clock())) {
 			// Marked first, so a failure here doesn't start it again every minute.
 			scout.schedules.ran(s.id, clock());
 			const channel = await slack.channelId(s.channel);
 			if (channel === undefined) throw new Error(`schedule #${s.id}'s channel #${s.channel} is gone`);
-			const root = `⏰ Schedule #${s.id}, ${s.when}: ${s.task}\nSet up by <@${s.createdBy}>. Anyone here can ask me to change, pause or stop it.`;
+			const owner = ownerOf(s);
+			const repo = scout.repoFor(s.channel, s.task);
+			const allowed = owner === undefined ? undefined : await scout.admitter(async () => [])({ user: owner, channelName: s.channel, repo, starting: false });
+			if (owner === undefined || allowed?.ok !== true) {
+				const reason = allowed?.ok === false ? allowed.reason : "nobody owns it";
+				scout.schedules.pause(s.id);
+				audit.record("schedule_paused", { actor: "scout", channel: s.channel, detail: { id: s.id, owner: owner ?? null, repo, reason } });
+				const why = owner === undefined ? "nobody owns it yet" : `it runs as <@${owner}>, who can't ask me for this any more: ${reason}`;
+				const text = `⏸️ I paused schedule #${s.id} (${s.when}: ${s.task}) instead of running it: ${why}\nSomeone who may ask me for work here can resume it in a thread, and it then runs as them.`;
+				await slack.surface.post(channel, undefined, { text, blocks: [{ type: "markdown", text }] });
+				continue;
+			}
+			const root = `⏰ Schedule #${s.id}, ${s.when}: ${s.task}\nFor <@${owner}>, who ${s.changedBy === undefined ? "set it up" : "last changed it"}. Anyone here can ask me to change, pause or stop it.`;
 			const threadTs = await slack.surface.post(channel, undefined, { text: root, blocks: [{ type: "markdown", text: root }] });
-			audit.record("schedule_ran", { actor: "scout", channel: s.channel, detail: { id: s.id, cron: s.cron } });
+			audit.record("schedule_ran", { actor: owner, channel: s.channel, detail: { id: s.id, cron: s.cron, repo } });
 			await bridge.investigate({
 				channel,
 				channelName: s.channel,
 				threadTs,
-				context: `This thread was started by schedule #${s.id} (${s.when}, \`${s.cron}\`), set up by <@${s.createdBy}>. People can ask you here to change, pause or remove it.`,
+				context: `This thread was started by schedule #${s.id} (${s.when}, \`${s.cron}\`), on behalf of <@${owner}>, who ${s.changedBy === undefined ? "set it up" : "last changed it"}. People can ask you here to change, pause or remove it.`,
 				prompt: s.task,
 				requestId: `schedule:${s.id}:${Math.floor(clock() / MINUTE)}`,
+				user: owner,
+				repo,
 			});
 		}
+	}
+	/** Whose a schedule is: whoever last changed it, or else set it up; not Scout, which only stands in when nobody asked. */
+	function ownerOf(s: { createdBy: string; changedBy?: string }): string | undefined {
+		const who = s.changedBy ?? s.createdBy;
+		return who === "" || who === "scout" ? undefined : who;
 	}
 	const scheduleTick = () => health.watch("schedules", "running scheduled work failed", runSchedules);
 	every(MINUTE, () => void scheduleTick());
@@ -1000,6 +1023,11 @@ export async function startService(options: ServiceOptions) {
 		for (const { parentId, count } of scout.approaches.working()) {
 			const channel = await channelOf(parentId);
 			for (let i = 1; i < count; i++) runs.push({ channel });
+		}
+		// Pull request reviews under way (started, not yet posted) are runs in their repository's channel.
+		for (const slug of pullReviewer.reviewing()) {
+			const repo = config.repos.find((r) => r.slug === slug);
+			runs.push({ channel: (repo === undefined ? undefined : scout.channelOf(repo.name)?.name) ?? "" });
 		}
 		return runs;
 	}

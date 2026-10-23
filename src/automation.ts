@@ -3,7 +3,8 @@ import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type ConversationId, type SubmissionId } from "@earendil-works/pi-durable";
 import type { CodeHost } from "./codehost.ts";
 import type { Config, RepoConfig } from "./config.ts";
-import { ReviewDoc } from "./docs.ts";
+import { ReviewDoc, ThreadDoc } from "./docs.ts";
+import type { Admission } from "./limits.ts";
 import type { ReviewRow } from "./pulls.ts";
 import { diffOf, type PullReview, parsePullReview } from "./review.ts";
 import type { Scout } from "./scout.ts";
@@ -53,15 +54,30 @@ export class PullReviewer {
 	readonly #fetch: typeof fetch;
 	readonly #onReview: ((posted: PostedReview) => Promise<void>) | undefined;
 	readonly #waiting = new Set<string>();
+	/** Reviews this poll started, until it's waiting on them too: so each counts against the run limits for the next. */
+	readonly #starting = new Set<string>();
+	readonly #admit: ((channel: string) => Promise<Admission>) | undefined;
+	/** Reviews a budget turned down, said once in the log: the next poll asks again. */
+	readonly #held = new Set<string>();
 	#self: string | undefined;
 	#polling = false;
 
-	constructor(options: { scout: Scout; config: Config; context: Context; fetch?: typeof fetch; onReview?: (posted: PostedReview) => Promise<void> }) {
+	/**
+	 * `admit`: may a review start now, as a run in the repository's channel? Budgets and concurrency (limits.ts), like any
+	 * request there; not now, it waits for a later poll.
+	 */
+	constructor(options: { scout: Scout; config: Config; context: Context; fetch?: typeof fetch; onReview?: (posted: PostedReview) => Promise<void>; admit?: (channel: string) => Promise<Admission> }) {
 		this.#scout = options.scout;
 		this.#config = options.config;
 		this.#context = options.context;
 		this.#fetch = options.fetch ?? fetch;
 		this.#onReview = options.onReview;
+		this.#admit = options.admit;
+	}
+
+	/** The repositories (slugs) of the reviews under way, one entry each: runs, for the run limits. */
+	reviewing(): string[] {
+		return [...new Set([...this.#starting, ...this.#waiting])].map((key) => key.slice(0, key.indexOf("#")));
 	}
 
 	/** Start reviews that were asked for (or new commits on pull requests already reviewed), and post finished ones. */
@@ -90,6 +106,7 @@ export class PullReviewer {
 					.finally(() => this.#waiting.delete(key));
 			}
 		} finally {
+			this.#starting.clear();
 			this.#polling = false;
 		}
 	}
@@ -97,6 +114,16 @@ export class PullReviewer {
 	async #start(repo: RepoConfig, pull: OpenPull): Promise<void> {
 		const { harness, workspaces, pulls } = this.#scout;
 		const { slug } = repo;
+		// A review is a run in the repository's channel: its budget and the run limits apply, and its spend counts there.
+		const channel = this.#scout.channelOf(repo.name)?.name ?? "";
+		const admission = (await this.#admit?.(channel)) ?? { ok: true };
+		const key = `${slug}#${pull.number}@${pull.head.sha}`;
+		if (!admission.ok) {
+			if (admission.wait !== true && !this.#held.has(key)) console.log(`not reviewing ${pull.html_url} yet: ${admission.reason}`);
+			this.#held.add(key);
+			return;
+		}
+		this.#held.delete(key);
 		const mirror = workspaces.mirrorFor(repo.name);
 		await mirror.refresh();
 		const root = join(this.#config.dataDir, "reviews", `${slug.replace("/", "-")}-${pull.number}-${pull.head.sha.slice(0, 12)}`);
@@ -112,6 +139,10 @@ export class PullReviewer {
 					const doc = await tx.doc(ReviewDoc, id);
 					doc.root = root;
 					doc.cwd = cwd;
+					// Where its spend counts (observe.ts reads the channel from here).
+					const thread = await tx.doc(ThreadDoc, id);
+					thread.channelName = channel;
+					thread.repo = repo.name;
 				},
 			},
 			this.#context,
@@ -134,6 +165,7 @@ export class PullReviewer {
 			this.#context,
 		);
 		pulls.reviewStarted({ slug, number: pull.number, sha: pull.head.sha, conversationId: conversation.id, submissionId: submission.id });
+		this.#starting.add(key);
 		console.log(`reviewing ${pull.html_url} at ${pull.head.sha.slice(0, 7)}`);
 	}
 

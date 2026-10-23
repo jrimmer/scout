@@ -269,10 +269,12 @@ either way.
   `reactions.md` renames any emoji; `SCOUT_STATUS_REACTIONS=off` goes back to just 👀, then ✅ or ⚠️.
 - **🔍 to ask for a look.** A 🔍 on any message in a public channel Scout is in starts a thread on it: "look into
   this", as a request from whoever reacted.
+- **Reactions are people's.** 🛑, 🔁, 👍 and 🔍 from bots and other apps (a bot user, or a reaction with a `bot_id`)
+  are ignored. When Slack can't say whether someone is a bot, only a stop counts.
 - **Approve and Decline buttons.** When Scout's answer asks for approval of a change, a message with Approve and
-  Decline follows (👍 on the answer still works). Pressing either goes through the same checks as replying "approve",
-  and the buttons then give way to who decided. A press that doesn't count is answered just to whoever pressed, and
-  the buttons stay.
+  Decline follows (👍 on the answer still works). Pressing either goes through the same checks as replying "approve":
+  only someone who may approve the waiting change can press either, and the buttons then give way to who decided. A
+  press that doesn't count is answered just to whoever pressed, and the buttons stay.
 - **`/scout`**: `status`, `schedules`, `waiting` (what's waiting on you) answered just to you, and `ask …` to start a
   thread without an @mention.
 - **Link previews.** A pull request or issue link to a repository Scout works in (on the domains in the manifest's
@@ -284,8 +286,11 @@ either way.
   request, CI and cost, kept up to date as the work moves, shared read-only with the home channel (`lists:write`;
   paid plans).
 - **The Ask Scout workflow step.** Workflow Builder (paid plans) gets a step that starts a Scout thread in a public
-  channel with a request, and outputs the thread's link. Its "Asked by" is required and checked like any request;
-  note that whoever builds the workflow chooses it, so the thread says the request came through a workflow.
+  channel with a request, and outputs the thread's link. It works as the person who ran the workflow, as Slack says
+  (the step's `interactivity` input, which a workflow's builder can't fill in), and checks them like any request; the
+  thread says the request came through a workflow. So a person has to start the workflow: from a link, a shortcut, or
+  a button. A workflow a schedule or a webhook starts needs a step where someone presses a button first; with no
+  person, the step fails and says why.
 - **🔁 to try again.** A 🔁 (`:repeat:`) on Scout's latest answer in a thread asks it to try again, as if the person
   had asked in the thread (so it's admitted and audited like any request).
 
@@ -348,6 +353,9 @@ their self-review). The channel whose profile names the repository gets a short 
 ask Scout about its review, or to fix what it flagged: that thread's sandbox has the pull request's branch, and a fix
 opens as a pull request into it, so the author merges it or not (Scout never pushes to someone else's branch). A pull
 request from a fork gets the base branch instead. Nothing to configure; give Scout's account access to the repository.
+
+Each review is a run in the channel whose profile names the repository: it counts against that channel's weekly budget
+and the run limits like any request there. Past them, it waits for a later look (the log says so when it's a budget).
 
 ## Code across repositories
 
@@ -492,9 +500,18 @@ asking in any thread in that channel; schedules in other channels are out of rea
 changed it are recorded, and every change is in the audit trail (`schedule_added`, `schedule_changed`,
 `schedule_removed`, `schedule_ran`).
 
-When a schedule is due, Scout starts a new thread in its channel whose first message names the schedule, who set it
-up, and that anyone there can change or stop it. A run counts against the channel's budget and concurrency like any
-request. If Scout was down at the time, it still runs within 10 minutes of it; later than that, it waits for its
+When a schedule is due, Scout starts a new thread in its channel whose first message names the schedule, whom it
+runs for, and that anyone there can change or stop it. A run counts against the channel's budget and concurrency like
+any request.
+
+A schedule's run is its owner's request: whoever last changed it, or else whoever set it up. Each time it comes due,
+Scout checks that person the way it checks anyone who asks, in the repository the task names among the channel's (so
+a task can't take the run to a repository its owner may not ask for). The run is audited as theirs, and its thread is
+theirs for follow-ups. If they may no longer ask, the schedule doesn't run: Scout pauses it and says why in the
+channel, once (`schedule_paused` in the audit). Someone who may ask there resumes it by asking in a thread, and it
+runs as them from then on. A schedule nobody owns pauses the same way the first time it comes due: one set up where
+nobody had asked for anything (an alert's thread), recorded as Scout's own, including any from before owners were
+checked. If Scout was down at the time, it still runs within 10 minutes of it; later than that, it waits for its
 next time. The dashboard lists every schedule and when it runs next.
 
 ## CI on Scout's pull requests
@@ -695,6 +712,9 @@ code host's own permission. Set `separate` for a Forgejo that doesn't sign in th
 on GitHub only with Enterprise Managed Users.
 
 Everyone can still talk in threads. Their words are kept as context, and Scout tells them why it isn't acting on them.
+The model sees each message labelled with the speaker's Slack ID and display name (`<@U0123ABC> (Ann): …`; a message
+of several lines is quoted under it), so a display name can't pass for someone else. What someone who may not ask for
+work in the thread's repository says is marked as context only.
 
 `SCOUT_ROLES_FILE` gives roles by the identity provider's groups:
 - `request`: who may ask for work (start, steer, approve) in a repository, by its name or `*`. With it, Scout checks
@@ -732,7 +752,9 @@ and protected tags.
 ```
 
 - **Weekly budgets** are dollars per calendar week, from Monday. Past a budget, new requests in that channel are
-  declined until Monday.
+  declined until Monday. `perChannel` applies to every channel by name, and anyone can make a public channel and
+  invite Scout, so with `perChannel` and no `total` each new channel gets a budget of its own: set `total` too. The
+  doctor warns when it isn't.
 - **Concurrency limits** queue requests: Scout says so, and starts them in order as runs finish. The queue survives
   restarts. They're on even without a limits file: 8 runs in all and 3 per channel (`SCOUT_MAX_RUNS`,
   `SCOUT_MAX_RUNS_PER_CHANNEL`); the file's `concurrency` wins where it's set.
