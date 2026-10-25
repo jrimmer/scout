@@ -1300,6 +1300,17 @@ export async function startService(options: ServiceOptions) {
 				work.push(workspaces.suspend(thread.conversationId));
 			}
 		}
+		// After an hour, a quiet thread's sandbox goes altogether: its work waits on this host, and its next tool call starts
+		// a new sandbox with that work back. One at a time, since each wakes its sandbox to save from it.
+		work.push(
+			(async () => {
+				for (const id of workspaces.held()) {
+					const thread = threads.byConversation(id);
+					if (thread === undefined || thread.lastActivity >= now - HOUR || bridge.view(id)?.busy) continue;
+					await workspaces.park(id).catch((error: unknown) => console.error(`parking thread ${id}'s sandbox failed:`, error));
+				}
+			})(),
+		);
 		if (config.profileRepo !== undefined) {
 			work.push(health.watch("profile", "pulling the profile failed", () => pullProfile(config.profileDir)));
 		}

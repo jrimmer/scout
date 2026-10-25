@@ -135,6 +135,13 @@ Each thread works in its own sandbox. `SCOUT_SANDBOX_DRIVER` picks where:
 In all three, Scout runs a pi-env daemon inside the sandbox and does every file operation and command through it, so
 nothing a thread writes reaches Scout's host. Git moves in and out as bundles, so no sandbox holds credentials.
 
+**A thread's sandbox lasts while the thread is active.** After 15 quiet minutes it's suspended (spoond resumes it in
+about a second). After an hour it's deleted: first Scout saves the thread's work on its host (`parked/` in the data
+directory): its branch, unfinished edits, and attachments. The thread's next tool call starts a new sandbox from the
+base, with that work back, uncommitted edits still uncommitted. What was built or ignored by git isn't kept, so the
+first command after a quiet hour may rebuild. The conversation itself is in Scout's database, not the sandbox. So a
+noisy alert channel leaves no pile of sleeping sandboxes behind, and threads lose nothing.
+
 **Network.** `SCOUT_SANDBOX_NETWORK` is `none` (default) or `open`. A repository can instead list the hosts its
 sandboxes may reach (`egress` in `SCOUT_REPOS_FILE`, or `SCOUT_REPO_EGRESS` for the default repository). Only
 substrates with an egress firewall can enforce a list: spoond can (its `restricted` policy and allowlist), Docker

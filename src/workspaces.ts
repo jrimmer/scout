@@ -1,5 +1,5 @@
-import { mkdirSync, realpathSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -93,6 +93,8 @@ export class Workspaces {
 	readonly #mirrors = new Map<string, Mirror>();
 	readonly #open = new Map<number, Promise<Opened>>();
 	readonly #connected = new Set<number>();
+	/** Conversations whose work is being parked (`park`): a tool call waits for it, then starts afresh. */
+	readonly #parking = new Map<number, Promise<unknown>>();
 	/** Which repository a conversation works in; set once the harness exists. */
 	repoOf: (conversationId: number) => Promise<string | undefined> = async () => undefined;
 	/** A conversation's own base branch, when it isn't the repository's (a reviewed pull request's branch). */
@@ -212,7 +214,8 @@ export class Workspaces {
 	#ensure(conversationId: number): Promise<Opened> {
 		let opened = this.#open.get(conversationId);
 		if (opened === undefined) {
-			opened = this.#prepare(conversationId);
+			const parking = this.#parking.get(conversationId);
+			opened = parking === undefined ? this.#prepare(conversationId) : parking.then(() => this.#prepare(conversationId));
 			opened.catch(() => this.#open.delete(conversationId));
 			this.#open.set(conversationId, opened);
 		}
@@ -225,6 +228,8 @@ export class Workspaces {
 		const repo = base === undefined ? configured : { ...configured, base };
 		const described = await this.describe(conversationId).catch(() => ({}));
 		const handle = await this.#config.driver.open(this.key(conversationId), { ...this.spec(repo, conversationId), ...described });
+		await mkdir(join(this.#dataDir, "held"), { recursive: true });
+		await writeFile(this.#held(conversationId), "");
 		let connection: TrackedConnection | undefined;
 		if (handle.connect === undefined) {
 			const options: ConnectionOptions = {
@@ -242,9 +247,111 @@ export class Workspaces {
 		const clone = `${handle.workdir}/repo`;
 		const cloned = await env.exists(`${clone}/.git`, BACKGROUND_CONTEXT);
 		const prebuilt = await env.exists(`${handle.workdir}/${IMAGE_MARK}`, BACKGROUND_CONTEXT);
+		const fresh = !(cloned.ok && cloned.value) || (prebuilt.ok && prebuilt.value);
 		if (!(cloned.ok && cloned.value)) await this.#clone(env, opened, clone, conversationId);
 		else if (prebuilt.ok && prebuilt.value) await this.#fromImage(env, opened, clone, conversationId);
+		// A sandbox that was kept is where the work is; parked work comes back only into a new one.
+		if (fresh) await this.#unpark(env, opened, clone, conversationId);
+		else await rm(this.#parked(conversationId), { recursive: true, force: true });
 		return opened;
+	}
+
+	/** Marks a conversation that has a sandbox, so its work can be parked without opening one to find out. */
+	#held(conversationId: number): string {
+		return join(this.#dataDir, "held", this.key(conversationId));
+	}
+
+	/** Where a conversation's work waits on the host while it has no sandbox. */
+	#parked(conversationId: number): string {
+		return join(this.#dataDir, "parked", this.key(conversationId));
+	}
+
+	/** Conversations that have a sandbox (made by this install, and not removed or parked since). */
+	held(): number[] {
+		const prefix = `${this.#config.instance}-`;
+		const names = existsSync(join(this.#dataDir, "held")) ? readdirSync(join(this.#dataDir, "held")) : [];
+		return names.filter((n) => n.startsWith(prefix)).map((n) => Number(n.slice(prefix.length))).filter(Number.isInteger);
+	}
+
+	/**
+	 * Keep a quiet thread's work on this host and delete its sandbox: its branch, with unfinished edits as one commit on
+	 * top, and its attachments. The next tool call starts a new sandbox from the base and puts them back; what was built
+	 * or ignored by git isn't kept. False when there's no sandbox, or it's in use.
+	 */
+	async park(conversationId: number): Promise<boolean> {
+		if (!existsSync(this.#held(conversationId)) || this.#parking.has(conversationId)) return false;
+		const opened = await this.#ensure(conversationId);
+		if ((opened.connection?.inFlight ?? 0) > 0) return false;
+		const parking = this.#park(conversationId, opened);
+		this.#parking.set(conversationId, parking.catch(() => {}));
+		this.#open.delete(conversationId);
+		this.#connected.delete(conversationId);
+		try {
+			await parking;
+			return true;
+		} finally {
+			this.#parking.delete(conversationId);
+		}
+	}
+
+	async #park(conversationId: number, opened: Opened): Promise<void> {
+		const { handle, repo } = opened;
+		const env = this.#envAt(conversationId, opened, `${handle.workdir}/repo`);
+		const dir = `${handle.workdir}/.scout`;
+		await env.createDir(dir, { recursive: true }, BACKGROUND_CONTEXT);
+		// The edits go in a commit made from a copy of the index, so the checkout itself stays as it was.
+		const save = [
+			"set -e",
+			'index=$(mktemp); cp "$(git rev-parse --git-path index)" "$index"',
+			'GIT_INDEX_FILE="$index" git add -A; tree=$(GIT_INDEX_FILE="$index" git write-tree); rm -f "$index"',
+			'git update-ref refs/scout/parked "$(git commit-tree "$tree" -p HEAD -m "Unfinished edits")"',
+			`git bundle create --quiet ${dir}/parked.bundle refs/scout/parked ^refs/remotes/origin/${repo.base}`,
+			`if [ -d ../attachments ]; then tar -cf ${dir}/attachments.tar -C .. attachments; fi`,
+		].join("\n");
+		await must(env, ["bash", "-c", save]);
+		const parked = this.#parked(conversationId);
+		const staging = `${parked}.saving`;
+		await rm(staging, { recursive: true, force: true });
+		await mkdir(staging, { recursive: true });
+		for (const name of ["parked.bundle", "attachments.tar"]) {
+			const there = await env.exists(`${dir}/${name}`, BACKGROUND_CONTEXT);
+			if (!(there.ok && there.value)) continue;
+			const bytes = await env.readBinaryFile(`${dir}/${name}`, BACKGROUND_CONTEXT);
+			if (!bytes.ok) throw bytes.error;
+			await writeFile(join(staging, name), bytes.value);
+		}
+		await rm(parked, { recursive: true, force: true });
+		await rename(staging, parked);
+		await opened.connection?.close();
+		await this.#config.driver.remove(this.key(conversationId));
+		await rm(this.#held(conversationId), { force: true });
+	}
+
+	/** Put parked work back into a new sandbox's checkout, unfinished edits as uncommitted changes again. */
+	async #unpark(env: ExecutionEnv, opened: Opened, clone: string, conversationId: number): Promise<void> {
+		const parked = this.#parked(conversationId);
+		if (!existsSync(parked)) return;
+		const dir = `${opened.handle.workdir}/.scout`;
+		try {
+			if (existsSync(join(parked, "parked.bundle"))) {
+				await copyIn(env, `${dir}/parked.bundle`, await readFile(join(parked, "parked.bundle")));
+				await must(env, ["git", "-C", clone, "fetch", "--quiet", `${dir}/parked.bundle`, "refs/scout/parked"]);
+				await must(env, ["git", "-C", clone, "reset", "--quiet", "--hard", "FETCH_HEAD"]);
+				await must(env, ["git", "-C", clone, "reset", "--quiet", "HEAD^"]);
+				await env.remove(`${dir}/parked.bundle`, { force: true }, BACKGROUND_CONTEXT);
+			}
+			if (existsSync(join(parked, "attachments.tar"))) {
+				await copyIn(env, `${dir}/attachments.tar`, await readFile(join(parked, "attachments.tar")));
+				await must(env, ["tar", "-xf", `${dir}/attachments.tar`, "-C", opened.handle.workdir]);
+				await env.remove(`${dir}/attachments.tar`, { force: true }, BACKGROUND_CONTEXT);
+			}
+		} catch (error) {
+			// Leave no half-restored sandbox behind: the next try starts afresh, and the parked work stays.
+			await opened.connection?.close();
+			await this.#config.driver.remove(this.key(conversationId)).catch(() => {});
+			throw new Error(`putting this thread's earlier work back failed (it's kept, at ${parked}): ${error instanceof Error ? error.message : String(error)}`);
+		}
+		await rm(parked, { recursive: true, force: true });
 	}
 
 	/**
@@ -493,10 +600,12 @@ export class Workspaces {
 		await this.#config.driver.suspend(this.key(conversationId)).catch(() => {});
 	}
 
-	/** Delete a conversation's sandbox and files, for work that is over (a job). */
+	/** Delete a conversation's sandbox and files, parked ones too, for work that is over (a job). */
 	async remove(conversationId: number): Promise<void> {
 		await this.#close(conversationId);
 		await this.#config.driver.remove(this.key(conversationId)).catch(() => {});
+		await rm(this.#held(conversationId), { force: true });
+		await rm(this.#parked(conversationId), { recursive: true, force: true });
 	}
 
 	/** Remove every sandbox this process has open: for a one-off run told to stop, so none is left behind. */

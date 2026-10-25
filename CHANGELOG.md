@@ -12,6 +12,10 @@ A change to any of these that needs people to act is a major version. Everything
 ## Unreleased
 
 ### Changed
+- **A quiet thread's sandbox goes after an hour, and its work comes back with the next one.** Scout saves the thread's
+  branch, unfinished edits and attachments on its host, deletes the sandbox, and starts a new one with them when the
+  thread is next used. Before, sandboxes stayed suspended until the retention period, so a busy alert channel left
+  dozens behind on the sandbox host.
 - **The benchmark runs on the team's own work, not Scout's.** Its tasks come from the repositories of the team Scout
   is deployed with, so they're private: they live with the install (the data directory's `bench/`, or
   `SCOUT_BENCH_TASKS`), and the tasks from Scout's own history are gone. With no tasks yet, a night runs nothing and

@@ -160,6 +160,29 @@ describe("workspaces (local driver)", () => {
 		assert.equal(await run(await workspaces.env(1), "git branch --show-current"), "scout/t-1", "the same sandbox, files intact");
 	});
 
+	it("parks a quiet thread's work on the host, and its next sandbox starts with it", async () => {
+		const env = await workspaces.env(6);
+		const first = await run(env, "pwd");
+		await run(env, "echo done > done.txt && git add done.txt && git commit -qm 'Done part' && echo half >> README.md && echo new > new.txt && git rm -q --cached done.txt && rm done.txt && git commit -qm 'Drop it again' && echo back > done.txt");
+		await workspaces.saveAttachment(6, "alert.json", new TextEncoder().encode("{}"));
+		const status = await workspaces.status(6);
+		assert.ok(workspaces.held().includes(6));
+		assert.equal(await workspaces.park(6), true);
+		assert.equal(existsSync(first), false, "the sandbox is gone");
+		assert.ok(!workspaces.held().includes(6));
+		assert.equal(await workspaces.park(6), false, "nothing left to park");
+
+		const again = await workspaces.env(6);
+		assert.equal(await run(again, "git branch --show-current"), "scout/t-6");
+		assert.equal(await run(again, "git log -2 --format=%s"), "Drop it again\nDone part", "its commits");
+		assert.equal(await workspaces.status(6), status, "its unfinished edits, still uncommitted");
+		assert.equal(await run(again, "cat README.md new.txt done.txt"), "api\nhalf\nnew\nback");
+		assert.equal(await run(again, "cat ../attachments/alert.json"), "{}", "its attachments");
+		assert.ok(workspaces.held().includes(6));
+		await workspaces.remove(6);
+		assert.ok(!workspaces.held().includes(6));
+	});
+
 	it("removes a sandbox when the work is over", async () => {
 		const env = await workspaces.env(3);
 		const where = await run(env, "pwd");
