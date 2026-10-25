@@ -39,3 +39,5 @@ npm run job -- "what to do"       # one task with the same agent, no Slack
   check CI's run for that commit on `main` before deploying; nothing blocks a merge on CI, so a red `main` is yours to fix.
 - Code is TypeScript run by Node's type stripping: use `.ts` import extensions; no enums, namespaces, or parameter
   properties.
+- Before changing anything in ~/Work/agent-hub, read ~/Work/agent-hub/AGENTS.md and follow it (worktree branch,
+  independent review, fast-forward land).
