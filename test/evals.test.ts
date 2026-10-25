@@ -139,10 +139,13 @@ describe("evals", () => {
 		};
 		writeFileSync(join(seed, "value.txt"), "1\n");
 		writeFileSync(join(seed, "keep.txt"), "kept\n");
-		const parent = commit("one");
+		// A test that held the old behaviour, which the fix changes along with it.
 		mkdirSync(join(seed, "t"));
+		writeFileSync(join(seed, "t", "old.sh"), 'test "$(cat value.txt)" = 1\n');
+		const parent = commit("one");
 		writeFileSync(join(seed, "value.txt"), "2\n");
 		writeFileSync(join(seed, "t", "check.sh"), 'test "$(cat value.txt)" = 2\n');
+		writeFileSync(join(seed, "t", "old.sh"), 'test "$(cat value.txt)" -ge 1\n');
 		const fix = commit("two, and its test");
 		mkdirSync(join(root, "profile"));
 		const base = loadConfig({
@@ -155,7 +158,7 @@ describe("evals", () => {
 			SCOUT_PROFILE_DIR: join(root, "profile"),
 			SCOUT_SANDBOX_DRIVER: "local",
 		});
-		const change = parseTask({ name: "two", repo: "app", ref: parent, request: "value should be 2", check: { hidden: { ref: fix, paths: ["t/check.sh"] }, command: "sh t/check.sh", suite: 'test "$(cat keep.txt)" = kept' } }, "two.json");
+		const change = parseTask({ name: "two", repo: "app", ref: parent, request: "value should be 2", check: { hidden: { ref: fix, paths: ["t/check.sh", "t/old.sh"] }, command: "sh t/check.sh", suite: 'test "$(cat keep.txt)" = kept && sh t/old.sh' } }, "two.json");
 		const locate = parseTask({ name: "where", kind: "locate", repo: "app", ref: parent, request: "t/check.sh fails. Where?", given: { ref: fix, paths: ["t/check.sh"] }, check: { locate: { file: "value.txt", functions: ["two"] } } }, "where.json");
 		const { repos, nameOf, fileAt } = await evalRepos(base, [change, locate], join(root, "eval-repos"));
 		assert.equal(nameOf(locate), `app@${parent.slice(0, 12)}+${fix.slice(0, 12)}`);
@@ -179,7 +182,7 @@ describe("evals", () => {
 			assert.equal(fixed.usage?.badToolCalls, 1, "a bash call without a command is malformed");
 			assert.equal(fixed.usage?.modelCalls, 3);
 			assert.equal(fixed.usage?.firstTokens.length, 3);
-			assert.equal(fixed.regressed, false, "what worked still works");
+			assert.equal(fixed.regressed, false, "what worked still works, judged by the tests as the fix left them");
 
 			faux.setResponses([fauxAssistantMessage([fauxToolCall("bash", { command: "echo 2 > value.txt && rm keep.txt" })], { stopReason: "toolUse" }), fauxAssistantMessage("Set it to 2.")]);
 			const broke = await runTask(scout, change, nameOf(change), "candidate", context, measured, { fileAt });

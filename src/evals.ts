@@ -58,8 +58,9 @@ export type EvalTask = {
 		/** For "locate": the file, and the functions any one of which is right. */
 		locate?: { file: string; functions: string[] };
 		/**
-		 * The repository's tests, run after a change that changed something, the hidden tests out of the way (they're
-		 * `command`'s): whether the change broke what worked. Not part of passing; the benchmark scores it apart.
+		 * The repository's tests, run after a change that changed something, with the hidden files in place: whether the
+		 * change broke what worked. It should leave out the hidden tests themselves (they're `command`'s, e.g. with
+		 * `go test -skip`). Not part of passing; the benchmark scores it apart.
 		 */
 		suite?: string;
 	};
@@ -525,24 +526,18 @@ export async function runTask(
 			const result = await env.exec(command, { onOutput: (t) => (output += t), timeout }, context);
 			return { code: result.ok ? result.value.exitCode : 1, output: result.ok ? output : `${output}${String(result.error)}` };
 		};
-		if (task.check.suite !== undefined) {
-			const { output: touched } = await sh(`git diff --name-only ${task.ref}; git ls-files --others --exclude-standard`, 60);
-			if (touched.trim() !== "") {
-				// The hidden tests are judged by `command`; here only what was there already counts, so any the work wrote
-				// in their place go back to how they were (or go, if they weren't there).
-				for (const path of task.check.hidden?.paths ?? []) {
-					const p = `'${path.replace(/'/g, `'\\''`)}'`;
-					await sh(`git cat-file -e ${task.ref}:${p} 2>/dev/null && git checkout ${task.ref} -- ${p} || rm -f ${p}`, 30);
-				}
-				const { code, output } = await sh(task.check.suite, 900);
-				regressed = code !== 0;
-				if (regressed) why.push(`the change broke the repository's tests: ${output.trim().split("\n").slice(-3).join(" ").slice(0, 300)}`);
-			}
-		}
+		const changed = task.check.suite !== undefined && (await sh(`git diff --name-only ${task.ref}; git ls-files --others --exclude-standard`, 60)).output.trim() !== "";
+		// The hidden tests go in before the suite too: a fix can change or delete tests that held the old behaviour, so
+		// their old versions would fail a right answer. The suite leaves the hidden tests themselves to `command`.
 		if (task.check.hidden !== undefined) {
 			if (fileAt === undefined) throw new Error("a task with hidden files needs fileAt");
 			const root = (await sh("pwd", 30)).output.trim();
 			for (const path of task.check.hidden.paths) await copyIn(env, `${root}/${path}`, await fileAt(task, task.check.hidden.ref, path));
+		}
+		if (changed) {
+			const { code, output } = await sh(task.check.suite!, 900);
+			regressed = code !== 0;
+			if (regressed) why.push(`the change broke the repository's tests: ${output.trim().split("\n").slice(-3).join(" ").slice(0, 300)}`);
 		}
 		if (task.check.command !== undefined) {
 			const { code, output } = await sh(task.check.command);

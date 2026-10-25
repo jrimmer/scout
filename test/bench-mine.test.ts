@@ -73,7 +73,7 @@ describe("finding benchmark tasks in the team's merged fixes", () => {
 			repo: "app",
 			ref: repo.broken,
 			request: "Adding two numbers gives their difference.",
-			check: { hidden: { ref: repo.fixed, paths: ["calc/calc_test.go"] }, command: "go test -count=1 -run '^(TestAdd)$' './calc'", suite: "go test -count=1 './calc'" },
+			check: { hidden: { ref: repo.fixed, paths: ["calc/calc_test.go"] }, command: "go test -count=1 -run '^(TestAdd)$' './calc'", suite: "go test -count=1 -skip '^(TestAdd)$' './calc'" },
 		});
 		assert.equal(locate?.kind, "locate");
 		assert.deepEqual(locate?.given, { ref: repo.fixed, paths: ["calc/calc_test.go"] });

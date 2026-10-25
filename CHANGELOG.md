@@ -24,6 +24,9 @@ A change to any of these that needs people to act is a major version. Everything
   that says how it was fixed. Each night tries three new ones before the runs, so the pool grows as fixes merge.
 
 ### Fixed
+- **A benchmark change that fixed the bug no longer counts as breaking the repository's tests** when the fix had
+  also changed tests that held the old behaviour. The repository's tests now run with the fix's tests in place, and
+  leave the fix's own tests to the task's check.
 - **A request's reaction shows Scout's steps again behind a slow model.** A phase showed only once it had lasted 1.5 s.
   When the model takes many seconds to start answering, a run is long thinking with quick reads and edits between, so
   the reaction sat on 🧠 the whole run. Steps now show even when they were over in a moment, each for at least 3 s;

@@ -55,8 +55,8 @@ type Lang = {
 	testName: RegExp;
 	/** Running some tests: from `root`, these files (relative to it), and these tests by name if any. */
 	command: (files: string[], names: string[]) => string;
-	/** The tests of the packages a fix changed, from `root`, if the language has a cheap way to run them. */
-	suite?: (dirs: string[]) => string;
+	/** The tests of the packages a fix changed, from `root`, but these by name (the fix's own), if the language has a cheap way to run them. */
+	suite?: (dirs: string[], skip: string[]) => string;
 	/** Output that says the tests didn't build, rather than that they failed. */
 	broken: RegExp;
 };
@@ -76,7 +76,7 @@ export const LANGS: Record<string, Lang> = {
 			const dirs = [...new Set(files.map((f) => `./${posix.dirname(f)}`))];
 			return `go test -count=1 ${names.length === 0 ? "" : `-run ${quote(`^(${names.join("|")})$`)} `}${dirs.map(quote).join(" ")}`;
 		},
-		suite: (dirs) => `go test -count=1 ${dirs.map((d) => quote(`./${d}`)).join(" ")}`,
+		suite: (dirs, skip) => `go test -count=1 ${skip.length === 0 ? "" : `-skip ${quote(`^(${skip.join("|")})$`)} `}${dirs.map((d) => quote(`./${d}`)).join(" ")}`,
 		broken: /\[(build|setup) failed\]|^# \S+$|\bundefined: /m,
 	},
 	elixir: {
@@ -229,7 +229,7 @@ async function commands(mirror: string, c: Candidate): Promise<{ command: string
 		l.suite === undefined
 			? undefined
 			: group(c.sources)
-					.map(([root, files]) => at(root, l.suite!([...new Set(files.map((f) => posix.dirname(within(root, f))))])))
+					.map(([root, files]) => at(root, l.suite!([...new Set(files.map((f) => posix.dirname(within(root, f))))], tests.filter((t) => rootOf(t) === root).flatMap((t) => c.testNames[t] ?? []))))
 					.join(" && ");
 	return { command, ...(suite === undefined ? {} : { suite }) };
 }

@@ -92,7 +92,9 @@ the page says so. They're chosen as public benchmarks choose theirs:
 - **Replayed fixes**, as in SWE-bench: Scout starts from the commit before a fix, with a request a person would
   make. The fix's own tests are put in place only after the work (`check.hidden`), so the model can't fit its
   change to tests it saw. It passes when they do: the new tests and the old ones in the same file. If it changed
-  anything, the repository's other tests run too (`check.suite`), as SWE-bench checks a fix broke nothing.
+  anything, the repository's other tests run too (`check.suite`), as SWE-bench checks a fix broke nothing. They
+  run with the fix's tests in place, since a fix can change tests that held the old behaviour, and leave the fix's
+  own tests to the check above (`go test -skip`).
 - **Finding bugs** (`"kind": "locate"`): the failing test is there from the start (`given`), and the answer must
   end `LOCATION: <file> <function>`, naming the file and a function the real fix changed. Checked exactly, with no
   model judging.
