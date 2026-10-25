@@ -1356,7 +1356,7 @@ export async function startService(options: ServiceOptions) {
 		if (retentionDays !== undefined) {
 			work.push(
 				health.watch("retention", "deleting old thread files failed", () =>
-					applyRetention({ days: retentionDays, threads, workspaces, search: scout.search, memory, audit }),
+					applyRetention({ days: retentionDays, threads, workspaces, approaches: scout.approaches, search: scout.search, memory, audit }),
 				),
 			);
 		}

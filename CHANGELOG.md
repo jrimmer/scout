@@ -24,6 +24,8 @@ A change to any of these that needs people to act is a major version. Everything
   that says how it was fixed. Each night tries three new ones before the runs, so the pool grows as fixes merge.
 
 ### Fixed
+- **A thread's approaches no longer keep their sandboxes past the retention period.** When a quiet thread's sandbox
+  is deleted (`SCOUT_RETENTION_DAYS`), the sandboxes of the approaches it tried are deleted with it.
 - **A benchmark change that fixed the bug no longer counts as breaking the repository's tests** when the fix had
   also changed tests that held the old behaviour. The repository's tests now run with the fix's tests in place, and
   leave the fix's own tests to the task's check.

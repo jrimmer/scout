@@ -8,6 +8,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import type { Approach } from "../src/approaches.ts";
 import { Audit } from "../src/audit.ts";
 import { loadConfig } from "../src/config.ts";
 import { ThreadDoc } from "../src/docs.ts";
@@ -342,6 +343,7 @@ describe("retention", () => {
 			days: 30,
 			threads,
 			workspaces: { remove: async (id: number) => void removed.push(id) },
+			approaches: { forThread: (id: number) => (id === 1 ? [{ childId: 7 }, { childId: 8 }] as Approach[] : []) },
 			search: { forget: (key: string) => void forgotten.push(key) },
 			memory: { purge: () => 3 },
 			audit,
@@ -349,7 +351,7 @@ describe("retention", () => {
 		};
 		assert.deepEqual(await applyRetention(options), { threads: 1, notes: 3 });
 		assert.deepEqual(await applyRetention(options), { threads: 0, notes: 3 }, "each thread once");
-		assert.deepEqual(removed, [1]);
+		assert.deepEqual(removed, [1, 7, 8], "with its approaches' sandboxes");
 		assert.deepEqual(forgotten, ["C:1"]);
 		assert.equal(audit.list({ kind: "retention" }).length, 2);
 		threads.close();

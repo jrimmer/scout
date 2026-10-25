@@ -1,3 +1,4 @@
+import type { Approaches } from "./approaches.ts";
 import type { Audit } from "./audit.ts";
 import type { Memory } from "./memory.ts";
 import type { ThreadSearch } from "./search.ts";
@@ -5,8 +6,8 @@ import type { Threads } from "./threads.ts";
 import type { Workspaces } from "./workspaces.ts";
 
 /**
- * How long Scout keeps what threads leave behind (SCOUT_RETENTION_DAYS). Past it, a quiet thread's sandbox, files and
- * attachments are deleted, its words leave the search index, and notes that stopped applying are deleted. The audit
+ * How long Scout keeps what threads leave behind (SCOUT_RETENTION_DAYS). Past it, a quiet thread's sandbox (and its
+ * approaches' sandboxes), files and attachments are deleted, its words leave the search index, and notes that stopped applying are deleted. The audit
  * trail is kept.
  *
  * Not yet: transcripts in Pi Durable's storage, which has no way to delete a conversation. Until it does, they stay in
@@ -16,6 +17,7 @@ export async function applyRetention(options: {
 	days: number;
 	threads: Threads;
 	workspaces: Pick<Workspaces, "remove">;
+	approaches?: Pick<Approaches, "forThread">;
 	search: Pick<ThreadSearch, "forget">;
 	memory: Pick<Memory, "purge">;
 	audit?: Audit;
@@ -25,6 +27,7 @@ export async function applyRetention(options: {
 	let threads = 0;
 	for (const thread of options.threads.unpurgedBefore(before)) {
 		await options.workspaces.remove(thread.conversationId);
+		for (const a of options.approaches?.forThread(thread.conversationId) ?? []) await options.workspaces.remove(a.childId);
 		options.search.forget(thread.key);
 		options.threads.purged(thread.key);
 		threads++;
