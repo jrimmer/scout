@@ -126,6 +126,13 @@ describe("bridge", () => {
 		await bridge.view(conversationId)?.settled();
 	}
 
+	/** `settle`, for a bridge other than the one set up in beforeEach. */
+	async function settleOn(on: Bridge, conversationId: number) {
+		await harness.waitForIdle(context);
+		await until(() => on.view(conversationId)?.busy === false);
+		await on.view(conversationId)?.settled();
+	}
+
 	it("continues a thread Scout opened itself, knowing what it said there", async () => {
 		await bridge.openThread({ channel: "C1", channelName: "team", threadTs: "500.1", context: "You reviewed pull request 7 and asked for a test.", base: "their-feature" });
 		let seen = "";
@@ -459,6 +466,88 @@ describe("bridge", () => {
 		await gated.onMessage(message({ text: `<@${BOT}> one more`, ts: "600.4", threadTs: "600.1" }));
 		assert.equal(threads.queued().length, 1);
 		gated.onDelete({ channel: "C1", ts: "600.4" });
+		assert.equal(threads.queued().length, 0);
+	});
+
+	it("drops a queued request that fails to start, and starts the rest", async () => {
+		// A thread whose conversation is gone: starting its request throws.
+		threads.insert({ key: threadKey("C1", "800.1"), conversationId: 987654, channel: "C1", threadTs: "800.1", startedBy: "UANN" });
+		threads.enqueue(threadKey("C1", "800.1"), message({ ts: "800.2", threadTs: "800.1" }));
+		threads.enqueue(threadKey("C1", "900.1"), message({ ts: "900.1" }));
+		faux.setResponses([fauxAssistantMessage("The second one ran.")]);
+		await bridge.drain();
+		assert.equal(threads.queued().length, 0, "the broken one is dropped, not left to block the queue");
+		await settle(threads.get(threadKey("C1", "900.1"))!.conversationId);
+		assert.match(surface.texts().at(-1) ?? "", /The second one ran\./);
+	});
+
+	it("lets a channel at its limit wait without holding up other channels, and keeps a thread's own order", async () => {
+		let full = true;
+		const limited = new Bridge({
+			harness,
+			threads,
+			surface,
+			botUserId: BOT,
+			nameOf: async () => "ann",
+			agent: { model: { provider: "faux", modelId: "faux-model" } },
+			context,
+			admit: async ({ starting, channelName }) => (starting && full && channelName === "busy" ? { ok: false, wait: true, reason: "Busy." } : { ok: true }),
+		});
+		// Oldest first: a request in the full channel, then one in another channel.
+		await limited.onMessage(message({ channel: "C2", channelName: "busy", ts: "100.1" }));
+		threads.enqueue(threadKey("C1", "200.1"), message({ ts: "200.1" }));
+		assert.equal(threads.queued().length, 2);
+		faux.setResponses([fauxAssistantMessage("Other channel.")]);
+		await limited.drain();
+		assert.deepEqual(
+			threads.queued().map((q) => q.key),
+			[threadKey("C2", "100.1")],
+			"the other channel's request started; the full channel's still waits",
+		);
+		await settleOn(limited, threads.get(threadKey("C1", "200.1"))!.conversationId);
+		assert.match(surface.texts().at(-1) ?? "", /Other channel\./);
+
+		full = false;
+		faux.setResponses([fauxAssistantMessage("Its turn.")]);
+		await limited.drain();
+		assert.equal(threads.queued().length, 0);
+		full = true;
+	});
+
+	it("runs one more drain when one is asked for while a drain runs", async () => {
+		let late = true;
+		const again: Bridge = new Bridge({
+			harness,
+			threads,
+			surface,
+			botUserId: BOT,
+			nameOf: async () => "ann",
+			agent: { model: { provider: "faux", modelId: "faux-model" } },
+			context,
+			admit: async () => {
+				// While the first request starts, another one is queued and a drain is asked for.
+				if (late) {
+					late = false;
+					threads.enqueue(threadKey("C1", "300.1"), message({ ts: "300.1" }));
+					void again.drain();
+				}
+				return { ok: true };
+			},
+		});
+		threads.enqueue(threadKey("C1", "200.1"), message({ ts: "200.1" }));
+		faux.setResponses([fauxAssistantMessage("First."), fauxAssistantMessage("Second.")]);
+		await again.drain();
+		assert.equal(threads.queued().length, 0, "the request queued during the drain started in the same drain");
+		await settleOn(again, threads.get(threadKey("C1", "300.1"))!.conversationId);
+	});
+
+	it("a stop drops that thread's queued requests, even when no run is busy", async () => {
+		faux.setResponses([fauxAssistantMessage("Answered.")]);
+		await bridge.onMessage(message({}));
+		await settle(threads.get(threadKey("C1", "100.1"))!.conversationId);
+		threads.enqueue(threadKey("C1", "100.1"), message({ text: "one more", ts: "100.5", threadTs: "100.1" }));
+		assert.equal(threads.queued().length, 1);
+		await bridge.onMessage(message({ text: `<@${BOT}> stop`, ts: "100.6", threadTs: "100.1" }));
 		assert.equal(threads.queued().length, 0);
 	});
 

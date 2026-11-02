@@ -137,6 +137,8 @@ export class Bridge {
 	readonly #locks = new Map<string, Promise<unknown>>();
 	readonly #refused = new Map<string, number>();
 	#draining = false;
+	#drainAgain = false;
+	#drainDone: Promise<void> = Promise.resolve();
 
 	constructor(options: BridgeOptions) {
 		this.#options = options;
@@ -193,19 +195,44 @@ export class Bridge {
 		await this.#serialized(key, () => this.#deliver(key, message, mentions, false));
 	}
 
-	/** Start queued requests that may start now, oldest first; stop at the first that still has to wait. */
-	async drain(): Promise<void> {
-		if (this.#draining) return;
+	/**
+	 * Start queued requests that may start now, oldest first. One that still has to wait (its channel is at its limit)
+	 * doesn't hold up the others, but later requests in its thread wait too, so a thread's messages stay in order. One
+	 * that fails to start is logged and dropped, so it can't block the queue. A trigger during a pass runs one more.
+	 */
+	drain(): Promise<void> {
+		// A pass already running takes this trigger as one more pass after it; the caller waits for that too.
+		if (this.#draining) {
+			this.#drainAgain = true;
+			return this.#drainDone;
+		}
 		this.#draining = true;
+		this.#drainDone = this.#drainPasses();
+		return this.#drainDone;
+	}
+
+	async #drainPasses(): Promise<void> {
 		try {
-			for (const item of this.#options.threads.queued()) {
-				const message = item.message as IncomingMessage;
-				const mentions = message.text.includes(`<@${this.#options.botUserId}>`);
-				const outcome = await this.#serialized(item.key, () => this.#deliver(item.key, message, mentions, true));
-				if (outcome === "waiting") return;
-				this.#options.threads.dequeue(item.id);
-				this.#options.waited?.("run", Date.now() - item.at);
-			}
+			do {
+				this.#drainAgain = false;
+				const waiting = new Set<string>();
+				for (const item of this.#options.threads.queued()) {
+					if (waiting.has(item.key)) continue;
+					const message = item.message as IncomingMessage;
+					const mentions = message.text.includes(`<@${this.#options.botUserId}>`);
+					try {
+						const outcome = await this.#serialized(item.key, () => this.#deliver(item.key, message, mentions, true));
+						if (outcome === "waiting") {
+							waiting.add(item.key);
+							continue;
+						}
+						this.#options.waited?.("run", Date.now() - item.at);
+					} catch (error) {
+						console.error(`starting a queued request in ${item.key} failed; dropping it:`, error);
+					}
+					this.#options.threads.dequeue(item.id);
+				}
+			} while (this.#drainAgain);
 		} finally {
 			this.#draining = false;
 		}
@@ -305,6 +332,8 @@ export class Bridge {
 	async #stop(thread: ThreadRow, user: string): Promise<void> {
 		const { harness, context } = this.#options;
 		const view = await this.#view(thread);
+		// Requests in this thread still waiting their turn go too, whether or not a run is busy.
+		for (const item of this.#options.threads.queued()) if (item.key === thread.key) this.#options.threads.dequeue(item.id);
 		if (!view.busy) return;
 		view.markStopped(await this.#options.nameOf(user));
 		this.#options.audit?.record("stop", { actor: user, conversationId: thread.conversationId, channel: thread.channel });
