@@ -49,6 +49,8 @@ import { type WorkRow, WorkList } from "./worklist.ts";
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
+/** How long after a run ends its sandbox is put to sleep, if the thread has not started another. */
+const SLEEP_AFTER_RUN_MS = MINUTE;
 const context = BACKGROUND_CONTEXT;
 
 /**
@@ -268,6 +270,11 @@ export async function startService(options: ServiceOptions) {
 		answered: (conversationId, ts, answer, outcome) => {
 			scout.approvals.answered(conversationId, ts);
 			recaps.answered(conversationId, answer);
+			// A finished run's sandbox sleeps soon, not in a quarter of an hour: a busy sandbox host has none to spare, and the
+			// thread's next tool call wakes it in about a second.
+			setTimeout(() => {
+				if (!bridge.view(conversationId)?.busy) void workspaces.suspend(conversationId).catch(() => {});
+			}, SLEEP_AFTER_RUN_MS).unref();
 			const thread = threads.byConversation(conversationId);
 			// A change waiting for approval: Approve and Decline buttons, beside the 👍 that also works.
 			if (thread !== undefined && scout.approvals.waiting(conversationId)) void askForApproval(conversationId, thread.channel, thread.threadTs);
@@ -1322,8 +1329,9 @@ export async function startService(options: ServiceOptions) {
 		work.push(
 			(async () => {
 				for (const id of workspaces.held()) {
-					const thread = threads.byConversation(id);
-					if (thread === undefined || thread.lastActivity >= now - HOUR || bridge.view(id)?.busy) continue;
+					// A sandbox no thread row owns (a benchmark's, or its thread gone) is as old as it was last opened.
+					const lastUsed = threads.byConversation(id)?.lastActivity ?? workspaces.heldAt(id);
+					if (lastUsed === undefined || lastUsed >= now - HOUR || bridge.view(id)?.busy) continue;
 					await workspaces.park(id).catch((error: unknown) => console.error(`parking thread ${id}'s sandbox failed:`, error));
 				}
 			})(),

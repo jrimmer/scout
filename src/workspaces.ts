@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -280,6 +280,15 @@ export class Workspaces {
 		const prefix = `${this.#config.instance}-`;
 		const names = existsSync(join(this.#dataDir, "held")) ? readdirSync(join(this.#dataDir, "held")) : [];
 		return names.filter((n) => n.startsWith(prefix)).map((n) => Number(n.slice(prefix.length))).filter(Number.isInteger);
+	}
+
+	/** When this install last opened a conversation's sandbox, if it has one: how long a sandbox no thread owns has sat. */
+	heldAt(conversationId: number): number | undefined {
+		try {
+			return statSync(this.#held(conversationId)).mtimeMs;
+		} catch {
+			return undefined;
+		}
 	}
 
 	/**
