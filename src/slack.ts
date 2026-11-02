@@ -125,7 +125,7 @@ export class Slack {
 		const blocks = message.blocks.map((block) => {
 			const b = block as { type?: string; text?: unknown };
 			const mentioned = named && b.type === "markdown" && typeof b.text === "string" ? { ...b, text: mentionNames(b.text, handles) } : block;
-			return mapStrings(mentioned, neutralizeBroadcasts) as unknown;
+			return neutralizeMarkup(mentioned);
 		});
 		return { text: neutralizeBroadcasts(mentionNames(message.text, handles)), blocks };
 	}
@@ -719,12 +719,13 @@ export function neutralizeBroadcasts(text: string): string {
 	);
 }
 
-/** Every string in a value, at any depth, passed through `change` (a message's blocks, say). */
-function mapStrings(value: unknown, change: (text: string) => string): unknown {
-	if (typeof value === "string") return change(value);
-	if (Array.isArray(value)) return value.map((item) => mapStrings(item, change));
-	if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, mapStrings(item, change)]));
-	return value;
+/** A block with its markup (mrkdwn and markdown text, at any depth) neutralised. Plain text isn't markup, so it's left as written. */
+function neutralizeMarkup(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(neutralizeMarkup);
+	if (value === null || typeof value !== "object") return value;
+	const object = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, neutralizeMarkup(item)])) as Record<string, unknown>;
+	const markup = object.type === "mrkdwn" || object.type === "markdown";
+	return markup && typeof object.text === "string" ? { ...object, text: neutralizeBroadcasts(object.text) } : object;
 }
 
 export function mentionNames(text: string, handles: ReadonlyMap<string, string>): string {
