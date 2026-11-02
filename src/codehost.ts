@@ -96,17 +96,17 @@ export function createCodeHostExtension(options: CodeHostOptions) {
 			if (options.commitAll && source.kind === "dir") await commitEverything(source.dir, args.title);
 			const dirty = source.kind === "dir" ? await git(["-C", source.dir, "status", "--porcelain"]) : await source.status();
 			if (dirty !== "") throw new Error(`Uncommitted changes; commit them first:\n${dirty}`);
-			await mirror.refresh();
+			await mirror.refresh(0);
 			// The branch as the code host has it now (the mirror's own ref), and Scout's new work beside it, not over it.
 			const published = await tip(mirror.path, `refs/heads/${branch}`);
 			const outgoing = `refs/scout/outgoing/${branch}`;
 			if (source.kind === "dir") {
-				await git(["-C", mirror.path, "fetch", "--quiet", "--no-tags", source.dir, `+HEAD:${outgoing}`]);
+				await git(["-C", mirror.path, "-c", "transfer.fsckObjects=true", "fetch", "--quiet", "--no-tags", source.dir, `+HEAD:${outgoing}`]);
 			} else {
 				const bundle = await source.exportBranch();
 				if (bundle === undefined) throw new Error(`No commits on ${branch} beyond ${base} yet.`);
 				try {
-					await git(["-C", mirror.path, "fetch", "--quiet", "--no-tags", bundle, `+HEAD:${outgoing}`]);
+					await git(["-C", mirror.path, "-c", "transfer.fsckObjects=true", "fetch", "--quiet", "--no-tags", bundle, `+HEAD:${outgoing}`]);
 				} finally {
 					await rm(dirname(bundle), { recursive: true, force: true });
 				}
@@ -124,6 +124,17 @@ export function createCodeHostExtension(options: CodeHostOptions) {
 			}
 			const ahead = await git(["-C", mirror.path, "rev-list", "--count", `refs/heads/${base}..${outgoing}`]);
 			if (ahead === "0") throw new Error(`No changes on ${branch} beyond ${base} yet.`);
+
+			// A pipeline definition on a pushed branch can run before anyone reviews it, with the repository's secrets.
+			const pipelines = await ciFilesInPush(mirror.path, `refs/heads/${base}`, outgoing);
+			if (pipelines.length > 0) {
+				throw new Error(
+					`This change touches CI config (${pipelines.slice(0, 5).join(", ")}${pipelines.length > 5 ? ", ..." : ""}). ` +
+						"I don't push those: a workflow on a pushed branch runs before anyone has looked at it, with the repository's " +
+						"secrets. A person has to make that change. Take it out of the branch, and out of its history (every commit is " +
+						"pushed), and say in your reply what the pipeline needs, so someone can do it.",
+				);
+			}
 
 			// The control on what's published: everything the push carries, not the diff the self-review reads.
 			const leaked = [
@@ -170,7 +181,7 @@ export function createCodeHostExtension(options: CodeHostOptions) {
 			// Leased: if anyone pushed since the mirror looked, the push fails rather than erasing it, and the next try
 			// brings their commits in.
 			const lease = `--force-with-lease=refs/heads/${branch}:${published ?? ""}`;
-			const pushed = await git(["-C", mirror.path, "push", "--quiet", lease, mirror.gitUrl, `${outgoing}:refs/heads/${branch}`]).catch((error: unknown) => {
+			const pushed = await git(["-C", mirror.path, "push", "--quiet", lease, mirror.gitUrl, `${sha}:refs/heads/${branch}`]).catch((error: unknown) => {
 				if (/stale info|rejected|fetch first/i.test(String(error))) return undefined;
 				throw error;
 			});
@@ -229,6 +240,21 @@ async function bringIn(target: PullTarget, published: string, list: string): Pro
 	return merged
 		? `${said}\n\nI merged their commits into your files. Read what changed, adjust your work to fit if it needs to, and call open_pull_request again. In your reply, say whose work you built on.`
 		: `${said}\n\nTheir changes conflict with yours, and I can't merge them here. Leave the pull request as it is, and say in your reply what conflicts, so a person can sort it out.`;
+}
+
+/** Paths where a code host or CI service reads pipeline definitions. */
+const CI_CONFIG =
+	/(?:^|\/)(?:\.(?:github|forgejo|gitea)\/(?:workflows|actions)\/|\.(?:gitlab|circleci|buildkite|woodpecker|drone)\/|\.(?:gitlab-ci|drone|woodpecker|travis|cirrus)\.ya?ml$|(?:azure-pipelines|bitbucket-pipelines|appveyor)\.ya?ml$|jenkinsfile$)/i;
+
+/**
+ * Paths that touch CI config, in the net change from `base` to `tip` and in any commit the push adds (so a workflow
+ * added and deleted again is still caught: the push event fires on the commit that had it).
+ */
+export async function ciFilesInPush(repo: string, base: string, tip: string): Promise<string[]> {
+	const names = (out: string) => out.split("\0").filter(Boolean);
+	const net = names(await git(["-C", repo, "-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", "-z", `${base}..${tip}`]));
+	const each = names(await git(["-C", repo, "-c", "core.quotePath=false", "log", "--name-only", "--no-renames", "--format=", "-z", tip, "--not", "--branches"]));
+	return [...new Set([...net, ...each].map((p) => p.trim()).filter((p) => CI_CONFIG.test(p)))];
 }
 
 /** Where a push would publish a credential: in a file a commit adds it to, or in a commit's message. Never the value. */
