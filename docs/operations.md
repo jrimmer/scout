@@ -163,6 +163,13 @@ doesn't get them by default. `SCOUT_REGISTRY_CDNS=off` leaves out the download h
 if you'd rather ask for each one; a host a registry starts using that isn't listed is asked for like any other.
 An open network (`SCOUT_SANDBOX_NETWORK=open`) already reaches all of it.
 
+Checked from a sandbox with every ecosystem allowed: PyPI, npm, crates.io and rustup, the Go proxy, Maven Central,
+NuGet and the .NET SDK, RubyGems, Packagist, Hex, Terraform, Ansible Galaxy and Debian/Ubuntu answered, following their
+redirects. Two things don't work from the lists alone: the Gradle wrapper's distribution download redirects to
+`github.com`, which isn't listed because anyone can publish there (use apt's Gradle, or allow `github.com` for that
+repository yourself); and anything an ecosystem fetches from a host it doesn't list, which a thread asks for like
+any other host.
+
 **spoond.** Set `SCOUT_SPOOND_URL` and `SCOUT_SPOOND_TOKEN`. A repository whose toolchain isn't in a spoond image can
 start from a named snapshot instead (`snapshot` in `SCOUT_REPOS_FILE`, or `SCOUT_REPO_SNAPSHOT`): save a lease with the
 toolchain installed and its package cache warm, under Scout's spoond identity. The image (`SCOUT_SANDBOX_IMAGE`, default `dev-base`)

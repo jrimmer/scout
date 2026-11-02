@@ -84,7 +84,7 @@ describe("package registries", () => {
 		const closed = make("none");
 		const named = (name: string) => closed.egressOf(closed.repo(name));
 		assert.deepEqual(named("pub"), ["pypi.org", "files.pythonhosted.org"]);
-		assert.deepEqual(named("own"), ["example.com", "api.nuget.org", "builds.dotnet.microsoft.com", "globalcdn.nuget.org", "ci.dot.net"]);
+		assert.deepEqual(named("own"), ["example.com", "api.nuget.org", "dot.net", "builds.dotnet.microsoft.com", "globalcdn.nuget.org", "ci.dot.net"]);
 		assert.equal(named("private"), undefined, "no registries and no list: the plain network setting stands");
 		assert.equal(named("plain"), undefined);
 		const noCdn = make("none", false);

@@ -36,15 +36,13 @@
       "repo1.maven.org",
       "plugins.gradle.org",
       "services.gradle.org"
-    ],
-    "cdn": [
-      "downloads.gradle.org"
     ]
   },
   "dotnet": {
     "about": "NuGet and the .NET SDK",
     "hosts": [
       "api.nuget.org",
+      "dot.net",
       "builds.dotnet.microsoft.com"
     ],
     "cdn": [
