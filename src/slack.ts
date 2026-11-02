@@ -120,13 +120,14 @@ export class Slack {
 
 	/** `@jason` in what Scout writes (or its profile tells it to write) becomes a real mention of that person. */
 	async #withMentions(message: ChatMessage): Promise<ChatMessage> {
-		if (!/@\w/.test(message.text) && !JSON.stringify(message.blocks).includes("@")) return message;
-		const handles = await this.#handles();
+		const named = /@\w/.test(message.text) || JSON.stringify(message.blocks).includes("@");
+		const handles = named ? await this.#handles() : new Map<string, string>();
 		const blocks = message.blocks.map((block) => {
 			const b = block as { type?: string; text?: unknown };
-			return b.type === "markdown" && typeof b.text === "string" ? { ...b, text: mentionNames(b.text, handles) } : block;
+			const mentioned = named && b.type === "markdown" && typeof b.text === "string" ? { ...b, text: mentionNames(b.text, handles) } : block;
+			return mapStrings(mentioned, neutralizeBroadcasts) as unknown;
 		});
-		return { text: mentionNames(message.text, handles), blocks };
+		return { text: neutralizeBroadcasts(mentionNames(message.text, handles)), blocks };
 	}
 
 	#handleCache: { at: number; handles: Map<string, string> } | undefined;
@@ -693,6 +694,24 @@ export function slackChannelName(text: string): string {
  * `@name` → `<@ID>` for names in `handles` (lowercased Slack handles and display names), outside code spans and fences,
  * so `@scope/package` and decorators stay as written. A trailing `.` or `-` (end of a sentence) isn't part of the name.
  */
+/**
+ * Slack's broadcast mentions (`<!channel>`, `<!here>`, `<!everyone>` and user groups, `<!subteam^ID|name>`) ping everyone
+ * they name, so anything Scout writes is turned into plain `@name` text, which doesn't.
+ */
+export function neutralizeBroadcasts(text: string): string {
+	return text.replace(/<!(channel|here|everyone)(?:\|[^>]*)?>|<!subteam\^[^>|]+(?:\|([^>]*))?>/g, (_whole, special: string | undefined, group: string | undefined) =>
+		special !== undefined ? `@${special}` : `@${group?.replace(/^@/, "") || "subteam"}`,
+	);
+}
+
+/** Every string in a value, at any depth, passed through `change` (a message's blocks, say). */
+function mapStrings(value: unknown, change: (text: string) => string): unknown {
+	if (typeof value === "string") return change(value);
+	if (Array.isArray(value)) return value.map((item) => mapStrings(item, change));
+	if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, mapStrings(item, change)]));
+	return value;
+}
+
 export function mentionNames(text: string, handles: ReadonlyMap<string, string>): string {
 	return text
 		.split(/(```[\s\S]*?```|`[^`\n]*`)/)

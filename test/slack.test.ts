@@ -438,6 +438,23 @@ describe("slack", () => {
 			assert.equal(fake.called("users.list").length, 1, "the directory is cached");
 		});
 
+		it("writes broadcast mentions as plain names, so they don't ping the channel or a group", async () => {
+			const text = "Heads up <!channel>, <!here> and <!everyone>; <!subteam^S0ADMINS01|admins> and <!subteam^S0OPS0001>. Thanks @ann.";
+			const plain = "Heads up @channel, @here and @everyone; @admins and @subteam. Thanks <@U0ANN00001>.";
+			await slack.surface.post(TEAM_CHANNEL, undefined, { text, blocks: [{ type: "markdown", text }, { type: "section", text: { type: "mrkdwn", text } }, { type: "context", elements: [{ type: "mrkdwn", text }] }] });
+			await slack.surface.update(TEAM_CHANNEL, "1700000000.000100", { text: "<!here>", blocks: [{ type: "markdown", text: "<!here> now" }] });
+			const [posted] = fake.called("chat.postMessage");
+			assert.equal(posted?.args.text, plain);
+			// Names become mentions in markdown blocks only; the broadcasts are neutralised in every block.
+			const unmentioned = plain.replace("<@U0ANN00001>", "@ann");
+			assert.deepEqual(posted?.args.blocks, [
+				{ type: "markdown", text: plain },
+				{ type: "section", text: { type: "mrkdwn", text: unmentioned } },
+				{ type: "context", elements: [{ type: "mrkdwn", text: unmentioned }] },
+			]);
+			assert.deepEqual(fake.called("chat.update")[0]?.args, { channel: TEAM_CHANNEL, ts: "1700000000.000100", text: "@here", blocks: [{ type: "markdown", text: "@here now" }] });
+		});
+
 		it("still posts when the directory can't be read, with names as written", async () => {
 			quietErrors();
 			fake.queue("users.list", { ok: false, error: "missing_scope" });
