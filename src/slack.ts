@@ -120,20 +120,34 @@ export class Slack {
 
 	/** `@jason` in what Scout writes (or its profile tells it to write) becomes a real mention of that person. */
 	async #withMentions(message: ChatMessage): Promise<ChatMessage> {
-		if (!/@\w/.test(message.text) && !JSON.stringify(message.blocks).includes("@")) return message;
-		const handles = await this.#handles();
+		const named = /@\w/.test(message.text) || JSON.stringify(message.blocks).includes("@");
+		const handles = named ? await this.#handles() : new Map<string, string>();
 		const blocks = message.blocks.map((block) => {
 			const b = block as { type?: string; text?: unknown };
-			return b.type === "markdown" && typeof b.text === "string" ? { ...b, text: mentionNames(b.text, handles) } : block;
+			const mentioned = named && b.type === "markdown" && typeof b.text === "string" ? { ...b, text: mentionNames(b.text, handles) } : block;
+			return neutralizeMarkup(mentioned);
 		});
-		return { text: mentionNames(message.text, handles), blocks };
+		return { text: neutralizeBroadcasts(mentionNames(message.text, handles)), blocks };
 	}
 
 	#handleCache: { at: number; handles: Map<string, string> } | undefined;
+	#handleListing: Promise<Map<string, string>> | undefined;
+	#handleFailedAt: number | undefined;
 
-	/** Everyone's Slack handle and display name, lowercased, to their user ID; refreshed hourly. Ambiguous ones are left out. */
+	/**
+	 * Everyone's Slack handle and display name, lowercased, to their user ID; refreshed hourly. Ambiguous ones are left
+	 * out. Posts that come in together share one listing, and a listing that failed isn't tried again for five minutes.
+	 */
 	async #handles(): Promise<Map<string, string>> {
 		if (this.#handleCache !== undefined && Date.now() - this.#handleCache.at < 60 * 60 * 1000) return this.#handleCache.handles;
+		if (this.#handleFailedAt !== undefined && Date.now() - this.#handleFailedAt < 5 * 60 * 1000) return this.#handleCache?.handles ?? new Map();
+		this.#handleListing ??= this.#listHandles().finally(() => {
+			this.#handleListing = undefined;
+		});
+		return this.#handleListing;
+	}
+
+	async #listHandles(): Promise<Map<string, string>> {
 		const seen = new Map<string, string | null>();
 		const add = (name: string | undefined, id: string) => {
 			const key = name?.trim().toLowerCase().replace(/\s+/g, "");
@@ -153,10 +167,12 @@ export class Slack {
 			} while (cursor !== undefined);
 		} catch (error) {
 			console.error("listing Slack users for mentions failed:", error instanceof Error ? error.message : error);
+			this.#handleFailedAt = Date.now();
 			return this.#handleCache?.handles ?? new Map();
 		}
 		const handles = new Map([...seen].flatMap(([name, id]) => (id === null ? [] : [[name, id] as const])));
 		this.#handleCache = { at: Date.now(), handles };
+		this.#handleFailedAt = undefined;
 		return handles;
 	}
 
@@ -693,6 +709,25 @@ export function slackChannelName(text: string): string {
  * `@name` → `<@ID>` for names in `handles` (lowercased Slack handles and display names), outside code spans and fences,
  * so `@scope/package` and decorators stay as written. A trailing `.` or `-` (end of a sentence) isn't part of the name.
  */
+/**
+ * Slack's broadcast mentions (`<!channel>`, `<!here>`, `<!everyone>` and user groups, `<!subteam^ID|name>`) ping everyone
+ * they name, so anything Scout writes is turned into plain `@name` text, which doesn't.
+ */
+export function neutralizeBroadcasts(text: string): string {
+	return text.replace(/<!(channel|here|everyone)(?:\|[^>]*)?>|<!subteam\^[^>|]+(?:\|([^>]*))?>/g, (_whole, special: string | undefined, group: string | undefined) =>
+		special !== undefined ? `@${special}` : `@${group?.replace(/^@/, "") || "subteam"}`,
+	);
+}
+
+/** A block with its markup (mrkdwn and markdown text, at any depth) neutralised. Plain text isn't markup, so it's left as written. */
+function neutralizeMarkup(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(neutralizeMarkup);
+	if (value === null || typeof value !== "object") return value;
+	const object = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, neutralizeMarkup(item)])) as Record<string, unknown>;
+	const markup = object.type === "mrkdwn" || object.type === "markdown";
+	return markup && typeof object.text === "string" ? { ...object, text: neutralizeBroadcasts(object.text) } : object;
+}
+
 export function mentionNames(text: string, handles: ReadonlyMap<string, string>): string {
 	return text
 		.split(/(```[\s\S]*?```|`[^`\n]*`)/)

@@ -27,6 +27,9 @@ export type PermissionsConfig = {
 const WRITE = new Set(["admin", "owner", "maintain", "write"]);
 const CACHE_MS = 10 * 60 * 1000;
 
+/** The code host couldn't say what someone's access is, right now: a refusal for that moment, never a remembered one. */
+class LookupFailed extends Error {}
+
 export function loadPeople(path: string | undefined): Record<string, string> {
 	return path === undefined ? {} : (JSON.parse(readFileSync(path, "utf8")) as Record<string, string>);
 }
@@ -92,7 +95,14 @@ export class Permissions {
 	async #cached(key: string, now: number, check: () => Promise<Admission>): Promise<Admission> {
 		const cached = this.#cache.get(key);
 		if (cached !== undefined && now - cached.at < CACHE_MS) return cached.admission;
-		const admission = await check();
+		let admission: Admission;
+		try {
+			admission = await check();
+		} catch (error) {
+			// A check that couldn't be made says so, and isn't kept: the next request checks again.
+			if (!(error instanceof LookupFailed)) throw error;
+			return { ok: false, reason: error.message };
+		}
 		this.#cache.set(key, { at: now, admission });
 		return admission;
 	}
@@ -112,7 +122,7 @@ export class Permissions {
 			},
 		}).catch(() => undefined);
 		if (response === undefined || (!response.ok && response.status !== 404)) {
-			return { ok: false, reason: `I couldn't check your access to ${slug} just now. Try again in a minute.` };
+			throw new LookupFailed(`I couldn't check your access to ${slug} just now. Try again in a minute.`);
 		}
 		const permission = response.ok ? ((await response.json()) as { permission?: string }).permission : "none";
 		if (permission !== undefined && WRITE.has(permission)) return { ok: true };

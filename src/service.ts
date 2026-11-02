@@ -298,6 +298,8 @@ export async function startService(options: ServiceOptions) {
 
 	await bridge.reattach(Date.now() - 24 * HOUR);
 	harness.resume();
+	// Requests queued before a restart start now, if their limits allow.
+	void bridge.drain().catch((error: unknown) => console.error("starting queued requests failed:", error));
 	await slack.start({
 		onMessage: (message) => bridge.onMessage(message),
 		onReaction: (reaction) => bridge.onReaction(reaction),
@@ -1333,6 +1335,8 @@ export async function startService(options: ServiceOptions) {
 		const team = allows(config.initiative, "team");
 		if (own && new Date(now).getHours() >= config.reflect.hour) work.push(reflect(localDay(new Date(now))));
 		benchNight();
+		// Requests that were waiting for a limit start once it has room (a run ending also drains).
+		work.push(bridge.drain().catch((error: unknown) => console.error("starting queued requests failed:", error)));
 		work.push(health.watch("reviews", "reviewing pull requests failed", () => pullReviewer.poll()));
 		if (own) {
 			work.push(health.watch("upkeep", "looking after Scout's pull requests failed", () => upkeep.poll(pulls.open("work"), now)));
