@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { loadConfig, useScoutsKey } from "./config.ts";
-import { evalConfig, evalRepos, fakeCodeHost, guard, loadTasks, measures, report, type RunResult, runTask, type Side } from "./evals.ts";
+import { evalConfig, evalRepos, fakeCodeHost, guard, loadTasks, measures, report, type RunResult, runTask, type Side, TASK_LIMIT_MS, TASK_WALL_MS } from "./evals.ts";
 import { forgeFor } from "./forge.ts";
 import { openScout } from "./scout.ts";
 import { resolveSecrets } from "./secrets.ts";
@@ -99,10 +99,10 @@ if (import.meta.main) {
 			try {
 				for (const task of tasks) {
 					for (let n = 1; n <= tries; n++) {
-						const result = await runTask(scout, task, nameOf(task), side, BACKGROUND_CONTEXT, measured);
+						const result = await runTask(scout, task, nameOf(task), side, BACKGROUND_CONTEXT, measured, { limitMs: TASK_LIMIT_MS, wallMs: TASK_WALL_MS, judgeModel: config.model });
 						const t = result.timing;
 						const parts = t === undefined ? "" : ` (first token ${Math.round(t.firstToken / 1000)}s, model ${Math.round(t.model / 1000)}s, first tool ${Math.round(t.firstTool / 1000)}s, tools ${Math.round(t.tools / 1000)}s, self-review ${Math.round(t.selfReview / 1000)}s, retries ${Math.round(t.retries / 1000)}s, ${result.steps} steps)`;
-						console.error(`${side} ${task.name} #${n}: ${result.pass ? "pass" : `fail (${result.why})`}, $${result.cost.toFixed(2)}, ${Math.round(result.ms / 1000)}s${parts}`);
+						console.error(`${side} ${task.name} #${n}: ${result.unscored !== undefined ? `not scored (${result.unscored}: ${result.why})` : result.pass ? "pass" : `fail (${result.why})`}, $${result.cost.toFixed(2)}, ${Math.round(result.ms / 1000)}s${parts}`);
 						results.push(result);
 					}
 				}
@@ -123,5 +123,5 @@ if (import.meta.main) {
 		if (m === null) console.error(`--comment must be owner/repo#N; not posting`);
 		else await forgeFor(config.codeHost).comment(m[1]!, Number(m[2]), `**Eval results**\n\n${markdown}`);
 	}
-	process.exit(results.some((r) => r.side === "candidate" && !r.pass) ? 1 : 0);
+	process.exit(results.some((r) => r.side === "candidate" && !r.pass && r.unscored === undefined) ? 1 : 0);
 }

@@ -132,6 +132,24 @@ export type Usage = {
  */
 export type RunResult = { task: string; side: Side; pass: boolean; why: string; cost: number; ms: number; steps: number; timing?: Timing; usage?: Usage; unscored?: string; regressed?: boolean };
 
+/** Time limits for a task: 30 minutes of the model's own time, 90 in all (see the benchmark, bench-cli.ts). */
+export const TASK_LIMIT_MS = 30 * 60_000;
+export const TASK_WALL_MS = 90 * 60_000;
+/** A rubric judge that takes longer than this is stopped, and its run left unscored. */
+const JUDGE_MS = 5 * 60_000;
+
+/**
+ * Whether a failed model call is the provider's doing (a 5xx, 429, timeout or dropped connection) rather than the
+ * model's: a request that overflowed the context or was refused with another 4xx counts against the model, as it
+ * would for anyone using it.
+ */
+export function providerFault(message: string): boolean {
+	if (/context (length|window)|too many tokens|prompt is too long|maximum context|exceeds? the (context|maximum|model)|input is too long/i.test(message)) return false;
+	const status = /\b([45]\d\d)\b/.exec(message)?.[1];
+	if (status !== undefined) return status.startsWith("5") || status === "429" || status === "408";
+	return /time(d)? ?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|fetch failed|overloaded|rate.?limit|too many requests|bad gateway|service unavailable|network error|connection (error|reset|closed)/i.test(message);
+}
+
 /** The tasks in `dir` (`*.json`), checked; a file that isn't a task is an error that names it. */
 export function loadTasks(dir: string): EvalTask[] {
 	if (!existsSync(dir)) return [];
@@ -237,9 +255,14 @@ export function guard(runs: { tasks: number; tries: number; sides: number }, max
 }
 
 /** The comparison, as Markdown: passes per task for each side, average cost and time, totals, and what changed. */
-export function report(results: readonly RunResult[], sides: readonly Side[]): string {
-	const tasks = [...new Set(results.map((r) => r.task))];
+export function report(all: readonly RunResult[], sides: readonly Side[]): string {
+	// A run that says nothing about what's being tested (the provider failed, the judge didn't answer) isn't a failure:
+	// it's left out of the counts and listed beneath.
+	const results = all.filter((r) => r.unscored === undefined);
+	const unscored = all.filter((r) => r.unscored !== undefined);
+	const tasks = [...new Set(all.map((r) => r.task))];
 	const of = (task: string, side: Side) => results.filter((r) => r.task === task && r.side === side);
+	const left = (task: string, side: Side) => unscored.filter((r) => r.task === task && r.side === side).length;
 	const passes = (rs: readonly RunResult[]) => rs.filter((r) => r.pass).length;
 	const avg = (rs: readonly RunResult[], f: (r: RunResult) => number) => (rs.length === 0 ? 0 : rs.reduce((n, r) => n + f(r), 0) / rs.length);
 	const money = (n: number) => `$${n.toFixed(2)}`;
@@ -254,13 +277,15 @@ export function report(results: readonly RunResult[], sides: readonly Side[]): s
 	const rows = tasks.map((task) => {
 		const cells = ordered.map((side) => {
 			const rs = of(task, side);
-			return `${passes(rs)}/${rs.length} | ${money(avg(rs, (r) => r.cost))} | ${time(avg(rs, (r) => r.ms))}`;
+			const out = left(task, side);
+			return `${passes(rs)}/${rs.length}${out === 0 ? "" : ` (+${out} unscored)`} | ${money(avg(rs, (r) => r.cost))} | ${time(avg(rs, (r) => r.ms))}`;
 		});
 		return `| ${task} | ${cells.join(" | ")} |`;
 	});
 	const totals = ordered.map((side) => {
 		const rs = results.filter((r) => r.side === side);
-		return `${passes(rs)}/${rs.length} | ${money(rs.reduce((n, r) => n + r.cost, 0))} | ${time(avg(rs, (r) => r.ms))}`;
+		const out = unscored.filter((r) => r.side === side).length;
+		return `${passes(rs)}/${rs.length}${out === 0 ? "" : ` (+${out} unscored)`} | ${money(rs.reduce((n, r) => n + r.cost, 0))} | ${time(avg(rs, (r) => r.ms))}`;
 	});
 	const lines = [head, rule, ...rows, `| **All** | ${totals.join(" | ")} |`];
 	if (ordered.length === 2) {
@@ -268,8 +293,10 @@ export function report(results: readonly RunResult[], sides: readonly Side[]): s
 			const rs = of(task, side);
 			return rs.length === 0 ? 0 : passes(rs) / rs.length;
 		};
-		const better = tasks.filter((t) => rate(t, "candidate") > rate(t, "baseline"));
-		const worse = tasks.filter((t) => rate(t, "candidate") < rate(t, "baseline"));
+		// A task one side has no scored run of can't be said to be better or worse.
+		const compared = tasks.filter((t) => of(t, "candidate").length > 0 && of(t, "baseline").length > 0);
+		const better = compared.filter((t) => rate(t, "candidate") > rate(t, "baseline"));
+		const worse = compared.filter((t) => rate(t, "candidate") < rate(t, "baseline"));
 		lines.push("", `Better on: ${better.length === 0 ? "nothing" : better.join(", ")}. Worse on: ${worse.length === 0 ? "nothing" : worse.join(", ")}.`);
 	}
 	const timed = results.filter((r) => r.timing !== undefined);
@@ -301,6 +328,9 @@ export function report(results: readonly RunResult[], sides: readonly Side[]): s
 	const failures = results.filter((r) => !r.pass);
 	if (failures.length > 0) {
 		lines.push("", "<details><summary>Why runs failed</summary>", "", ...failures.map((r) => `- ${r.task} (${label(r.side).toLowerCase()}): ${r.why}`), "", "</details>");
+	}
+	if (unscored.length > 0) {
+		lines.push("", `<details><summary>${unscored.length} run${unscored.length === 1 ? "" : "s"} not scored (not counted as passes or failures)</summary>`, "", ...unscored.map((r) => `- ${r.task} (${label(r.side).toLowerCase()}): ${r.unscored}; ${r.why}`), "", "</details>");
 	}
 	return lines.join("\n");
 }
@@ -418,9 +448,9 @@ export async function runTask(
 	side: Side,
 	context: Context,
 	measured?: Measures,
-	options: { fileAt?: (task: EvalTask, ref: string, path: string) => Promise<Uint8Array>; limitMs?: number; wallMs?: number } = {},
+	options: { fileAt?: (task: EvalTask, ref: string, path: string) => Promise<Uint8Array>; limitMs?: number; wallMs?: number; judgeModel?: { provider: string; modelId: string } } = {},
 ): Promise<RunResult> {
-	const { fileAt, limitMs, wallMs } = options;
+	const { fileAt, limitMs, wallMs, judgeModel } = options;
 	let unscored: string | undefined;
 	let regressed: boolean | undefined;
 	let failedCall: string | undefined;
@@ -518,7 +548,8 @@ export async function runTask(
 		} else if (settled.status !== "done" || failedCall !== undefined) {
 			pass = false;
 			why.push(failedCall === undefined ? `the run didn't finish (${settled.status})` : `the model's calls kept failing: ${failedCall}`);
-			if (failedCall !== undefined) unscored = `the model's calls kept failing`;
+			// Only the provider's faults say nothing about the model: a request the model's own context couldn't hold counts.
+			if (failedCall !== undefined && providerFault(failedCall)) unscored = `the model's calls kept failing`;
 		}
 		const env = await scout.workspaces.env(conversation.id);
 		const sh = async (command: string, timeout = 600) => {
@@ -526,7 +557,8 @@ export async function runTask(
 			const result = await env.exec(command, { onOutput: (t) => (output += t), timeout }, context);
 			return { code: result.ok ? result.value.exitCode : 1, output: result.ok ? output : `${output}${String(result.error)}` };
 		};
-		const changed = task.check.suite !== undefined && (await sh(`git diff --name-only ${task.ref}; git ls-files --others --exclude-standard`, 60)).output.trim() !== "";
+		// A run stopped at the time limit is mid-change: its half-done work says nothing about regressions.
+		const changed = stopped === undefined && task.check.suite !== undefined && (await sh(`git diff --name-only ${task.ref}; git ls-files --others --exclude-standard`, 60)).output.trim() !== "";
 		// The hidden tests go in before the suite too: a fix can change or delete tests that held the old behaviour, so
 		// their old versions would fail a right answer. The suite leaves the hidden tests themselves to `command`.
 		if (task.check.hidden !== undefined) {
@@ -571,7 +603,8 @@ export async function runTask(
 		}
 		if (task.check.rubric !== undefined) {
 			const { output: diff } = await sh(`git diff ${task.ref}`, 60);
-			const verdict = await judge(scout, task, answer, diff, context);
+			const verdict = await judge(scout, task, answer, diff, context, judgeModel ?? scout.workAgent.model!);
+			if (verdict.unscored) unscored ??= `the judge didn't answer`;
 			if (!verdict.pass) {
 				pass = false;
 				why.push(`rubric: ${verdict.why}`);
@@ -607,8 +640,17 @@ export async function runTask(
 }
 
 /** Did the work meet the task's rubric? A model call with no tools: PASS or FAIL, and one line why. */
-async function judge(scout: Scout, task: EvalTask, answer: string, diff: string, context: Context): Promise<{ pass: boolean; why: string }> {
-	const conversation = await scout.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: scout.workAgent.model!, extensions: [] } }, context);
+async function judge(
+	scout: Scout,
+	task: EvalTask,
+	answer: string,
+	diff: string,
+	context: Context,
+	model: { provider: string; modelId: string },
+): Promise<{ pass: boolean; why: string; unscored?: boolean }> {
+	// A fixed judge, whatever model is under test, so the same answer is judged the same way (and a model under test
+	// doesn't mark its own work).
+	const conversation = await scout.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model, extensions: [] } }, context);
 	const prompt = [
 		"You are checking whether a piece of work meets an expectation. Judge only against the expectation.",
 		`The request: ${task.request}`,
@@ -618,10 +660,15 @@ async function judge(scout: Scout, task: EvalTask, answer: string, diff: string,
 		"Reply with PASS or FAIL on the first line, then one line saying why.",
 	].join("\n\n");
 	// Pi asks for a workspace for every conversation that runs, so the judge gets a sandbox it doesn't use: it goes after.
+	// A judge that hangs is stopped, so one call can't hold up the rest.
+	const timer = setTimeout(() => void conversation.abort(context).catch(() => {}), JUDGE_MS);
 	const settled = await (await conversation.submit({ type: "input", content: prompt }, context))
 		.wait(context)
-		.finally(() => scout.workspaces.remove(conversation.id).catch(() => {}));
-	if (settled.status !== "done" || settled.type !== "input") return { pass: false, why: "the judge didn't answer" };
+		.finally(() => {
+			clearTimeout(timer);
+			return scout.workspaces.remove(conversation.id).catch(() => {});
+		});
+	if (settled.status !== "done" || settled.type !== "input") return { pass: false, why: "the judge didn't answer", unscored: true };
 	const entry = await conversation.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
 	const text = (entry?.model?.[0] as { content?: { type: string; text?: string }[] } | undefined)?.content?.flatMap((b) => (b.type === "text" && b.text !== undefined ? [b.text] : [])).join("\n").trim() ?? "";
 	const [first = "", ...rest] = text.split("\n");

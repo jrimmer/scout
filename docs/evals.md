@@ -55,7 +55,13 @@ npm run eval -- --profile . --baseline /tmp/main --comment acme/scout-profile#7
 - `--profile` defaults to Scout's profile directory (`SCOUT_PROFILE_DIR`); tasks come from its `evals/`, or `--tasks`.
 - Without `--baseline`, it runs the candidate alone and reports passes.
 - `--comment owner/repo#N` posts the report on that pull request (a profile proposal, say) as Scout.
-- It exits 1 if any run with the candidate failed.
+- It exits 1 if any scored run with the candidate failed.
+- A `rubric` is judged by Scout's configured model (`SCOUT_MODEL`), even when `--model` names another to test, so a
+  model never marks its own work. Runs have the benchmark's time limits (30 minutes of the model's own time, 90 in
+  all), and a judge that hangs is stopped after 5 minutes.
+- A run that says nothing about what's tested (the provider's 5xx, 429 or timeouts kept failing the calls, the wall
+  limit passed, the judge didn't answer, no model call was made) is left out of the counts and listed beneath the
+  report as not scored. A request the model's own context couldn't hold, or another 4xx, counts against the model.
 - The report says where a run's time went: model calls waiting for their first token (timed on the stream, from
   sending the call), the model answering, the first tool call (the sandbox and the clone), other tools by name,
   pull requests' self-reviews (a model run inside `open_pull_request`), retries, and the rest: Scout and Pi Durable
