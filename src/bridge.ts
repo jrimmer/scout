@@ -194,7 +194,7 @@ export class Bridge {
 		const key = threadKey(message.channel, message.threadTs ?? message.ts);
 		const thread = this.#options.threads.get(key);
 		if (mentions && thread !== undefined && STOP_WORDS.test(this.#withoutMention(message.text))) {
-			await this.#stop(thread, message.user);
+			await this.#stop(thread, message.user, { channel: message.channel, ts: message.ts });
 			return;
 		}
 		await this.#serialized(key, () => this.#deliver(key, message, mentions, false));
@@ -353,12 +353,26 @@ export class Bridge {
 		for (const [key, at] of this.#refused) if (now - at >= REFUSAL_QUIET_MS) this.#refused.delete(key);
 	}
 
-	async #stop(thread: ThreadRow, user: string): Promise<void> {
+	/** `command`: the "@Scout stop" message, if that's how it was asked; it gets a ✅ to say it was heard. */
+	async #stop(thread: ThreadRow, user: string, command?: { channel: string; ts: string }): Promise<void> {
 		const { harness, context } = this.#options;
 		const view = await this.#view(thread);
 		// Requests in this thread still waiting their turn go too, whether or not a run is busy.
-		for (const item of this.#options.threads.queued()) if (item.key === thread.key) this.#options.threads.dequeue(item.id);
-		if (!view.busy) return;
+		if (command !== undefined) this.#status.finish(command.channel, command.ts, "done");
+		const dropped = this.#options.threads.queued().filter((item) => item.key === thread.key);
+		for (const item of dropped) {
+			this.#options.threads.dequeue(item.id);
+			// Its ⏳ goes, and a ✅ says the stop was carried out.
+			const request = item.message as IncomingMessage;
+			this.#status.finish(request.channel, request.ts, "done");
+		}
+		if (!view.busy) {
+			if (dropped.length > 0) {
+				view.queuedStopped(await this.#options.nameOf(user));
+				this.#options.audit?.record("stop", { actor: user, conversationId: thread.conversationId, channel: thread.channel, detail: { queued: dropped.length } });
+			}
+			return;
+		}
 		view.markStopped(await this.#options.nameOf(user));
 		this.#options.audit?.record("stop", { actor: user, conversationId: thread.conversationId, channel: thread.channel });
 		const conversation = await harness.conversation(thread.conversationId as ConversationId, context);

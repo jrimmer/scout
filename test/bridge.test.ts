@@ -467,6 +467,18 @@ describe("bridge", () => {
 		assert.equal(threads.queued().length, 1);
 		gated.onDelete({ channel: "C1", ts: "600.4" });
 		assert.equal(threads.queued().length, 0);
+
+		// "@Scout stop" drops a request that's waiting, and the message that said it was waiting says it was stopped.
+		await gated.onMessage(message({ text: `<@${BOT}> and again`, ts: "600.5", threadTs: "600.1" }));
+		assert.equal(threads.queued().length, 1);
+		await gated.onMessage(message({ text: `<@${BOT}> stop`, ts: "600.6", threadTs: "600.1" }));
+		await gated.view(thread.conversationId)?.settled();
+		assert.equal(threads.queued().length, 0);
+		assert.match(surface.sent.at(-1)?.message.text ?? "", /^Stopped by ann before I started\./);
+		full = false;
+		await gated.drain();
+		await harness.waitForIdle(context);
+		assert.equal(faux.state.callCount, 2, "the stopped request never started");
 	});
 
 	it("drops a queued request that fails to start, and starts the rest", async () => {

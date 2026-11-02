@@ -287,6 +287,15 @@ export class ThreadView {
 		});
 	}
 
+	/** The request that was waiting its turn was stopped before it started: the message that said it was waiting says so. */
+	queuedStopped(by: string): void {
+		const text = `Stopped by ${by} before I started.`;
+		const message = { text, blocks: [{ type: "markdown", text: `_${text}_` }] };
+		this.#enqueue(async () => {
+			if (this.#run === undefined && this.#resumeTs !== undefined) await this.#surface.update(this.#channel, this.#resumeTs, message);
+		});
+	}
+
 	/** Someone's request is waiting its turn: say so in the message this run will use once it starts. */
 	queued(text: string): void {
 		const message = { text, blocks: [{ type: "markdown", text: `_${text}_` }] };
