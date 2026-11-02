@@ -143,6 +143,9 @@ describe("reading a review", () => {
 		assert.deepEqual(review.comments, [{ path: "src/cart.ts", line: 11, body: "Multiply by `i.quantity`." }]);
 		assert.equal(review.body, "The total ignores quantity.\n\n**src/cart.ts:40**: Unrelated, but this rounds.");
 		assert.equal(parsePullReview("APPROVE", diff).verdict, "approve");
+		const cut = parsePullReview("APPROVE\nfine", `${diff}\n(… diff cut at 60000 characters)`);
+		assert.equal(cut.verdict, "comment");
+		assert.match(cut.body, /only read the first 60000/);
 		assert.deepEqual(parsePullReview("Some thoughts first.", diff), { verdict: "comment", body: "Some thoughts first.", comments: [] });
 	});
 });

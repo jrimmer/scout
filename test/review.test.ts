@@ -112,7 +112,10 @@ describe("self-review", () => {
 	it("parses the verdict line", () => {
 		assert.equal(parseReview("APPROVE\nfine").verdict, "approve");
 		assert.equal(parseReview("  changes:\n- x").verdict, "changes");
-		assert.equal(parseReview("Looks fine to me").verdict, "approve");
+		assert.equal(parseReview("Looks fine to me").verdict, "changes");
+		assert.equal(parseReview("").verdict, "changes");
+		assert.equal(parseReview("I can't help with that.").verdict, "changes");
+		assert.match(parseReview("").text, /empty/);
 	});
 
 	it("sends Scout back to fix what its review finds, then opens the pull request", async () => {
