@@ -28,6 +28,14 @@ describe("render", () => {
 		assert.doesNotMatch(JSON.stringify(finalMessage({ startedAt: 0, steps: [], text: "Done." }, 1000).blocks), /Noted/);
 	});
 
+	it("keeps the notes block within Slack's 3,000-character limit however many notes there are", () => {
+		const notes = Array.from({ length: 30 }, (_, i) => `Note ${i}: ${"x".repeat(250)}`);
+		const message = finalMessage({ startedAt: 0, steps: [], text: "Done.", notes }, 1000);
+		const context = message.blocks.find((b) => (b as { type: string }).type === "context" && JSON.stringify(b).includes("Noted for this channel")) as { elements: { text: string }[] };
+		assert.ok(context.elements[0]!.text.length <= 3_000, `${context.elements[0]!.text.length} characters`);
+		assert.match(context.elements[0]!.text, /Disagree\? Tell me to forget it\.$/);
+	});
+
 	it("takes anything that looks like a credential out of an error before the thread sees it", () => {
 		const error = `the model didn't answer (401: invalid x-api-key ${fake("sk-", "ant-api03-abcdefghijklmnopqrstuvwxyz0123")})`;
 		for (const run of [{ startedAt: 0, steps: [], error }, { startedAt: 0, steps: [], text: "Half done.", error }]) {
@@ -211,7 +219,8 @@ describe("answers that always arrive", () => {
 	});
 
 	it("stops trying when Slack says no, and keeps the run's message for a restart to finish", async () => {
-		const s = flaky({ 2: "no", 3: "no" });
+		// The answer's edit and post are refused, and so are the plain-text retry's edit and post.
+		const s = flaky({ 2: "no", 3: "no", 4: "no", 5: "no" });
 		const waits: number[] = [];
 		const ends: (string | undefined)[] = [];
 		const remembered: (string | undefined)[] = [];
@@ -221,8 +230,61 @@ describe("answers that always arrive", () => {
 		await view.settled();
 		errors.mock.restore();
 		assert.deepEqual(waits, []);
-		assert.deepEqual(ends, []);
+		assert.deepEqual(ends, [undefined], "the run still ends, so its reactions and queue move on");
 		assert.deepEqual(remembered, ["p1"], "still remembered: after a restart, it gets the answer");
+	});
+
+	it("sends an answer Slack refuses once more as plain text, and ends the run with it", async () => {
+		const sent: ChatMessage[] = [];
+		const refuse = (m: ChatMessage) => {
+			const first = m.blocks[0] as { text?: string } | undefined;
+			if (m.blocks.length > 0 && first?.text === "All done.") throw Object.assign(new Error("invalid_blocks"), { code: "slack_webapi_platform_error" });
+		};
+		const surface = {
+			post: async (_c: string, _t: string | undefined, m: ChatMessage) => {
+				refuse(m);
+				sent.push(m);
+				return `p${sent.length + 1}`;
+			},
+			update: async (_c: string, _ts: string, m: ChatMessage) => {
+				refuse(m);
+				sent.push(m);
+			},
+		};
+		const ends: { answer?: string; ts?: string }[] = [];
+		const remembered: (string | undefined)[] = [];
+		const errors = mock.method(console, "error", () => {});
+		const view = new ThreadView({
+			surface,
+			channel: "C",
+			threadTs: "1",
+			onRunEnd: (answer, ts) => ends.push({ answer, ts }),
+			onRunMessage: (ts) => remembered.push(ts),
+		});
+		view.handle([{ type: "run_start", inputs: [] }, said("All done."), { type: "run_end", inputs: [] }] as never);
+		await view.settled();
+		errors.mock.restore();
+		assert.deepEqual(sent.at(-1), { text: "All done.", blocks: [] },"the retry is text only: no blocks, so no context or notes either");
+		assert.deepEqual(ends, [{ answer: "All done.", ts: "p2" }], "p2: the progress message is the first post");
+		assert.deepEqual(remembered, ["p2", undefined], "delivered, so the run's message is no longer remembered");
+	});
+
+	it("ends the run even when Slack takes none of its answer", async () => {
+		const ends: string[] = [];
+		const errors = mock.method(console, "error", () => {});
+		const surface = {
+			post: async () => {
+				throw Object.assign(new Error("channel_not_found"), { code: "slack_webapi_platform_error" });
+			},
+			update: async () => {
+				throw Object.assign(new Error("channel_not_found"), { code: "slack_webapi_platform_error" });
+			},
+		};
+		const view = new ThreadView({ surface, channel: "C", threadTs: "1", onRunEnd: (_a, _ts, outcome) => ends.push(outcome) });
+		view.handle([{ type: "run_start", inputs: [] }, said("Done."), { type: "run_end", inputs: [] }] as never);
+		await view.settled();
+		errors.mock.restore();
+		assert.deepEqual(ends, ["answered"]);
 	});
 
 	it("shows a long answer's opening and attaches the whole of it, or posts it in parts without attachments", async () => {

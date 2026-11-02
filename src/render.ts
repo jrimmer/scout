@@ -19,6 +19,8 @@ export type RunOutcome = "answered" | "stopped" | "problem";
 
 /** Slack's markdown block takes standard Markdown, up to 12,000 characters. */
 const MARKDOWN_LIMIT = 11_500;
+/** A plain text message, and a context block's text: Slack's limit for both is 3,000 characters. */
+const PLAIN_LIMIT = 3_000;
 const PROGRESS_INTERVAL_MS = 1_500;
 const VISIBLE_STEPS = 6;
 /**
@@ -457,11 +459,45 @@ export class ThreadView {
 			const cost = this.#cost?.(run.startedAt);
 			const message = finalMessage(cost === undefined ? run : { ...run, cost }, this.#now());
 			const answer = (message.blocks[0] as { text: string }).text;
-			const ts = await this.#deliver(run.ts, answer, message);
-			this.#onRunMessage(undefined);
-			const outcome: RunOutcome = run.stoppedBy !== undefined ? "stopped" : run.gaveUp !== undefined || run.error !== undefined ? "problem" : "answered";
-			this.#onRunEnd(run.stoppedBy === undefined && run.gaveUp === undefined ? run.text : undefined, ts, outcome, this.#now() - run.startedAt);
+			let ts: string | undefined;
+			let delivered = false;
+			try {
+				ts = await this.#answer(run.ts, answer, message);
+				delivered = true;
+			} finally {
+				// However the answer went, the run is over: its reactions, its requests and the queue behind it all follow. A
+				// run whose answer never got in keeps its message, so a restart can still finish it.
+				if (delivered) this.#onRunMessage(undefined);
+				const outcome: RunOutcome = run.stoppedBy !== undefined ? "stopped" : run.gaveUp !== undefined || run.error !== undefined ? "problem" : "answered";
+				this.#onRunEnd(run.stoppedBy === undefined && run.gaveUp === undefined ? run.text : undefined, ts, outcome, this.#now() - run.startedAt);
+			}
 		});
+	}
+
+	/** The final answer in Slack. When Slack refuses it for a reason other than being down, it's sent once more as plain text. */
+	async #answer(ts: string | undefined, answer: string, message: ChatMessage): Promise<string | undefined> {
+		try {
+			return await this.#deliver(ts, answer, message);
+		} catch (error) {
+			if (DOWN_CODES.has((error as { code?: string }).code ?? "")) throw error;
+			console.error(`Slack refused the answer in ${this.#channel}/${this.#threadTs}; sending it once as plain text:`, error);
+			return this.#deliverPlain(ts, answer);
+		}
+	}
+
+	/** The answer as plain text only (no blocks, so no context or notes either), in parts if it's long. */
+	async #deliverPlain(ts: string | undefined, answer: string): Promise<string | undefined> {
+		const [first = "", ...others] = parts(answer, PLAIN_LIMIT);
+		const plain = (text: string): ChatMessage => ({ text: clip(text, PLAIN_LIMIT), blocks: [] });
+		let posted = ts;
+		if (ts === undefined) posted = await this.#surface.post(this.#channel, this.#threadTs, plain(first));
+		else {
+			await this.#surface.update(this.#channel, ts, plain(first)).catch(async () => {
+				posted = await this.#surface.post(this.#channel, this.#threadTs, plain(first));
+			});
+		}
+		for (const part of others) await this.#surface.post(this.#channel, this.#threadTs, plain(part));
+		return posted;
 	}
 
 	#enqueue(work: () => Promise<void>): void {
@@ -517,7 +553,7 @@ export function finalMessage(
 							elements: [
 								{
 									type: "mrkdwn",
-									text: `Noted for this channel: ${run.notes.map((n) => `“${clip(n, 200)}”`).join(" · ")}. Disagree? Tell me to forget it.`,
+									text: `${clip(`Noted for this channel: ${run.notes.map((n) => `“${clip(n, 200)}”`).join(" · ")}`, PLAIN_LIMIT - 100)}. Disagree? Tell me to forget it.`,
 								},
 							],
 						},
