@@ -53,6 +53,8 @@ export type ReflectorOptions = {
 	/** Model and extensions for the reflection conversation: `reflectionExtensions()` plus a profile code host. */
 	agent: AgentChange;
 	threadLink: (thread: ThreadRow) => Promise<string | undefined>;
+	/** Characters of threads one digest holds; DIGEST_BUDGET unless a test wants it small. */
+	digestBudget?: number;
 };
 
 export class Reflector {
@@ -77,7 +79,7 @@ export class Reflector {
 		const pending = threads.unreflected();
 		if (pending.length === 0) return undefined;
 
-		const digest = await this.digest(pending);
+		const { text: digest, read } = await this.digest(pending);
 		const root = join(this.#dataDir, "reflections", day);
 		mkdirSync(join(root, "tmp"), { recursive: true });
 		await this.mirror.clone(join(root, "profile"), branchForDay(day), profileRepo.base, git);
@@ -95,8 +97,9 @@ export class Reflector {
 			context,
 		);
 		await conversation.submit({ type: "input", content: digest, requestId: `reflect:${day}` }, context);
-		threads.reflected(day, conversation.id, pending);
-		return { conversationId: conversation.id, threads: pending.length };
+		// Only the threads the digest held were read; the rest stay pending for the next run.
+		threads.reflected(day, conversation.id, read);
+		return { conversationId: conversation.id, threads: read.length };
 	}
 
 	/** The environment for a reflection conversation's file tools, or undefined for any other conversation. */
@@ -137,16 +140,22 @@ export class Reflector {
 		return parts.join("\n");
 	}
 
-	async digest(pending: readonly ThreadRow[]): Promise<string> {
+	/** The digest, and the threads it holds (a thread past the budget is left out, and stays pending). */
+	async digest(pending: readonly ThreadRow[]): Promise<{ text: string; read: ThreadRow[] }> {
 		const { harness, context } = this.#options;
 		const self = this.#options.codeHost === undefined ? undefined : await whoAmI(this.#options.codeHost, this.#options.fetch);
 		const parts: string[] = [];
+		const read: ThreadRow[] = [];
+		const budget = this.#options.digestBudget ?? DIGEST_BUDGET;
 		let used = 0;
 		let omitted = 0;
 		for (const thread of [...pending].sort((a, b) => b.lastActivity - a.lastActivity)) {
 			const id = thread.conversationId as ConversationId;
 			const conversation = await harness.conversation(id, context);
-			if (conversation === undefined) continue;
+			if (conversation === undefined) {
+				read.push(thread); // gone, so there is nothing to read later either
+				continue;
+			}
 			const entries: EntryRecord[] = [];
 			let cursor: Parameters<typeof conversation.entries>[2];
 			do {
@@ -163,11 +172,12 @@ export class Reflector {
 					(pulls.length === 0 ? "no pull request" : `pull requests, and what reviewers said:\n${await this.#withFeedback(pulls, self)}`),
 			].join("\n");
 			const part = `${header}\n\n${clipMiddle(renderTranscript(entries), THREAD_BUDGET)}`;
-			if (used + part.length > DIGEST_BUDGET) {
+			if (used + part.length > budget) {
 				omitted++;
 				continue;
 			}
 			parts.push(part);
+			read.push(thread);
 			used += part.length;
 		}
 		const proposals = this.#options.pulls.recent("profile", 10);
@@ -180,9 +190,9 @@ export class Reflector {
 		const intro =
 			`${outcomes}${notes === "" ? "" : `${notes}\n\n`}` +
 			(waits === undefined ? "" : `${waits} If people waited because of how you work (long runs, many steps), say what would help.\n\n`) +
-			`Threads with new activity since the last reflection: ${pending.length}.`;
+			`Threads with new activity since the last reflection: ${pending.length - omitted}.`;
 		const tail = omitted > 0 ? `\n\n(${omitted} more thread${omitted === 1 ? "" : "s"} left out for length.)` : "";
-		return `${intro}\n\n${parts.join("\n\n")}${tail}`;
+		return { text: `${intro}\n\n${parts.join("\n\n")}${tail}`, read };
 	}
 }
 

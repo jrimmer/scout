@@ -211,4 +211,42 @@ describe("nightly reflection", () => {
 		assert.deepEqual(threads.unreflected(), []);
 		await harness.close(context);
 	});
+
+	it("leaves threads past the digest's budget pending, and marks only the ones it read", async () => {
+		const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-model" }] });
+		const models = createModels();
+		models.setProvider(faux.provider);
+		const registry = createRegistry();
+		const reflection = reflectionExtensions(() => "Learn.");
+		registry.install(reflection.reflect);
+		registry.install(reflection.files);
+		let reflector: Reflector | undefined;
+		const harness = await Harness.open(new MemoryStorage(), { models, registry, env: async (target, ctx) => reflector?.env(target, ctx) }, context);
+		const model = { provider: "faux", modelId: "faux-model" };
+		const many = new Threads(":memory:");
+		reflector = new Reflector({
+			harness,
+			threads: many,
+			pulls,
+			context,
+			dataDir: join(root, "data-budget"),
+			profileRepo: { gitUrl: remote, base: "main", slug: "team/scout-profile" },
+			git: { name: "Scout", email: "scout@localhost" },
+			agent: { model, extensions: [reflection.reflect, reflection.files] },
+			threadLink: async () => undefined,
+			digestBudget: 130,
+		});
+		for (const n of [1, 2, 3]) {
+			const c = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model, extensions: [] } }, context);
+			many.insert({ key: threadKey("C1", `${n}.0`), conversationId: c.id, channel: "C1", threadTs: `${n}.0`, startedBy: "UANN" });
+			many.spoke(threadKey("C1", `${n}.0`), "scout", 1000 + n);
+		}
+		faux.setResponses([fauxAssistantMessage("Nothing to change.")]);
+		const started = await reflector.run("2026-10-21");
+		assert.ok(started !== undefined && started.threads >= 1 && started.threads < 3, "not every thread fit");
+		assert.equal(many.unreflected().length, 3 - started.threads, "the ones left out are still pending");
+		await harness.waitForIdle(context);
+		await harness.close(context);
+		many.close();
+	});
 });
