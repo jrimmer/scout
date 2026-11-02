@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Type } from "@earendil-works/pi-ai";
+import { registryName } from "./registries.ts";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 
 /**
@@ -78,6 +79,9 @@ function publicSuffix(name: string): boolean {
 }
 
 function checkHost(text: string): { host: string } | { reason: string } {
+	// `@python`: a package ecosystem's registries (registries.ts), asked for as one so a private repository can have them.
+	const ecosystem = text.trim().startsWith("@") ? registryName(text) : undefined;
+	if (ecosystem !== undefined) return { host: `@${ecosystem}` };
 	const raw = text
 		.trim()
 		.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
@@ -175,11 +179,14 @@ function toRequest(row: Record<string, unknown>): EgressRequest {
  */
 export function allowInReposFile(path: string, repo: string, host: string): boolean {
 	if (!existsSync(path)) return false;
-	const list = JSON.parse(readFileSync(path, "utf8")) as { name?: string; egress?: string[] }[];
+	const list = JSON.parse(readFileSync(path, "utf8")) as { name?: string; egress?: string[]; registries?: string[] }[];
 	const entry = list.find((r) => r.name === repo);
 	if (entry === undefined) return false;
-	if (entry.egress?.includes(host) === true) return true;
-	entry.egress = [...(entry.egress ?? []), host];
+	// `@python` is an ecosystem, kept in `registries`; anything else is a host, kept in `egress`.
+	const key = host.startsWith("@") ? "registries" : "egress";
+	const value = host.startsWith("@") ? host.slice(1) : host;
+	if (entry[key]?.includes(value) === true) return true;
+	entry[key] = [...(entry[key] ?? []), value];
 	copyFileSync(path, `${path}.bak`);
 	const temporary = `${path}.${process.pid}.tmp`;
 	writeFileSync(temporary, `${JSON.stringify(list, null, 2)}\n`, { mode: 0o600 });
@@ -198,9 +205,10 @@ export function egressExtension(propose: (conversationId: number, host: string, 
 			"Your sandbox couldn't reach a host it needs (a package registry, a download): DNS failures, 'could not resolve " +
 			"host', connections refused or timing out during an install. Ask whoever runs you to allow that host for this " +
 			"repository's sandboxes. Use it once per host, say in the thread that you've asked, and don't try to work " +
-			"around the network.",
+			"around the network. When the tool you need isn't installed (a JDK, an image library, a Terraform provider) and " +
+			"the install can't reach its registry, ask for that ecosystem as one (@python, @jvm, @apt…) instead of host by host.",
 		parameters: Type.Object({
-			host: Type.String({ description: "The host name, e.g. registry.npmjs.org (no scheme or path)" }),
+			host: Type.String({ description: "The host name, e.g. registry.npmjs.org (no scheme or path); or @python, @node, @rust, @go, @jvm, @dotnet, @ruby, @php, @elixir, @terraform, @ansible or @apt for that ecosystem's package registries" }),
 			why: Type.String({ description: "What needed it, in a sentence: the command and what it was fetching" }),
 		}),
 		execute: async (args, api) => {

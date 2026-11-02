@@ -1,3 +1,4 @@
+import { REGISTRIES, unknownRegistries } from "./registries.ts";
 import { ConfigError } from "./startup.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { type Initiative, parseInitiative } from "./initiative.ts";
@@ -22,6 +23,8 @@ export type RepoConfig = {
 	snapshot?: string;
 	/** Hosts this repository's sandboxes may reach, on substrates with an egress firewall (spoond). */
 	egress?: string[];
+	/** Package registries by ecosystem (registries.ts) its sandboxes may reach, besides `egress`; `all` for every one. Unset: public repositories get all, private ones none. */
+	registries?: string[];
 	/** Its sandboxes' size, if its builds need more than SCOUT_SANDBOX_SIZE gives (spoond: small to xlarge). */
 	size?: string;
 };
@@ -36,6 +39,8 @@ export type SandboxConfig = {
 	size?: string;
 	/** Docker's network for `open`. */
 	dockerNetwork: string;
+	/** Whether a registry's download hosts (the ones it redirects to) come with it (registries.ts); SCOUT_REGISTRY_CDNS=off leaves them out. */
+	registryCdns: boolean;
 	/** `transport`: the pi-env daemon over spoond's stream WebSocket, or spoond's REST API with no connection held. */
 	spoond?: { url: string; token: string; transport: "stream" | "rest" };
 };
@@ -224,9 +229,18 @@ function moreRepos(path: string | undefined): RepoConfig[] {
 			...(r.image ? { image: r.image } : {}),
 			...(r.snapshot ? { snapshot: r.snapshot } : {}),
 			...(Array.isArray(r.egress) ? { egress: r.egress } : {}),
+			...(Array.isArray(r.registries) ? { registries: registryList(r.registries, `${path}: ${r.name}`) } : {}),
 			...(typeof r.size === "string" && r.size !== "" ? { size: r.size } : {}),
 		};
 	});
+}
+
+/** A registries list: ecosystem names from registries.ts, or `all`; empty means none. A typo stops Scout at start. */
+function registryList(names: unknown[], where: string): string[] {
+	const list = names.map((n) => String(n).trim()).filter(Boolean);
+	const unknown = unknownRegistries(list);
+	if (unknown.length > 0) throw new ConfigError(`${where}: unknown package registries ${unknown.join(", ")}; the ecosystems are ${Object.keys(REGISTRIES).join(", ")}, or all`);
+	return list;
 }
 
 function sandboxConfig(env: NodeJS.ProcessEnv): SandboxConfig {
@@ -245,6 +259,7 @@ function sandboxConfig(env: NodeJS.ProcessEnv): SandboxConfig {
 		network,
 		...(size === undefined ? {} : { size }),
 		dockerNetwork: env.SCOUT_DOCKER_NETWORK ?? "bridge",
+		registryCdns: (env.SCOUT_REGISTRY_CDNS ?? "on") !== "off",
 		...(driver === "spoond" ? { spoond: { url: required(env, "SCOUT_SPOOND_URL"), token: required(env, "SCOUT_SPOOND_TOKEN"), transport } } : {}),
 	};
 }
@@ -259,6 +274,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		slug,
 		...(env.SCOUT_REPO_SNAPSHOT ? { snapshot: env.SCOUT_REPO_SNAPSHOT } : {}),
 		...(env.SCOUT_REPO_EGRESS ? { egress: env.SCOUT_REPO_EGRESS.split(",").map((h) => h.trim()).filter(Boolean) } : {}),
+		...(env.SCOUT_REPO_REGISTRIES === undefined ? {} : { registries: registryList(env.SCOUT_REPO_REGISTRIES.split(","), "SCOUT_REPO_REGISTRIES") }),
 	};
 	const [provider, ...rest] = (env.SCOUT_MODEL ?? "anthropic/claude-opus-5-5").split("/");
 	const modelId = rest.join("/");

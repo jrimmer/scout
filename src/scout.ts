@@ -137,6 +137,7 @@ export async function openScout(options: ScoutOptions) {
 		sandbox: {
 			image: config.sandbox.image,
 			network: config.sandbox.network,
+			registryCdns: config.sandbox.registryCdns,
 			...(config.sandbox.size === undefined ? {} : { size: config.sandbox.size }),
 		},
 		git: config.git,

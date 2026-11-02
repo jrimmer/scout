@@ -23,6 +23,7 @@ import { startDashboard } from "./dash/server.ts";
 import { ThreadDoc } from "./docs.ts";
 import { countMcpTools, doctor, formatChecks, restartsOf, type Unit, unitOf } from "./doctor.ts";
 import type { SandboxDriver } from "./drivers/types.ts";
+import { registryHosts } from "./registries.ts";
 import { allowInReposFile, EgressRequests, whyNotHost } from "./egress.ts";
 import { loadTasks } from "./evals.ts";
 import { type Ask, askerOf, forgeFor, Inbox } from "./forge.ts";
@@ -370,7 +371,8 @@ export async function startService(options: ServiceOptions) {
 		const name = scout.workspaces.repo((await scout.repoOfConversation(conversationId)).name).name;
 		const repo = config.repos.find((r) => r.name === name);
 		if (repo === undefined) return "I couldn't tell which repository this thread works in, so I can't ask for its network.";
-		if (repo.egress?.includes(host) === true) {
+		const ecosystem = host.startsWith("@") ? host.slice(1) : undefined;
+		if (repo.egress?.includes(host) === true || (ecosystem !== undefined && (repo.registries?.includes(ecosystem) === true || repo.registries?.includes("all") === true))) {
 			return `${host} is already allowed for ${repo.name}. This thread's sandbox may have started before it was; a new thread gets it.`;
 		}
 		if (repo.egress === undefined && config.sandbox.network === "open") {
@@ -393,7 +395,11 @@ export async function startService(options: ServiceOptions) {
 		audit.record("egress_requested", { actor: "scout", conversationId, detail: { id: request.id, repo: repo.name, host, why } });
 		if (home === undefined) return `I'd ask for ${host} to be allowed for ${repo.name}, but I have no home channel to ask in. Whoever runs me can add it to the repository's egress list.`;
 		const text = `Allow \`${host}\` for ${repo.name}'s sandboxes?`;
-		const what = `*${text}*\nAllowing it lets every new sandbox for ${repo.name} connect to \`${host}\` from now on, not just this thread's, until someone takes it out of the repository's egress list. ${thread} couldn't reach it.`;
+		const hosts = ecosystem === undefined ? undefined : registryHosts([ecosystem], config.sandbox.registryCdns);
+		const what =
+			hosts === undefined
+				? `*${text}*\nAllowing it lets every new sandbox for ${repo.name} connect to \`${host}\` from now on, not just this thread's, until someone takes it out of the repository's egress list. ${thread} couldn't reach it.`
+				: `*Allow ${ecosystem === "all" ? "every package registry" : `the ${ecosystem} package registries`} for ${repo.name}'s sandboxes?*\nThat lets every new sandbox for ${repo.name} install from ${hosts.map((h) => `\`${h}\``).join(", ")} from now on, not just this thread's. Anything it downloads there can run inside the sandbox, which has no credentials but can see the repository. ${thread} needed it.`;
 		await slack.surface.post(home, undefined, {
 			text,
 			blocks: [
@@ -427,7 +433,8 @@ export async function startService(options: ServiceOptions) {
 		let where = "";
 		if (d.allow && repo !== undefined) {
 			// New sandboxes get it now; the repos file keeps it across restarts, when the repository is in it.
-			if (repo.egress?.includes(decided.host) !== true) repo.egress = [...(repo.egress ?? []), decided.host];
+			if (decided.host.startsWith("@")) repo.registries = [...new Set([...(repo.registries ?? []), decided.host.slice(1)])];
+			else if (repo.egress?.includes(decided.host) !== true) repo.egress = [...(repo.egress ?? []), decided.host];
 			const saved = config.reposFile !== undefined && allowInReposFile(config.reposFile, repo.name, decided.host);
 			where = saved ? " (saved to the repos file)" : ` (until I restart: ${repo.name} isn't in the repos file, so add it to SCOUT_REPO_EGRESS to keep it)`;
 		}
@@ -836,6 +843,16 @@ export async function startService(options: ServiceOptions) {
 	// Work asked on the code host: an issue assigned to Scout, @scout in an issue or a comment, and what people say on
 	// Scout's own pull requests (forge.ts). It goes to a thread like any request, and the answer back to the code host.
 	const forge = forgeFor(config.codeHost, doFetch);
+	// Package registries (registries.ts) come with a public repository unless it says otherwise; one the code host won't
+	// vouch for is treated as private. Decided at start.
+	// Not awaited: startup carries on, and a sandbox opened in these first moments starts without them.
+	for (const repo of config.repos) {
+		if (repo.registries !== undefined) continue;
+		void forge
+			.isPublic(repo.slug, false)
+			.catch(() => false)
+			.then((open) => (repo.registries ??= open ? ["all"] : []));
+	}
 	const inbox = new Inbox({
 		path: join(config.dataDir, "scout.sqlite"),
 		forge,

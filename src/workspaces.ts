@@ -1,3 +1,4 @@
+import { registryHosts } from "./registries.ts";
 import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,7 +25,10 @@ export type WorkspaceRepo = {
 	/** A saved sandbox its threads start from (spoond). */
 	snapshot?: string;
 	/** Hosts its sandboxes may reach, on substrates that can limit egress; otherwise the default network. */
-	egress?: string[];	/** Its sandboxes' size, over the default (SCOUT_SANDBOX_SIZE). */
+	egress?: string[];
+	/** Package registries by ecosystem its sandboxes may reach, besides `egress` (registries.ts). */
+	registries?: string[];
+	/** Its sandboxes' size, over the default (SCOUT_SANDBOX_SIZE). */
 	size?: string;
 };
 
@@ -35,7 +39,7 @@ export type WorkspacesConfig = {
 	/** The first is the default. */
 	repos: WorkspaceRepo[];
 	driver: SandboxDriver;
-	sandbox: { image: string; network: "none" | "open"; size?: string };
+	sandbox: { image: string; network: "none" | "open"; size?: string; registryCdns?: boolean };
 	git: { name: string; email: string };
 };
 
@@ -171,12 +175,23 @@ export class Workspaces {
 		return `${this.#config.instance}-${conversationId}`;
 	}
 
+	/**
+	 * The hosts a repository's sandboxes may reach: its egress list and its package registries (registries.ts). Undefined
+	 * when it has neither, and when the network is open (which already includes them: a list would only narrow it).
+	 */
+	egressOf(repo: WorkspaceRepo): string[] | undefined {
+		const registries = this.#config.sandbox.network === "open" ? [] : registryHosts(repo.registries ?? [], this.#config.sandbox.registryCdns !== false);
+		if (repo.egress === undefined && registries.length === 0) return undefined;
+		return [...new Set([...(repo.egress ?? []), ...registries])];
+	}
+
 	/** What a repository's sandboxes get: its image, and its egress allowlist where the substrate can enforce one. */
 	spec(repo: WorkspaceRepo, conversationId: number): SandboxSpec {
 		const { driver, sandbox } = this.#config;
 		let network: NetworkPolicy = { mode: sandbox.network };
-		if (repo.egress !== undefined) {
-			const allow: NetworkPolicy = { mode: "allow", hosts: repo.egress };
+		const hosts = this.egressOf(repo);
+		if (hosts !== undefined) {
+			const allow: NetworkPolicy = { mode: "allow", hosts };
 			if (driver.supports(allow)) network = allow;
 			else console.error(`${driver.name} can't limit ${repo.name}'s sandboxes to its egress list; using "${sandbox.network}"`);
 		}
@@ -383,7 +398,8 @@ export class Workspaces {
 		const repo = this.repo(repoName);
 		const key = `${this.#config.instance}-image-${repo.name}`;
 		// Built from the configured start, not the last build, so builds don't drift. Setup scripts download things.
-		const egress: NetworkPolicy | undefined = repo.egress === undefined ? undefined : { mode: "allow", hosts: repo.egress };
+		const hosts = this.egressOf(repo);
+		const egress: NetworkPolicy | undefined = hosts === undefined ? undefined : { mode: "allow", hosts };
 		const spec: SandboxSpec = {
 			image: repo.image ?? this.#config.sandbox.image,
 			...(repo.snapshot === undefined ? {} : { snapshot: repo.snapshot }),

@@ -388,8 +388,9 @@ describe("end to end: work asked on the code host", () => {
 			e2e.host.repo(SLUG, { private: true });
 			const number = e2e.host.issue(SLUG, { title: "Question", body: "@scout what does the build do?", author: "ann" });
 			e2e.host.notify(SLUG, number);
-			// The repository lookup is the one call to `/repos/acme/app` itself: the host is having a bad day.
-			e2e.host.fail("GET", /^\/repos\/acme\/app$/, 500, 1);
+			// The repository lookup is the call to `/repos/acme/app` itself: the host is having a bad day. (Scout's own look
+			// at start, for the package registries a public repository gets, may take the first failure.)
+			e2e.host.fail("GET", /^\/repos\/acme\/app$/, 500, 2);
 			e2e.faux.setResponses([fauxAssistantMessage("It runs the tests, then the type check.")]);
 			await e2e.service.tick.inbox();
 			await until(() => commentsBy(e2e, number, "scout").length === 2, 20_000, "Scout's two comments");

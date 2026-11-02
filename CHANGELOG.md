@@ -11,6 +11,19 @@ A change to any of these that needs people to act is a major version. Everything
 
 ## Unreleased
 
+### Added
+- **Sandboxes can install from package registries.** A repository's sandboxes reach the registries of the ecosystems it
+  names (`registries` in the repos file, `SCOUT_REPO_REGISTRIES`: `python`, `node`, `rust`, `go`, `jvm`, `dotnet`,
+  `ruby`, `php`, `elixir`, `terraform`, `ansible`, `apt`, or `all`), so a task that needs a library, a JDK or a provider
+  doesn't wait on a person for each host. A public repository gets all of them unless it says otherwise; a private one
+  gets none until the egress approvers allow an ecosystem from Slack, one button with the hosts listed. **Upgrading:**
+  public repositories' sandboxes can now reach those hosts; set `registries` to `[]` on one to keep it closed.
+  `SCOUT_REGISTRY_CDNS=off` leaves out the download hosts registries redirect to.
+- **`npm run bench:mine` finds the benchmark's tasks** in fixes merged into the team's repositories
+  (`SCOUT_BENCH_REPOS`), keeping each fix whose tests fail without it and pass with it, in a sandbox. A task's request
+  is the problem as it might have been reported before the fix, written by Scout's model, never the commit message
+  that says how it was fixed. Each night tries three new ones before the runs, so the pool grows as fixes merge.
+
 ### Changed
 - **A quiet thread's sandbox goes after an hour, and its work comes back with the next one.** Scout saves the thread's
   branch, unfinished edits and attachments on its host, deletes the sandbox, and starts a new one with them when the
@@ -20,12 +33,6 @@ A change to any of these that needs people to act is a major version. Everything
   is deployed with, so they're private: they live with the install (the data directory's `bench/`, or
   `SCOUT_BENCH_TASKS`), and the tasks from Scout's own history are gone. With no tasks yet, a night runs nothing and
   the Benchmark page says so. The page's note says where the tasks come from and now spans the page's full width.
-
-### Added
-- **`npm run bench:mine` finds the benchmark's tasks** in fixes merged into the team's repositories
-  (`SCOUT_BENCH_REPOS`), keeping each fix whose tests fail without it and pass with it, in a sandbox. A task's request
-  is the problem as it might have been reported before the fix, written by Scout's model, never the commit message
-  that says how it was fixed. Each night tries three new ones before the runs, so the pool grows as fixes merge.
 
 ### Fixed
 - **A thread's approaches no longer keep their sandboxes past the retention period.** When a quiet thread's sandbox

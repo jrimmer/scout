@@ -58,8 +58,8 @@ export interface Forge {
 	comment(slug: string, number: number, body: string): Promise<void>;
 	/** A pull request's branch, when it's in the repository itself (not a fork). */
 	headBranch(slug: string, number: number): Promise<string | undefined>;
-	/** Whether anyone can read the repository. When the code host won't say, assume so. */
-	isPublic(slug: string): Promise<boolean>;
+	/** Whether anyone can read the repository. When the code host won't say, `whenUnknown` (assume so by default). */
+	isPublic(slug: string, whenUnknown?: boolean): Promise<boolean>;
 	pullStatus(slug: string, number: number): Promise<PullStatus>;
 	/** CI's combined verdict on a commit; undefined when nothing reports CI for it. */
 	ciState(slug: string, sha: string): Promise<"passing" | "failing" | "pending" | undefined>;
@@ -348,9 +348,9 @@ class RestForge implements Forge {
 		await this.#api("DELETE", this.#dialect.branchPath(slug, branch));
 	}
 
-	async isPublic(slug: string): Promise<boolean> {
+	async isPublic(slug: string, whenUnknown = true): Promise<boolean> {
 		const repo = (await this.#api("GET", `/repos/${slug}`).catch(() => undefined)) as { private?: boolean } | undefined;
-		return repo?.private !== true;
+		return repo?.private === undefined ? whenUnknown : repo.private !== true;
 	}
 
 	async #api(method: string, path: string, body?: unknown): Promise<unknown> {

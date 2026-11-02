@@ -147,6 +147,22 @@ sandboxes may reach (`egress` in `SCOUT_REPOS_FILE`, or `SCOUT_REPO_EGRESS` for 
 substrates with an egress firewall can enforce a list: spoond can (its `restricted` policy and allowlist), Docker
 can't, and Scout falls back to the default network there and says so.
 
+**Package registries.** So a sandbox can install what a task needs (a Python library, a JDK, a Terraform provider)
+without anyone approving host after host, a repository's sandboxes may reach its ecosystems' package registries, on
+top of its `egress` list. `registries` in `SCOUT_REPOS_FILE` (`SCOUT_REPO_REGISTRIES` for the default repository) names
+the ecosystems: `python`, `node`, `rust`, `go`, `jvm`, `dotnet`, `ruby`, `php`, `elixir`, `terraform`, `ansible`, `apt`,
+or `all` (the hosts are in `src/registries.ts`; exact hosts, never a wildcard or a place anyone can publish a page).
+Left out, **a public repository gets all of them and a private one none**, as the code host says at start (and when it
+won't say, private). A private repository gets an ecosystem the usual way: a thread that needs one asks for it
+(`@python`, `@jvm`, `@apt`, or `@all`) and the egress approvers press Allow in the home channel, which saves it in the
+repos file. The question lists the hosts it opens.
+
+The risk is what a package can do once installed: it runs inside the sandbox, which has no credentials but can see the
+repository, and a malicious package could send that out through a registry it controls. That's why a private repository
+doesn't get them by default. `SCOUT_REGISTRY_CDNS=off` leaves out the download hosts a registry redirects to (a CDN),
+if you'd rather ask for each one; a host a registry starts using that isn't listed is asked for like any other.
+An open network (`SCOUT_SANDBOX_NETWORK=open`) already reaches all of it.
+
 **spoond.** Set `SCOUT_SPOOND_URL` and `SCOUT_SPOOND_TOKEN`. A repository whose toolchain isn't in a spoond image can
 start from a named snapshot instead (`snapshot` in `SCOUT_REPOS_FILE`, or `SCOUT_REPO_SNAPSHOT`): save a lease with the
 toolchain installed and its package cache warm, under Scout's spoond identity. The image (`SCOUT_SANDBOX_IMAGE`, default `dev-base`)
