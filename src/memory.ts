@@ -60,8 +60,8 @@ export class Memory {
 		return Number(result.lastInsertRowid);
 	}
 
-	forget(id: number, now = Date.now()): boolean {
-		return this.#db.prepare("UPDATE memories SET retired_at = ? WHERE id = ? AND retired_at IS NULL").run(now, id).changes > 0;
+	forget(id: number, channelName: string, now = Date.now()): boolean {
+		return this.#db.prepare("UPDATE memories SET retired_at = ? WHERE id = ? AND channel_name = ? AND retired_at IS NULL").run(now, id, channelName).changes > 0;
 	}
 
 	/** What a thread in `channelName` sees: its channel's live notes, newest last. */
@@ -137,8 +137,8 @@ export function memoryExtension(memory: Memory, audit?: Audit) {
 		name: "forget",
 		description: "Retire a note that turned out to be wrong or no longer holds. Say why in the thread.",
 		parameters: Type.Object({ id: Type.Number() }),
-		execute: async (args, api) => {
-			const forgotten = memory.forget(args.id);
+		execute: async (args, api, context) => {
+			const forgotten = memory.forget(args.id, await channelOf(api, api.conversationId, context));
 			if (forgotten) audit?.record("note_forgotten", { actor: "scout", conversationId: api.conversationId, detail: { id: args.id } });
 			return { output: [{ type: "text", text: forgotten ? `Forgot [${args.id}].` : `No note [${args.id}].` }] };
 		},
