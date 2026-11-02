@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { request } from "node:http";
 import { describe, it } from "node:test";
-import { type BenchRow, BenchStore, benchRow, logScale, quantile, relate, score } from "../src/bench.ts";
+import { type BenchRow, BenchStore, benchRow, logScale, quantile, relate, score, unpriced } from "../src/bench.ts";
 import { tonight } from "../src/bench-cli.ts";
 import { loadConfig } from "../src/config.ts";
 import type { Collector } from "../src/dash/collect.ts";
@@ -183,8 +183,68 @@ describe("benchmark", () => {
 		assert.deepEqual(tonight(pool, "2026-10-22", last, { change: 2, locate: 2 }), tonight(pool, "2026-10-22", last, { change: 2, locate: 2 }), "the same draw for the same night");
 		const store = new BenchStore(":memory:");
 		store.record([row({ task: "c1", run: "2026-10-20" }), row({ task: "c1", run: "2026-10-21", model: "gateway/b" })]);
-		assert.deepEqual([...store.lastRuns()], [["c1", "2026-10-21"]]);
+		assert.deepEqual([...store.lastRuns()], [["c1", "2026-10-20"]], "a task counts as run when every model has run it");
+		assert.deepEqual([...store.lastRuns(["gateway/a"])], [["c1", "2026-10-20"]]);
+		assert.deepEqual([...store.lastRuns(["gateway/a", "gateway/c"])], [["c1", ""]], "a model that never ran it keeps it due");
 		store.close();
+	});
+
+	it("counts a night done only when the whole night ran, not when a partial run recorded rows", () => {
+		const store = new BenchStore(":memory:");
+		store.record([row({ run: "2026-10-22" })]);
+		assert.equal(store.lastRun(), "2026-10-22");
+		assert.equal(store.nightDone("2026-10-22"), false, "rows from a partial or --only run don't cancel the night");
+		store.finishNight("2026-10-22");
+		assert.equal(store.nightDone("2026-10-22"), true);
+		assert.equal(store.nightDone("2026-10-23"), false);
+		store.close();
+	});
+
+	it("compares models over the tasks they have all run, with n beside each score", () => {
+		const store = new BenchStore(":memory:");
+		store.record([
+			row({ task: "easy", model: "gateway/a" }),
+			row({ task: "hard", model: "gateway/a", pass: false }),
+			row({ task: "easy", model: "gateway/b" }),
+			row({ task: "only-b", model: "gateway/b" }),
+			row({ task: "lost", model: "gateway/b", unscored: "calls kept failing" }),
+			row({ task: "lost", model: "gateway/a" }),
+		]);
+		const [a, b] = ["gateway/a", "gateway/b"].map((m) => store.scores().find((s) => s.model === m)!);
+		assert.equal(a!.paired, true);
+		assert.equal(a!.tasks, 1, "only 'easy' is scored for both");
+		assert.equal(b!.tasks, 1);
+		assert.equal(a!.capability[0]!.value, "1/1");
+		assert.equal(a!.capability[0]!.n, 1);
+		assert.equal(b!.capability[0]!.n, 1);
+		store.close();
+	});
+
+	it("shows n on the page, and says so when models share no task", async () => {
+		const collector = { collect: async () => busy } as unknown as Collector;
+		const store = new BenchStore(":memory:");
+		store.record([row({ task: "x", model: "gateway/a" }), row({ task: "y", model: "gateway/b" })]);
+		const scores = store.scores();
+		assert.equal(scores[0]!.paired, false);
+		const dash = await startDashboard({ addr: "127.0.0.1:0", collector, bench: () => ({ scores, lastRun: "2026-10-22", keep: 10, hour: 1, tasks: 2 }) });
+		try {
+			const page = (await get(dash.port, "/bench")).body;
+			assert.match(page, /no scored task in common/);
+			assert.match(page, / · n=1/);
+		} finally {
+			await dash.close();
+			store.close();
+		}
+	});
+
+	it("doesn't read an unpriced model as free", () => {
+		assert.equal(unpriced(row({ cost: 0 })), true);
+		assert.equal(unpriced(row({ cost: 0, inputTokens: 0, outputTokens: 0 })), false);
+		assert.equal(unpriced(row()), false);
+		const s = score("gateway/a", [row({ cost: 0 })]);
+		const cost = s.capability.find((a) => a.name === "Cost efficiency")!;
+		assert.equal(cost.score, 0);
+		assert.match(cost.value, /no price/);
 	});
 
 	it("keeps its tasks with the install, since they're the team's private work, and ships none of Scout's own", () => {

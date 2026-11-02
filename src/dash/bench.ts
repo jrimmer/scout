@@ -16,6 +16,11 @@ export function benchPage(scores: readonly ModelScores[], meta: { lastRun?: stri
 					`<p class="note">Every model works through the same pool of ${meta.tasks} tasks taken from this team's own work: fixes that were merged, and ones where someone had to correct Scout. Each night every model runs the same handful, working through the pool a few at a time. Scores cover each model's last ${meta.keep} runs (the latest on ${esc(meta.lastRun ?? "")}).</p>`,
 					`<p class="note">What it can do is scored on fixed scales, so a score means the same from one week to the next. Working with it shows measurements scaled against the other models: on each spoke, the outer ring is the best model.</p>`,
 					`<p class="note">This is a small benchmark (a few tasks, one team's code), so compare these models with each other, not with public leaderboards. "Reasoning" here means finding bugs. If a provider cuts a task short, the model isn't scored on it, but the slow night still shows in Working with it, so check that chart before comparing.</p>`,
+					scores.length > 1
+						? scores.every((s) => s.paired)
+							? `<p class="note">What it can do counts only the ${scores[0]!.tasks} tasks every model has run, so the scores compare like with like. n beside a score is how many runs (or calls) it is out of.</p>`
+							: `<p class="note"><b>These models have no scored task in common yet</b>, so each score is over that model's own tasks and the models can't be compared fairly. n beside a score is how many runs (or calls) it is out of.</p>`
+						: `<p class="note">n beside a score is how many runs (or calls) it is out of.</p>`,
 					`<ol class="legend">${scores.map((s, i) => `<li class="s${i % SERIES}"><i></i>${esc(s.model)} <small>${s.runs} run${s.runs === 1 ? "" : "s"}</small></li>`).join("")}</ol>`,
 					`<section class="charts">`,
 					figure("What it can do", scores, (s) => s.capability),
@@ -85,7 +90,7 @@ export function radar(series: readonly Axis[][], names: readonly string[]): stri
 function table(title: string, scores: readonly ModelScores[], axes: (s: ModelScores) => Axis[], points = true): string {
 	const first = axes(scores[0]!);
 	const head = `<tr><th>${esc(title)}</th>${scores.map((s, i) => `<th class="s${i % SERIES}">${esc(s.model)}</th>`).join("")}</tr>`;
-	const rows = first.map((a, i) => `<tr><td><b>${esc(a.name)}</b><br><small>${esc(a.about)}</small></td>${scores.map((s) => (points ? `<td><b>${axes(s)[i]!.score}</b><br><small>${esc(axes(s)[i]!.value)}</small></td>` : `<td><b>${esc(axes(s)[i]!.value)}</b></td>`)).join("")}</tr>`);
+	const rows = first.map((a, i) => `<tr><td><b>${esc(a.name)}</b><br><small>${esc(a.about)}</small></td>${scores.map((s) => (points ? `<td><b>${axes(s)[i]!.score}</b><br><small>${esc(axes(s)[i]!.value)}${axes(s)[i]!.n === undefined ? "" : ` · n=${axes(s)[i]!.n}`}</small></td>` : `<td><b>${esc(axes(s)[i]!.value)}</b></td>`)).join("")}</tr>`);
 	return `<table>${head}${rows.join("")}</table>`;
 }
 

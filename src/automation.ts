@@ -5,7 +5,7 @@ import type { CodeHost } from "./codehost.ts";
 import type { Config, RepoConfig } from "./config.ts";
 import { ReviewDoc, ThreadDoc } from "./docs.ts";
 import type { Admission } from "./limits.ts";
-import type { ReviewRow } from "./pulls.ts";
+import { listAll, type ReviewRow } from "./pulls.ts";
 import { diffOf, type PullReview, parsePullReview } from "./review.ts";
 import type { Scout } from "./scout.ts";
 
@@ -87,7 +87,7 @@ export class PullReviewer {
 		try {
 			this.#self ??= ((await this.#api("GET", "/user")) as { login: string }).login;
 			for (const repo of this.#config.repos) {
-				const open = (await this.#api("GET", `/repos/${repo.slug}/pulls?state=open&per_page=50&limit=50`)) as OpenPull[];
+				const open = await this.#list<OpenPull>(`/repos/${repo.slug}/pulls?state=open&per_page=50&limit=50`);
 				for (const pull of open) {
 					// Scout's own pull requests had their review before people were asked.
 					if (pull.user?.login === this.#self) continue;
@@ -240,6 +240,16 @@ export class PullReviewer {
 				console.error(`posting the review of ${row.slug}#${row.number} another way:`, error instanceof Error ? error.message : error);
 			}
 		}
+	}
+
+	/** Every page of a list, up to a cap (pulls.ts `listAll`). */
+	async #list<T>(path: string): Promise<T[]> {
+		const host: CodeHost = this.#config.codeHost;
+		const headers = {
+			accept: host.kind === "github" ? "application/vnd.github+json" : "application/json",
+			authorization: host.kind === "github" ? `Bearer ${host.token}` : `token ${host.token}`,
+		};
+		return listAll<T>(this.#fetch, `${host.apiUrl}${path}`, headers);
 	}
 
 	async #api(method: "GET" | "POST", path: string, body?: unknown): Promise<unknown> {

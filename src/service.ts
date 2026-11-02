@@ -698,6 +698,21 @@ export async function startService(options: ServiceOptions) {
 				const text = `🔴 It's back (${alert.returns === 1 ? "once" : `${alert.returns} times`} since it first fired). Same incident, so I'm keeping it here rather than starting over; ask me if you want another look.`;
 				await slack.surface.post(alert.channel, alert.threadTs, { text, blocks: [{ type: "markdown", text }] });
 			},
+			storm: async (alerts) => {
+				const id = alertHome === undefined ? undefined : await slack.channelId(alertHome);
+				if (id === undefined) {
+					console.log(`${alerts.length} more alerts fired at once, with nowhere to say so (set SCOUT_ALERTS_CHANNEL or SCOUT_REFLECT_CHANNEL)`);
+					return;
+				}
+				const listed = alerts.slice(0, 15).map((a) => `• ${a.title}`);
+				const text = [
+					`A lot fired at once, so I started threads for the first few and I'm not looking into these ${alerts.length} unless you ask. Tell me which one matters and I'll dig in:`,
+					...listed,
+					...(alerts.length > listed.length ? [`…and ${alerts.length - listed.length} more`] : []),
+				].join("\n");
+				await slack.surface.post(id, undefined, { text, blocks: [{ type: "markdown", text }] });
+				audit.record("alert", { actor: "scout", channel: alertHome, detail: { storm: alerts.length } });
+			},
 			baseline: async (alerts) => {
 				const id = alertHome === undefined ? undefined : await slack.channelId(alertHome);
 				if (id === undefined) return;
@@ -1276,7 +1291,7 @@ export async function startService(options: ServiceOptions) {
 		const now = new Date(clock());
 		const night = localDay(now);
 		// Once a night, whether it worked or not: a broken run shouldn't start again every few minutes.
-		if (now.getHours() < config.bench.hour || benchTried === night || benchStore?.lastRun() === night) return;
+		if (now.getHours() < config.bench.hour || benchTried === night || benchStore?.nightDone(night) === true) return;
 		benchTried = night;
 		console.log(`benchmark: starting tonight's runs (${config.bench.models.map((m) => `${m.provider}/${m.modelId}`).join(", ")})`);
 		benchChild = spawn(process.execPath, [join(import.meta.dirname, "bench-cli.ts")], { stdio: "inherit" });

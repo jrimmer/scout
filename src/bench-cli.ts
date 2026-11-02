@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { MemoryStorage } from "@earendil-works/pi-durable";
-import { BenchStore, benchRow } from "./bench.ts";
+import { BenchStore, benchRow, unpriced } from "./bench.ts";
 import { mine } from "./bench-mine.ts";
 import { loadConfig, useScoutsKey } from "./config.ts";
-import { type EvalTask, evalConfig, evalRepos, fakeCodeHost, loadTasks, measures, runTask } from "./evals.ts";
+import { type EvalTask, evalConfig, evalRepos, fakeCodeHost, loadTasks, measures, runTask, TASK_LIMIT_MS, TASK_WALL_MS } from "./evals.ts";
 import { localDay } from "./reflect.ts";
 import { openScout } from "./scout.ts";
 import { resolveSecrets } from "./secrets.ts";
@@ -27,8 +27,6 @@ import { resolveSecrets } from "./secrets.ts";
  * so a slow provider can't stretch a night into the day. A task stopped by that, whose calls kept failing, or that
  * never reached the model, isn't scored as the model's.
  */
-const TASK_LIMIT_MS = 30 * 60_000;
-const TASK_WALL_MS = 90 * 60_000;
 
 /** Merged fixes tried as new tasks each night: each takes a sandbox and two runs of its tests. */
 const MINE_PER_NIGHT = 3;
@@ -94,7 +92,7 @@ if (import.meta.main) {
 	const night = localDay(new Date());
 	const store = new BenchStore(join(config.dataDir, "bench.sqlite"));
 	// Tonight's draw is made before anything runs, so every model gets the same tasks.
-	const tasks = only === undefined ? tonight(pool, night, store.lastRuns()) : pool;
+	const tasks = only === undefined ? tonight(pool, night, store.lastRuns(config.bench.models.map((m) => `${m.provider}/${m.modelId}`))) : pool;
 	console.log(`bench: tonight's tasks: ${tasks.map((t) => t.name).join(", ")}`);
 	const host = await fakeCodeHost();
 	try {
@@ -116,15 +114,19 @@ if (import.meta.main) {
 			}));
 			try {
 				for (const task of tasks) {
-					const result = await runTask(scout, task, nameOf(task), "candidate", BACKGROUND_CONTEXT, measured, { fileAt, limitMs: TASK_LIMIT_MS, wallMs: TASK_WALL_MS });
+					const result = await runTask(scout, task, nameOf(task), "candidate", BACKGROUND_CONTEXT, measured, { fileAt, limitMs: TASK_LIMIT_MS, wallMs: TASK_WALL_MS, judgeModel: config.model });
 					console.log(`bench ${name} ${task.name}: ${result.pass ? "pass" : `fail (${result.why.slice(0, 300)})`}, $${result.cost.toFixed(3)}, ${Math.round(result.ms / 1000)}s, ${result.steps} steps`);
 					// Kept as each task ends: what finished counts, even if the rest of the night doesn't.
-					store.record([benchRow(name, night, task, result)]);
+					const row = benchRow(name, night, task, result);
+					store.record([row]);
+					if (unpriced(row)) console.warn(`bench ${name}: ${row.inputTokens + row.outputTokens} tokens cost $0: ${name} has no price in SCOUT_PRICES_FILE, so its cost reads as free`);
 				}
 			} finally {
 				await scout.close();
 			}
 		}
+		// Only a whole night counts as the night, so Scout won't start it again; a run cut short, or by hand, leaves it due.
+		if (only === undefined) store.finishNight(night);
 	} finally {
 		await host.close();
 		store.close();

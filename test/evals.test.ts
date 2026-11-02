@@ -8,7 +8,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { loadConfig } from "../src/config.ts";
-import { evalConfig, evalRepos, fakeCodeHost, guard, LOCATE_FORMAT, loadTasks, located, measures, parseTask, report, type RunResult, runTask } from "../src/evals.ts";
+import { evalConfig, evalRepos, fakeCodeHost, guard, LOCATE_FORMAT, loadTasks, located, measures, parseTask, providerFault, report, type RunResult, runTask } from "../src/evals.ts";
 import { openScout } from "../src/scout.ts";
 import { bareRepo, tempDir } from "./helpers.ts";
 
@@ -72,6 +72,23 @@ describe("evals", () => {
 		assert.match(text, /Better on: median\. Worse on: readme\./);
 		assert.match(text, /- readme \(with the change\): tests failed/);
 		assert.doesNotMatch(report([r("median", "candidate", true)], ["candidate"]), /Before|Better on/);
+	});
+
+	it("leaves runs it can't score out of the counts, and says so", () => {
+		const r = (task: string, side: "candidate" | "baseline", pass: boolean, extra: Partial<RunResult> = {}): RunResult => ({ task, side, pass, why: pass ? "passed" : "tests failed", cost: 0.1, ms: 60_000, steps: 5, ...extra });
+		const text = report(
+			[r("a", "baseline", true), r("a", "candidate", false, { unscored: "the judge didn't answer", why: "the judge didn't answer" }), r("b", "baseline", true), r("b", "candidate", true)],
+			["candidate", "baseline"],
+		);
+		assert.match(text, /\| a \| 1\/1 \| \$0\.10 \| 1m00 \| 0\/0 \(\+1 unscored\)/);
+		assert.match(text, /Better on: nothing\. Worse on: nothing\./, "a task one side has no scored run of isn't called worse");
+		assert.doesNotMatch(text, /Why runs failed/);
+		assert.match(text, /1 run not scored/);
+	});
+
+	it("blames the provider only for 5xx, 429 and timeouts, not for a request the model's context couldn't hold", () => {
+		for (const fault of ["503 service unavailable", '{"status":429}', "request timed out", "ECONNRESET", "502 bad gateway"]) assert.equal(providerFault(fault), true, fault);
+		for (const mine of ["400 prompt is too long: 210000 tokens > 200000 maximum", "maximum context length is 128000 tokens", "422 invalid request", "401 unauthorized", "the model said no"]) assert.equal(providerFault(mine), false, mine);
 	});
 
 	it("runs a task hermetically in a sandbox on its own copy, and checks the result there", async () => {
@@ -164,7 +181,7 @@ describe("evals", () => {
 		assert.equal(nameOf(locate), `app@${parent.slice(0, 12)}+${fix.slice(0, 12)}`);
 		const host = await fakeCodeHost();
 		const config = evalConfig(base, { repos, profileDir: join(root, "profile"), apiUrl: host.apiUrl, dataDir: join(root, "eval-data") });
-		const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }] });
+		const faux = fauxProvider({ provider: "faux", models: [{ id: "m" }, { id: "j" }] });
 		const models = createModels();
 		models.setProvider(faux.provider);
 		const measured = measures();
@@ -219,12 +236,34 @@ describe("evals", () => {
 				await missing.close();
 			}
 
+			// A request the model's own context couldn't hold counts against the model: it isn't left unscored.
+			faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "400 prompt is too long: 210000 tokens" })]);
+			const overflow = await runTask(scout, locate, nameOf(locate), "candidate", context, measures(), { fileAt });
+			assert.equal(overflow.pass, false);
+			assert.match(overflow.why, /kept failing: 400 prompt is too long/);
+			assert.equal(overflow.unscored, undefined);
+
+			// The judge is the configured one, not the model under test.
+			const graded = parseTask({ name: "graded", repo: "app", ref: parent, request: "say hi", check: { rubric: "says hi" } }, "graded.json");
+			const judged: string[] = [];
+			faux.setResponses([
+				fauxAssistantMessage("hi"),
+				(_t, _o, _s, model) => {
+					judged.push(model.id);
+					return fauxAssistantMessage("PASS\nsaid hi");
+				},
+			]);
+			const marked = await runTask(scout, graded, nameOf(change), "candidate", context, measures(), { fileAt, judgeModel: { provider: "faux", modelId: "j" } });
+			assert.equal(marked.pass, true, marked.why);
+			assert.deepEqual(judged, ["j"]);
+
 			// Last: a stopped run can still be finishing its command when the next one starts.
-			faux.setResponses([fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 5" })], { stopReason: "toolUse" }), fauxAssistantMessage("Done.")]);
+			faux.setResponses([fauxAssistantMessage([fauxToolCall("bash", { command: "echo 2 > value.txt && rm keep.txt; sleep 5" })], { stopReason: "toolUse" }), fauxAssistantMessage("Done.")]);
 			const slow = await runTask(scout, change, nameOf(change), "candidate", context, measured, { fileAt, limitMs: 60_000, wallMs: 500 });
 			assert.equal(slow.pass, false);
 			assert.match(slow.why, /^the provider kept it waiting: not done within 0 minutes/);
 			assert.equal(slow.unscored, slow.why.split(";")[0], "the provider's doing, not the model's");
+			assert.equal(slow.regressed, undefined, "a run stopped mid-change isn't judged for regressions");
 			assert.ok(slow.ms < 4_000, "stopped at the limit, not after the command");
 		} finally {
 			await scout.close();

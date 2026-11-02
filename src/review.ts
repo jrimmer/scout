@@ -100,7 +100,17 @@ export async function reviewEnv(
 
 export function parseReview(text: string): Review {
 	const first = text.trim().split("\n")[0]?.trim().toUpperCase() ?? "";
-	return { verdict: first.startsWith("CHANGES") ? "changes" : "approve", text: text.trim() };
+	// Approval has to be said: an empty answer, a refusal or free-form prose is not a pass.
+	if (/^APPROVE\b/.test(first)) return { verdict: "approve", text: text.trim() };
+	if (/^CHANGES\b/.test(first)) return { verdict: "changes", text: text.trim() };
+	const said = text.trim();
+	return {
+		verdict: "changes",
+		text:
+			said === ""
+				? "The review came back empty, so nothing was approved."
+				: `The review didn't start with APPROVE or CHANGES, so I'm not treating it as an approval:\n\n${said}`,
+	};
 }
 
 /** A review of someone else's pull request, ready for the code host: a verdict, a body, and comments on lines. */
@@ -117,7 +127,7 @@ export type PullReview = {
 export function parsePullReview(text: string, diff: string): PullReview {
 	const [first = "", ...others] = text.trim().split("\n");
 	const word = first.trim().toUpperCase();
-	const verdict = word.startsWith("CHANGES") ? "changes" : word.startsWith("APPROVE") ? "approve" : "comment";
+	let verdict: PullReview["verdict"] = word.startsWith("CHANGES") ? "changes" : word.startsWith("APPROVE") ? "approve" : "comment";
 	// The verdict line isn't part of the review; a first line that isn't one is.
 	const rest = /^(CHANGES|APPROVE|COMMENT)/.test(word) ? others : [first, ...others];
 	const body: string[] = [];
@@ -136,7 +146,13 @@ export function parsePullReview(text: string, diff: string): PullReview {
 		if (shown.get(note.path)?.has(note.line) === true) comments.push({ path: note.path, line: note.line, body: text });
 		else elsewhere.push(`**${note.path}:${note.line}**: ${text}`);
 	}
-	return { verdict, body: [body.join("\n").trim(), ...elsewhere].filter(Boolean).join("\n\n"), comments };
+	// A diff cut at the budget was only partly read, so it can't be called all good.
+	const cut =
+		verdict === "approve" && !wholeDiff(diff)
+			? `I only read the first ${DIFF_BUDGET} characters of this diff, so I can't say the rest looks good.`
+			: "";
+	if (cut !== "") verdict = "comment";
+	return { verdict, body: [cut, body.join("\n").trim(), ...elsewhere].filter(Boolean).join("\n\n"), comments };
 }
 
 /** The lines of each file's new version that a unified diff shows (added or context), which a review may comment on. */

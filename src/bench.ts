@@ -46,9 +46,13 @@ export type BenchRow = {
  * One spoke of a chart. Operations axes carry their measurement (`raw`, and which way is better): their `score` is
  * set relative to the other models' (`relate`), not on a fixed scale.
  */
-export type Axis = { name: string; score: number; value: string; about: string; raw?: number; better?: "lower" | "higher" };
+export type Axis = { name: string; score: number; value: string; about: string; raw?: number; better?: "lower" | "higher"; /** What the score is out of: runs, or calls. */ n?: number };
 
-export type ModelScores = { model: string; runs: number; tasks: number; capability: Axis[]; operations: Axis[] };
+/**
+ * `paired`: what it can do counts only the tasks every compared model has a scored run of, so the scores can be
+ * compared. False when the models share no task (each is then scored on its own, and the page says so).
+ */
+export type ModelScores = { model: string; runs: number; tasks: number; paired: boolean; capability: Axis[]; operations: Axis[] };
 
 export class BenchStore {
 	readonly #db: DatabaseSync;
@@ -58,6 +62,7 @@ export class BenchStore {
 		this.#db = new DatabaseSync(path, { timeout: 5000 });
 		this.#db.exec(`
 			PRAGMA journal_mode = WAL;
+			CREATE TABLE IF NOT EXISTS nights (night TEXT PRIMARY KEY);
 			CREATE TABLE IF NOT EXISTS bench (
 				model TEXT NOT NULL,
 				run TEXT NOT NULL,
@@ -90,21 +95,54 @@ export class BenchStore {
 		return row.run ?? undefined;
 	}
 
-	/** Each model's scores, best first by capability. */
-	scores(): ModelScores[] {
-		const models = [...new Set(this.rows().map((r) => r.model))];
-		return relate(models.map((m) => score(m, this.rows(m)))).sort((a, b) => total(b.capability) - total(a.capability));
+	/** A whole night's runs finished (every model, every task), so Scout doesn't start the night again. */
+	nightDone(night: string): boolean {
+		return this.#db.prepare("SELECT 1 FROM nights WHERE night = ?").get(night) !== undefined;
 	}
 
-	/** When each task last ran, for any model: tonight's tasks are the ones run longest ago (bench-cli.ts). */
-	lastRuns(): Map<string, string> {
-		const rows = this.#db.prepare("SELECT task, MAX(run) AS run FROM bench GROUP BY task").all() as { task: string; run: string }[];
-		return new Map(rows.map((r) => [r.task, r.run]));
+	/** Mark a night complete. A partial or manual (`--only`) run doesn't, so it can't cancel the real night. */
+	finishNight(night: string): void {
+		this.#db.prepare("INSERT OR IGNORE INTO nights (night) VALUES (?)").run(night);
+		this.#db.prepare("DELETE FROM nights WHERE night NOT IN (SELECT night FROM nights ORDER BY night DESC LIMIT 60)").run();
+	}
+
+	/** Each model's scores, best first by capability. */
+	scores(): ModelScores[] {
+		const all = this.rows();
+		const models = [...new Set(all.map((r) => r.model))];
+		const byModel = models.map((m) => all.filter((r) => r.model === m));
+		const paired = pairedTasks(byModel);
+		return relate(models.map((m, i) => score(m, byModel[i]!, paired))).sort((a, b) => total(b.capability) - total(a.capability));
+	}
+
+	/**
+	 * When each task last ran for every one of `models` (the oldest of their latest runs; a model that never ran it
+	 * makes it "never"): tonight's tasks are the ones run longest ago (bench-cli.ts). A task only some models have run
+	 * stays due, so a partial run doesn't take it out of the rotation. Without `models`, the models in the store.
+	 */
+	lastRuns(models?: readonly string[]): Map<string, string> {
+		const rows = this.#db.prepare("SELECT task, model, MAX(run) AS run FROM bench GROUP BY task, model").all() as { task: string; model: string; run: string }[];
+		const wanted = models ?? [...new Set(rows.map((r) => r.model))];
+		const latest = new Map<string, Map<string, string>>();
+		for (const r of rows) (latest.get(r.task) ?? latest.set(r.task, new Map()).get(r.task)!).set(r.model, r.run);
+		return new Map([...latest].map(([task, byModel]) => [task, wanted.map((m) => byModel.get(m) ?? "").sort()[0] ?? ""]));
 	}
 
 	close(): void {
 		this.#db.close();
 	}
+}
+
+/** Tasks every model has a scored run of (empty when they share none). */
+function pairedTasks(byModel: readonly (readonly BenchRow[])[]): Set<string> {
+	const sets = byModel.map((rows) => new Set(rows.filter((r) => r.unscored === undefined).map((r) => r.task)));
+	const [first, ...others] = sets;
+	return new Set([...(first ?? [])].filter((task) => others.every((s) => s.has(task))));
+}
+
+/** Tokens were used but nothing was charged: the model has no price in `SCOUT_PRICES_FILE`, so "free" would be a lie. */
+export function unpriced(row: Pick<BenchRow, "cost" | "inputTokens" | "outputTokens">): boolean {
+	return row.cost === 0 && row.inputTokens + row.outputTokens > 0;
 }
 
 const total = (axes: readonly Axis[]) => axes.reduce((sum, a) => sum + a.score, 0);
@@ -179,10 +217,13 @@ const secs = (ms: number) => (ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : ms < 
  * One model's scores over its kept runs. What it can do counts only runs that say something about the model: a task
  * the provider cut short (too slow, or failing calls) shows under working with it instead.
  */
-export function score(model: string, all: readonly BenchRow[]): ModelScores {
+export function score(model: string, all: readonly BenchRow[], paired?: ReadonlySet<string>): ModelScores {
 	const runs = new Set(all.map((r) => r.run)).size;
-	const rows = all.filter((r) => r.unscored === undefined);
-	const lost = all.length - rows.length;
+	const scored = all.filter((r) => r.unscored === undefined);
+	const lost = all.length - scored.length;
+	// Over the tasks every compared model has run, so one model's easier tasks don't flatter it.
+	const isPaired = paired !== undefined && paired.size > 0;
+	const rows = isPaired ? scored.filter((r) => paired.has(r.task)) : scored;
 	const change = rows.filter((r) => r.kind === "change");
 	const locate = rows.filter((r) => r.kind === "locate");
 	const passed = rows.filter((r) => r.pass);
@@ -192,7 +233,8 @@ export function score(model: string, all: readonly BenchRow[]): ModelScores {
 	const toolCalls = rows.reduce((n, r) => n + r.toolCalls, 0);
 	const badCalls = rows.reduce((n, r) => n + r.badToolCalls, 0);
 	const cost = rows.reduce((n, r) => n + r.cost, 0);
-	const perSolved = passed.length === 0 ? Number.POSITIVE_INFINITY : cost / passed.length;
+	const free = rows.length > 0 && rows.every(unpriced);
+	const perSolved = passed.length === 0 || free ? Number.POSITIVE_INFINITY : cost / passed.length;
 	// Working with it counts every run: a provider's bad night is what this side is for.
 	const calls = all.reduce((n, r) => n + r.modelCalls, 0);
 	const retries = all.reduce((n, r) => n + r.retries, 0);
@@ -207,12 +249,13 @@ export function score(model: string, all: readonly BenchRow[]): ModelScores {
 		model,
 		runs,
 		tasks,
+		paired: isPaired,
 		capability: [
-			{ name: "Coding", score: pct(change.filter((r) => r.pass).length, change.length), value: `${change.filter((r) => r.pass).length}/${change.length}`, about: "Real fixes from Scout's history, judged by the fix's own tests, which the model doesn't see" },
-			{ name: "Reasoning (finding bugs)", score: pct(locate.filter((r) => r.pass).length, locate.length), value: `${locate.filter((r) => r.pass).length}/${locate.length}`, about: "Given a failing test, name the file and function the real fix changed" },
-			{ name: "Tool use", score: toolCalls === 0 ? 0 : 100 - pct(badCalls, toolCalls), value: `${badCalls} bad of ${toolCalls}`, about: "Tool calls with arguments that fit the tool, to tools that exist" },
-			{ name: "No regressions", score: pct(kept, checked.length), value: checked.length === 0 ? "no change to check yet" : `${kept}/${checked.length} changes`, about: "Changes that left the repository's other tests passing, as SWE-bench checks" },
-			{ name: "Cost efficiency", score: Number.isFinite(perSolved) ? logScale(perSolved, 0.01, 2) : 0, value: Number.isFinite(perSolved) ? `$${perSolved.toFixed(3)} a solved task` : "nothing solved", about: "List-price cost per solved task: $0.01 or less is 100, $2 or more is 0" },
+			{ name: "Coding", score: pct(change.filter((r) => r.pass).length, change.length), value: `${change.filter((r) => r.pass).length}/${change.length}`, n: change.length, about: "Real fixes from Scout's history, judged by the fix's own tests, which the model doesn't see" },
+			{ name: "Reasoning (finding bugs)", score: pct(locate.filter((r) => r.pass).length, locate.length), value: `${locate.filter((r) => r.pass).length}/${locate.length}`, n: locate.length, about: "Given a failing test, name the file and function the real fix changed" },
+			{ name: "Tool use", score: toolCalls === 0 ? 0 : 100 - pct(badCalls, toolCalls), value: `${badCalls} bad of ${toolCalls}`, n: toolCalls, about: "Tool calls with arguments that fit the tool, to tools that exist" },
+			{ name: "No regressions", score: pct(kept, checked.length), value: checked.length === 0 ? "no change to check yet" : `${kept}/${checked.length} changes`, n: checked.length, about: "Changes that left the repository's other tests passing, as SWE-bench checks" },
+			{ name: "Cost efficiency", score: Number.isFinite(perSolved) ? logScale(perSolved, 0.01, 2) : 0, value: free ? "no price set for this model" : Number.isFinite(perSolved) ? `$${perSolved.toFixed(3)} a solved task` : "nothing solved", n: passed.length, about: "List-price cost per solved task: $0.01 or less is 100, $2 or more is 0" },
 		],
 		operations: [
 			{ name: "First token", score: 0, raw: p50, better: "lower", value: secs(p50), about: "Median time to a model call's first token" },
