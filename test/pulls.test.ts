@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { Pulls, weekOf } from "../src/pulls.ts";
+import { feedbackOn, listAll, Pulls, weekOf } from "../src/pulls.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 const HOST = { kind: "forgejo", apiUrl: "http://forge/api/v1", token: "t" } as const;
@@ -85,5 +85,49 @@ describe("pulls", () => {
 		assert.equal(weekOf(new Date(2026, 9, 19)), "2026-10-19");
 		assert.equal(weekOf(new Date(2026, 9, 25)), "2026-10-19");
 		assert.equal(weekOf(new Date(2026, 9, 26)), "2026-10-26");
+	});
+});
+
+describe("reading a pull request's feedback", () => {
+	/** A code host that pages its lists, `size` to a page, with a Link header like GitHub's and Gitea's. */
+	function paged(lists: Record<string, unknown[]>, size: number) {
+		const asked: string[] = [];
+		const fetch = async (url: string | URL | Request) => {
+			const u = new URL(String(url));
+			asked.push(`${u.pathname}${u.search}`);
+			const items = lists[u.pathname] ?? [];
+			const page = Number(u.searchParams.get("page") ?? 1);
+			const headers: Record<string, string> = {};
+			if (page * size < items.length) {
+				u.searchParams.set("page", String(page + 1));
+				headers.link = `<${u.href}>; rel="next", <${u.href}>; rel="last"`;
+			}
+			return new Response(JSON.stringify(items.slice((page - 1) * size, page * size)), { status: 200, headers });
+		};
+		return { asked, fetch: fetch as typeof globalThis.fetch };
+	}
+
+	it("follows every page of a list, and never to another host", async () => {
+		const all = Array.from({ length: 5 }, (_, i) => i);
+		const { asked, fetch } = paged({ "/api/v1/things": all }, 2);
+		assert.deepEqual(await listAll<number>(fetch, "http://forge/api/v1/things", {}), all);
+		assert.equal(asked.length, 3);
+		const elsewhere = (async () =>
+			new Response("[1]", { headers: { link: '<http://evil.example/steal>; rel="next"' } })) as unknown as typeof globalThis.fetch;
+		assert.deepEqual(await listAll<number>(elsewhere, "http://forge/api/v1/things", {}), [1]);
+		assert.deepEqual(await listAll<number>(fetch, "http://forge/api/v1/things", {}, 2), [0, 1, 2, 3], "capped");
+	});
+
+	it("reads comments past the first page, and keeps the newest when there are too many", async () => {
+		const note = (n: number, text = `comment ${n}`) => ({ user: { login: "bob" }, body: text, created_at: `2026-10-${String(10 + n).padStart(2, "0")}T00:00:00Z` });
+		const old = Array.from({ length: 10 }, (_, n) => note(n, `${"old ".repeat(100)}${n}`));
+		const { fetch } = paged(
+			{ "/api/v1/repos/team/app/issues/3/comments": [...old, note(20, "the latest word")], "/api/v1/repos/team/app/pulls/3/reviews": [], "/api/v1/repos/team/app/pulls/3/comments": [] },
+			4,
+		);
+		const lines = await feedbackOn(HOST, { slug: "team/app", number: 3 }, undefined, fetch);
+		assert.equal(lines.at(-1), "bob: the latest word", "the newest comment, from the last page, is kept");
+		assert.ok(lines.join("").length <= 3_000);
+		assert.ok(lines.length < 11, "the earliest were dropped to fit");
 	});
 });

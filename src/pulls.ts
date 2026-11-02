@@ -254,8 +254,40 @@ function toReview(row: Record<string, unknown>): ReviewRow {
 }
 
 const FEEDBACK_LIMIT = 3_000;
+/** Pages of a list followed at most (50 or 100 items each), so a huge pull request can't keep a poll busy. */
+export const MAX_PAGES = 10;
 
-type Comment = { body?: string | null; user?: { login?: string } | null; path?: string; state?: string };
+type Comment = { body?: string | null; user?: { login?: string } | null; path?: string; state?: string; created_at?: string; submitted_at?: string };
+
+/** The `rel="next"` URL of a `Link` header (GitHub and Gitea both send one), if any. */
+export function nextLink(header: string | null | undefined): string | undefined {
+	for (const part of (header ?? "").split(",")) {
+		const m = /<([^>]+)>\s*;\s*rel="?next"?/.exec(part);
+		if (m !== null) return m[1];
+	}
+	return undefined;
+}
+
+/**
+ * A list from the code host with all its pages (up to `MAX_PAGES`), following `Link: rel="next"` but never to another
+ * origin, so the token goes nowhere else. A first page that fails throws; a later one ends the list where it was.
+ */
+export async function listAll<T>(doFetch: typeof fetch, url: string, headers: Record<string, string>, maxPages = MAX_PAGES): Promise<T[]> {
+	const items: T[] = [];
+	const origin = new URL(url).origin;
+	let next: string | undefined = url;
+	for (let page = 0; next !== undefined && page < maxPages; page++) {
+		const response: Response = await doFetch(next, { headers });
+		if (!response.ok) {
+			if (page === 0) throw new Error(`code host answered ${response.status} for ${next}: ${(await response.text()).slice(0, 200)}`);
+			break;
+		}
+		items.push(...((await response.json()) as T[]));
+		const following = nextLink(response.headers.get("link"));
+		next = following !== undefined && new URL(following, next).origin === origin ? new URL(following, next).href : undefined;
+	}
+	return items;
+}
 
 /**
  * What people said on a pull request: review summaries, line comments, and the discussion, without Scout's own. This
@@ -267,27 +299,33 @@ export async function feedbackOn(
 	self: string | undefined,
 	doFetch: typeof fetch = fetch,
 ): Promise<string[]> {
-	const get = async (path: string): Promise<Comment[]> => {
-		const response = await doFetch(`${host.apiUrl}/repos/${pull.slug}${path}`, { headers: headersFor(host) });
-		return response.ok ? ((await response.json()) as Comment[]) : [];
-	};
+	const get = (path: string): Promise<Comment[]> =>
+		listAll<Comment>(doFetch, `${host.apiUrl}/repos/${pull.slug}${path}`, headersFor(host)).catch((): Comment[] => []);
 	const [reviews, lineComments, discussion] = await Promise.all([
 		get(`/pulls/${pull.number}/reviews`),
 		get(`/pulls/${pull.number}/comments`),
 		get(`/issues/${pull.number}/comments`),
 	]);
-	const lines: string[] = [];
+	const said: { at: string; line: string }[] = [];
 	const add = (comment: Comment, where: string) => {
 		const body = comment.body?.trim() ?? "";
 		const who = comment.user?.login ?? "someone";
 		if (body === "" || (self !== undefined && who === self) || body.startsWith("**Scout's review**")) return;
-		lines.push(`${who}${where}: ${body.replace(/\s+/g, " ")}`);
+		said.push({ at: comment.submitted_at ?? comment.created_at ?? "", line: `${who}${where}: ${body.replace(/\s+/g, " ")}`.slice(0, FEEDBACK_LIMIT) });
 	};
 	for (const review of reviews) add(review, review.state ? ` (${review.state.toLowerCase().replace(/_/g, " ")})` : "");
 	for (const comment of lineComments) add(comment, comment.path ? ` on ${comment.path}` : "");
 	for (const comment of discussion) add(comment, "");
+	// Oldest first, but when it's too long the newest are kept: the latest word on a pull request matters most.
+	const lines = said.sort((a, b) => a.at.localeCompare(b.at)).map((s) => s.line);
 	let used = 0;
-	return lines.filter((line) => (used += line.length) <= FEEDBACK_LIMIT);
+	const kept: string[] = [];
+	for (const line of lines.reverse()) {
+		used += line.length;
+		if (used > FEEDBACK_LIMIT) break;
+		kept.push(line);
+	}
+	return kept.reverse();
 }
 
 /** The code host account a token belongs to: Scout's own, if it has one. */
