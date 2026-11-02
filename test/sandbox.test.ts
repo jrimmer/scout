@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -44,6 +44,17 @@ describe("ConfinedEnv file confinement", () => {
 		assert.equal((await env.readTextFile("link.txt", context)).ok, false);
 		assert.equal((await env.writeFile("link.txt", "x", context)).ok, false);
 		assert.equal((await env.writeFile("dir-link/new.txt", "x", context)).ok, false);
+	});
+
+	it("refuses a dangling symlink, so a write can't create its target outside", async () => {
+		const { env, paths, secret } = setup();
+		const target = join(secret, "..", "pwned");
+		symlinkSync(target, join(paths.repo, "notes"));
+		symlinkSync(join(target, "deeper"), join(paths.repo, "notes2"));
+		assert.equal((await env.writeFile("notes", "x", context)).ok, false);
+		assert.equal((await env.writeFile("notes2", "x", context)).ok, false);
+		assert.equal((await env.writeFile("notes/inner.txt", "x", context)).ok, false);
+		assert.equal(existsSync(target), false);
 	});
 
 	it("keeps temp files inside the thread", async () => {

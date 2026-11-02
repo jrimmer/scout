@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord";
@@ -105,6 +105,11 @@ export class ConfinedEnv extends NodeExecutionEnv {
 				}
 				return ok(full);
 			} catch {
+				// A link that doesn't resolve (dangling) is still followed by a write, which creates its target wherever
+				// it points. Nothing that exists as a link is a path we can vouch for.
+				if (await lstat(existing).then((s) => s.isSymbolicLink(), () => false)) {
+					return err(new FileError("permission_denied", `Outside this workspace: ${path}`, path));
+				}
 				const parent = dirname(existing);
 				if (parent === existing) return err(new FileError("not_found", `No such path: ${path}`, path));
 				suffix = suffix === "" ? relative(parent, existing) : join(relative(parent, existing), suffix);
