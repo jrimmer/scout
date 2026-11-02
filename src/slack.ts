@@ -131,10 +131,23 @@ export class Slack {
 	}
 
 	#handleCache: { at: number; handles: Map<string, string> } | undefined;
+	#handleListing: Promise<Map<string, string>> | undefined;
+	#handleFailedAt: number | undefined;
 
-	/** Everyone's Slack handle and display name, lowercased, to their user ID; refreshed hourly. Ambiguous ones are left out. */
+	/**
+	 * Everyone's Slack handle and display name, lowercased, to their user ID; refreshed hourly. Ambiguous ones are left
+	 * out. Posts that come in together share one listing, and a listing that failed isn't tried again for five minutes.
+	 */
 	async #handles(): Promise<Map<string, string>> {
 		if (this.#handleCache !== undefined && Date.now() - this.#handleCache.at < 60 * 60 * 1000) return this.#handleCache.handles;
+		if (this.#handleFailedAt !== undefined && Date.now() - this.#handleFailedAt < 5 * 60 * 1000) return this.#handleCache?.handles ?? new Map();
+		this.#handleListing ??= this.#listHandles().finally(() => {
+			this.#handleListing = undefined;
+		});
+		return this.#handleListing;
+	}
+
+	async #listHandles(): Promise<Map<string, string>> {
 		const seen = new Map<string, string | null>();
 		const add = (name: string | undefined, id: string) => {
 			const key = name?.trim().toLowerCase().replace(/\s+/g, "");
@@ -154,10 +167,12 @@ export class Slack {
 			} while (cursor !== undefined);
 		} catch (error) {
 			console.error("listing Slack users for mentions failed:", error instanceof Error ? error.message : error);
+			this.#handleFailedAt = Date.now();
 			return this.#handleCache?.handles ?? new Map();
 		}
 		const handles = new Map([...seen].flatMap(([name, id]) => (id === null ? [] : [[name, id] as const])));
 		this.#handleCache = { at: Date.now(), handles };
+		this.#handleFailedAt = undefined;
 		return handles;
 	}
 

@@ -455,6 +455,16 @@ describe("slack", () => {
 			assert.deepEqual(fake.called("chat.update")[0]?.args, { channel: TEAM_CHANNEL, ts: "1700000000.000100", text: "@here", blocks: [{ type: "markdown", text: "@here now" }] });
 		});
 
+		it("reads the directory once for posts that come in together, and not again for a few minutes after it fails", async () => {
+			quietErrors();
+			fake.queue("users.list", { ok: false, error: "missing_scope" });
+			await Promise.all([1, 2, 3].map((n) => slack.surface.post(TEAM_CHANNEL, undefined, { text: `Post ${n} @ann`, blocks: [] })));
+			assert.equal(fake.called("users.list").length, 1, "one listing for all three");
+			await slack.surface.post(TEAM_CHANNEL, undefined, { text: "Later @ann", blocks: [] });
+			assert.equal(fake.called("users.list").length, 1, "a failed listing isn't retried at once");
+			assert.equal(fake.called("chat.postMessage").at(-1)?.args.text, "Later @ann", "and the post still goes out, with names as written");
+		});
+
 		it("still posts when the directory can't be read, with names as written", async () => {
 			quietErrors();
 			fake.queue("users.list", { ok: false, error: "missing_scope" });
