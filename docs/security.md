@@ -60,6 +60,14 @@ the damage:
   scan is the control. It knows common token shapes and the exact values of Scout's own secrets; a credential it has
   no pattern for, or one encoded some other way (reversed, split across lines), gets through, so keep secrets out of
   repositories Scout works on.
+- **No CI config in a push.** A workflow on a pushed branch (`on: push`) can run, with the repository's secrets,
+  before anyone reviews the pull request. So the host refuses any push whose net change, or any new commit in it,
+  touches pipeline definitions: `.github/workflows/` and `.github/actions/`, `.forgejo/` and `.gitea/` workflows,
+  `.gitlab-ci.yml` and `.gitlab/`, `.circleci/`, `.buildkite/`, `.drone.yml`, `.woodpecker*`, `.travis.yml`,
+  `.cirrus.yml`, `azure-pipelines.yml`, `bitbucket-pipelines.yml`, `appveyor.yml` and `Jenkinsfile`, at any depth.
+  Scout says a person has to make that change. A pipeline defined somewhere this list doesn't know, or run by a
+  tool that reads other files (a Makefile a workflow calls, a package's scripts), isn't covered: review those like
+  code that runs with secrets.
 - **The self-review is a second look, not a gate.** Scout reviews its own change before opening a pull request and
   fixes what it agrees with, but it may disagree and open the pull request anyway, saying so in the description. Text
   that talks the model into that gets past it. It catches slop, not attacks. To keep it quick, it reads the diff and
