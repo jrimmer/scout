@@ -357,4 +357,58 @@ describe("retention", () => {
 		threads.close();
 		audit.close();
 	});
+
+	it("purges a revived thread again when it goes quiet again", async () => {
+		const threads = new Threads(":memory:");
+		const day = 24 * 3600 * 1000;
+		const now = Date.parse("2026-10-19T00:00:00Z");
+		const key = threadKey("C", "1");
+		threads.insert({ key, conversationId: 1, channel: "C", threadTs: "1", startedBy: "U" }, now - 100 * day);
+		const options = {
+			days: 30,
+			threads,
+			workspaces: { remove: async () => {} },
+			search: { forget: () => {} },
+			memory: { purge: () => 0 },
+		};
+		assert.equal((await applyRetention({ ...options, now })).threads, 1);
+		threads.spoke(key, "U", now);
+		assert.equal((await applyRetention({ ...options, now: now + 60 * day })).threads, 1, "purged again");
+		threads.close();
+	});
+
+	it("carries on past a thread whose sandbox won't go, and tries it again next time", async () => {
+		const threads = new Threads(":memory:");
+		const day = 24 * 3600 * 1000;
+		const now = Date.parse("2026-10-19T00:00:00Z");
+		threads.insert({ key: threadKey("C", "1"), conversationId: 1, channel: "C", threadTs: "1", startedBy: "U" }, now - 100 * day);
+		threads.insert({ key: threadKey("C", "2"), conversationId: 2, channel: "C", threadTs: "2", startedBy: "U" }, now - 100 * day);
+		const removed: number[] = [];
+		let stuck = true;
+		const options = {
+			days: 30,
+			threads,
+			workspaces: {
+				remove: async (id: number) => {
+					if (id === 1 && stuck) throw new Error("busy");
+					removed.push(id);
+				},
+			},
+			search: { forget: () => {} },
+			memory: { purge: () => 0 },
+			now,
+		};
+		const quiet = console.error;
+		console.error = () => {};
+		try {
+			assert.equal((await applyRetention(options)).threads, 1);
+		} finally {
+			console.error = quiet;
+		}
+		assert.deepEqual(removed, [2]);
+		stuck = false;
+		assert.equal((await applyRetention(options)).threads, 1);
+		assert.deepEqual(removed, [2, 1]);
+		threads.close();
+	});
 });

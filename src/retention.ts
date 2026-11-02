@@ -26,10 +26,16 @@ export async function applyRetention(options: {
 	const before = (options.now ?? Date.now()) - options.days * 24 * 60 * 60 * 1000;
 	let threads = 0;
 	for (const thread of options.threads.unpurgedBefore(before)) {
-		await options.workspaces.remove(thread.conversationId);
-		for (const a of options.approaches?.forThread(thread.conversationId) ?? []) await options.workspaces.remove(a.childId);
-		options.search.forget(thread.key);
-		options.threads.purged(thread.key);
+		// One thread that won't clean up (a stuck sandbox) mustn't block the rest; it stays unpurged and is tried next time.
+		try {
+			await options.workspaces.remove(thread.conversationId);
+			for (const a of options.approaches?.forThread(thread.conversationId) ?? []) await options.workspaces.remove(a.childId);
+			options.search.forget(thread.key);
+			options.threads.purged(thread.key);
+		} catch (error) {
+			console.error(`retention: couldn't clear thread ${thread.key}:`, error);
+			continue;
+		}
 		threads++;
 	}
 	const notes = options.memory.purge(before);

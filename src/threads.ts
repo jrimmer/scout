@@ -137,7 +137,7 @@ export class Threads {
 	}
 
 	spoke(key: string, speaker: string, now = Date.now()): void {
-		this.#db.prepare("UPDATE threads SET last_speaker = ?, last_activity = ? WHERE key = ?").run(speaker, now, key);
+		this.#db.prepare("UPDATE threads SET last_speaker = ?, last_activity = ?, purged_at = NULL WHERE key = ?").run(speaker, now, key);
 	}
 
 	/** Requests waiting for a concurrency limit, oldest first. */
