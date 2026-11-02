@@ -223,6 +223,22 @@ describe("requester permissions", () => {
 		assert.match(((await on.admit("UC", "o/r")) as { reason: string }).reason, /don't know your Forgejo account/);
 	});
 
+	it("doesn't remember a check the code host couldn't make, so the next request checks again", async () => {
+		let up = false;
+		let asked = 0;
+		const flaky = (async (url: string | URL | Request, init?: RequestInit) => {
+			asked++;
+			if (!up) throw new Error("ECONNRESET");
+			return fetch(url, init);
+		}) as typeof globalThis.fetch;
+		const p = new Permissions({ config: { mode: "enforce", people: { UA: "alice" } }, codeHost: host, fetch: flaky });
+		assert.match(((await p.admit("UA", "o/r")) as { reason: string }).reason, /couldn't check your access to o\/r/);
+		up = true;
+		assert.deepEqual(await p.admit("UA", "o/r"), { ok: true }, "the refusal from the failed check wasn't kept");
+		assert.deepEqual(await p.admit("UA", "o/r"), { ok: true });
+		assert.equal(asked, 2, "the answer that did come back is kept");
+	});
+
 	it("can also require a Slack user group", async () => {
 		const p = new Permissions({ config: { mode: "enforce", people: { UA: "alice" }, userGroup: "S1" }, codeHost: host, fetch, groupMembers: async () => new Set(["UZ"]) });
 		assert.match(((await p.admit("UA", "o/r")) as { reason: string }).reason, /people in the group/);

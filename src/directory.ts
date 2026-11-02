@@ -40,7 +40,15 @@ export class AutheliaFile implements Directory {
 
 	async #people(): Promise<Person[]> {
 		if (this.#cache === undefined || Date.now() - this.#cache.at > this.#ttlMs) {
-			this.#cache = { at: Date.now(), people: parseAutheliaUsers(await this.#read()) };
+			try {
+				this.#cache = { at: Date.now(), people: parseAutheliaUsers(await this.#read()) };
+			} catch (error) {
+				// A file that can't be read just now (a mount blip, a deploy in progress) keeps serving the list it had, and is
+				// tried again after another TTL. Only a first read that fails has nothing to fall back on.
+				if (this.#cache === undefined) throw error;
+				console.error("re-reading the users file failed; using the list read before:", error);
+				this.#cache = { ...this.#cache, at: Date.now() };
+			}
 		}
 		return this.#cache.people;
 	}

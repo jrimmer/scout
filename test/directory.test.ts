@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { MemoryStorage } from "@earendil-works/pi-durable";
@@ -44,6 +44,25 @@ describe("the identity provider", () => {
 		assert.equal((await directory.byEmail("Alex@Example.com"))?.username, "alex");
 		assert.equal(await directory.byEmail("nobody@example.com"), undefined);
 		assert.equal(reads, 1);
+	});
+
+	it("keeps the list it had when the file can't be read again, and tries again after another TTL", async () => {
+		let fail = false;
+		let reads = 0;
+		const errors = mock.method(console, "error", () => {});
+		const directory = new AutheliaFile(async () => {
+			reads++;
+			if (fail) throw new Error("EIO");
+			return USERS;
+		}, 1);
+		assert.equal((await directory.byEmail("alex@example.com"))?.username, "alex");
+		fail = true;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.equal((await directory.byEmail("alex@example.com"))?.username, "alex", "the stale list still answers");
+		assert.equal(reads, 2);
+		assert.equal((await directory.byEmail("alex@example.com"))?.username, "alex");
+		assert.equal(reads, 2, "not read again straight away");
+		errors.mock.restore();
 	});
 
 	it("names who may approve changes, per server or for all", () => {
