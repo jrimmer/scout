@@ -6,7 +6,8 @@ import { after, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createCodeHostExtension } from "../src/codehost.ts";
 import { LocalDriver } from "../src/drivers/local.ts";
-import { Workspaces } from "../src/workspaces.ts";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { MAX_SANDBOX_FILE_BYTES, readCapped, Workspaces } from "../src/workspaces.ts";
 import { bareRepo, tempDir } from "./helpers.ts";
 
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
@@ -188,5 +189,33 @@ describe("workspaces (local driver)", () => {
 		const where = await run(env, "pwd");
 		await workspaces.remove(3);
 		assert.equal(existsSync(where), false);
+	});
+});
+
+describe("workspaces: failures and limits", () => {
+	it("doesn't keep a connection for a sandbox that failed to open", async () => {
+		const root = tempDir("scout-ws-fail-");
+		const workspaces = new Workspaces({
+			dataDir: join(root, "data"),
+			instance: "t",
+			repos: [{ name: "api", gitUrl: join(root, "no-such-repo.git"), base: "main" }],
+			driver: new LocalDriver({ root: join(root, "sandboxes") }),
+			sandbox: { image: "unused", network: "none" },
+			git: { name: "Scout", email: "scout@localhost" },
+		});
+		after(() => workspaces.close());
+		await assert.rejects(workspaces.env(1));
+		assert.equal(workspaces.connected, 0);
+		assert.equal(workspaces.open, 0);
+	});
+
+	it("won't read a file from a sandbox bigger than the cap", async () => {
+		const root = tempDir("scout-ws-cap-");
+		const small = join(root, "small.bin");
+		writeFileSync(small, "12345678");
+		const env = new NodeExecutionEnv({ cwd: root });
+		assert.deepEqual(Array.from(await readCapped(env, small, 8)), Array.from(Buffer.from("12345678")));
+		await assert.rejects(readCapped(env, small, 7), /more than the .* MB I'll take from a sandbox/);
+		assert.equal(MAX_SANDBOX_FILE_BYTES, 512 * 1024 * 1024);
 	});
 });

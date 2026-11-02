@@ -243,16 +243,25 @@ export class Workspaces {
 			this.#connected.add(conversationId);
 		}
 		const opened = { handle, ...(connection === undefined ? {} : { connection }), repo };
-		const env = this.#envAt(conversationId, opened, handle.workdir);
-		const clone = `${handle.workdir}/repo`;
-		const cloned = await env.exists(`${clone}/.git`, BACKGROUND_CONTEXT);
-		const prebuilt = await env.exists(`${handle.workdir}/${IMAGE_MARK}`, BACKGROUND_CONTEXT);
-		const fresh = !(cloned.ok && cloned.value) || (prebuilt.ok && prebuilt.value);
-		if (!(cloned.ok && cloned.value)) await this.#clone(env, opened, clone, conversationId);
-		else if (prebuilt.ok && prebuilt.value) await this.#fromImage(env, opened, clone, conversationId);
-		// A sandbox that was kept is where the work is; parked work comes back only into a new one.
-		if (fresh) await this.#unpark(env, opened, clone, conversationId);
-		else await rm(this.#parked(conversationId), { recursive: true, force: true });
+		try {
+			const env = this.#envAt(conversationId, opened, handle.workdir);
+			const clone = `${handle.workdir}/repo`;
+			const cloned = await env.exists(`${clone}/.git`, BACKGROUND_CONTEXT);
+			const prebuilt = await env.exists(`${handle.workdir}/${IMAGE_MARK}`, BACKGROUND_CONTEXT);
+			const fresh = !(cloned.ok && cloned.value) || (prebuilt.ok && prebuilt.value);
+			if (!(cloned.ok && cloned.value)) await this.#clone(env, opened, clone, conversationId);
+			else if (prebuilt.ok && prebuilt.value) await this.#fromImage(env, opened, clone, conversationId);
+			// A sandbox that was kept is where the work is; parked work comes back only into a new one.
+			if (fresh) await this.#unpark(env, opened, clone, conversationId);
+			else await rm(this.#parked(conversationId), { recursive: true, force: true });
+		} catch (error) {
+			// Nothing else would close this connection or forget it: no caller gets the sandbox that failed to open.
+			this.#connected.delete(conversationId);
+			try {
+				connection?.close();
+			} catch {}
+			throw error;
+		}
 		return opened;
 	}
 
@@ -316,9 +325,7 @@ export class Workspaces {
 		for (const name of ["parked.bundle", "attachments.tar"]) {
 			const there = await env.exists(`${dir}/${name}`, BACKGROUND_CONTEXT);
 			if (!(there.ok && there.value)) continue;
-			const bytes = await env.readBinaryFile(`${dir}/${name}`, BACKGROUND_CONTEXT);
-			if (!bytes.ok) throw bytes.error;
-			await writeFile(join(staging, name), bytes.value);
+			await writeFile(join(staging, name), await readCapped(env, `${dir}/${name}`));
 		}
 		await rm(parked, { recursive: true, force: true });
 		await rename(staging, parked);
@@ -404,7 +411,7 @@ export class Workspaces {
 		const opened = await this.#ensure(conversationId);
 		const { repo, handle } = opened;
 		const env = this.#envAt(conversationId, opened, `${handle.workdir}/repo`);
-		const inside = await this.#baseBundleIn(env, opened);
+		const inside = await this.#baseBundleIn(env, opened, 0);
 		await must(env, ["git", "fetch", "--quiet", inside, `+refs/heads/${repo.base}:refs/remotes/origin/${repo.base}`]);
 		await env.remove(inside, { force: true }, BACKGROUND_CONTEXT);
 		return repo.base;
@@ -496,7 +503,7 @@ export class Workspaces {
 	async setupScript(repoName: string): Promise<{ script: string; base: string } | undefined> {
 		const repo = this.repo(repoName);
 		const mirror = this.mirrorFor(repo.name);
-		await mirror.refresh();
+		await mirror.refresh(0);
 		const base = await run("git", ["-C", mirror.path, "rev-parse", `refs/heads/${repo.base}`]).then((r) => r.stdout.trim());
 		const script = await run("git", ["-C", mirror.path, "rev-parse", "--verify", "--quiet", `refs/heads/${repo.base}:.scout/setup.sh`])
 			.then((r) => r.stdout.trim())
@@ -507,7 +514,7 @@ export class Workspaces {
 	/** A checkout that came built with the sandbox's image: bring it up to the base branch now, and start the thread's own. */
 	async #fromImage(env: ExecutionEnv, opened: Opened, clone: string, conversationId: number): Promise<void> {
 		const { repo } = opened;
-		const inside = await this.#baseBundleIn(env, opened);
+		const inside = await this.#baseBundleIn(env, opened, 0);
 		// Forced, so files the setup script changed give way; what it built (ignored by git) stays.
 		await must(env, ["git", "-C", clone, "fetch", "--quiet", inside, `+refs/heads/${repo.base}:refs/remotes/origin/${repo.base}`]);
 		await must(env, ["git", "-C", clone, "checkout", "--quiet", "--force", "-B", this.branch(conversationId), `refs/remotes/origin/${repo.base}`]);
@@ -523,7 +530,7 @@ export class Workspaces {
 	/** The repository's base branch, cloned at `clone` from the host's mirror (as a bundle: no sandbox reaches the code host). */
 	async #cloneBase(env: ExecutionEnv, opened: Opened, clone: string): Promise<void> {
 		const { repo } = opened;
-		const inside = await this.#baseBundleIn(env, opened);
+		const inside = await this.#baseBundleIn(env, opened, 0);
 		await must(env, ["git", "clone", "--quiet", "--branch", repo.base, inside, clone]);
 		await must(env, ["git", "-C", clone, "remote", "set-url", "origin", repo.gitUrl]);
 		await must(env, ["git", "-C", clone, "config", "user.name", this.#config.git.name]);
@@ -532,10 +539,12 @@ export class Workspaces {
 	}
 
 	/** A bundle of the base branch, fresh from the mirror, inside the sandbox; returns its path there. */
-	async #baseBundleIn(env: ExecutionEnv, opened: Opened): Promise<string> {
+	async #baseBundleIn(env: ExecutionEnv, opened: Opened, maxAgeMs?: number): Promise<string> {
 		const { repo } = opened;
 		const mirror = this.mirrorFor(repo.name);
-		await mirror.refresh();
+		await mirror.refresh(maxAgeMs);
+		// A branch that appeared since the last fetch (a pull request just opened) is not worth waiting out the cache for.
+		if (!(await run("git", ["-C", mirror.path, "rev-parse", "--verify", "--quiet", `refs/heads/${repo.base}`]).then(() => true, () => false))) await mirror.refresh(0);
 		const host = await mkdtemp(join(tmpdir(), "scout-bundle-"));
 		try {
 			const bundle = join(host, "base.bundle");
@@ -569,11 +578,9 @@ export class Workspaces {
 			if (/empty bundle/i.test(made.output)) return undefined;
 			throw new Error(`git bundle failed: ${made.output.trim()}`);
 		}
-		const bytes = await env.readBinaryFile(inside, BACKGROUND_CONTEXT);
-		if (!bytes.ok) throw bytes.error;
-		await env.remove(inside, { force: true }, BACKGROUND_CONTEXT);
+		const bytes = await readCapped(env, inside).finally(() => env.remove(inside, { force: true }, BACKGROUND_CONTEXT));
 		const path = join(await mkdtemp(join(tmpdir(), "scout-out-")), "out.bundle");
-		await writeFile(path, bytes.value);
+		await writeFile(path, bytes);
 		return path;
 	}
 
@@ -624,6 +631,21 @@ export class Workspaces {
 		clearInterval(this.#sweep);
 		await Promise.all([...this.#open.keys()].map((id) => this.#close(id)));
 	}
+}
+
+/** The most the host reads into memory from one file a sandbox made (a bundle, a tar of attachments). */
+export const MAX_SANDBOX_FILE_BYTES = 512 * 1024 * 1024;
+
+/** A file the sandbox made, read whole, unless it is bigger than `max`: the sandbox decides how big it is. */
+export async function readCapped(env: ExecutionEnv, path: string, max = MAX_SANDBOX_FILE_BYTES): Promise<Uint8Array> {
+	const info = await env.fileInfo(path, BACKGROUND_CONTEXT);
+	if (!info.ok) throw info.error;
+	if (info.value.size > max) {
+		throw new Error(`${path.split("/").pop()} is ${Math.round(info.value.size / 1024 / 1024)} MB, more than the ${Math.round(max / 1024 / 1024)} MB I'll take from a sandbox. Trim what's in it (build output, big files) and try again.`);
+	}
+	const bytes = await env.readBinaryFile(path, BACKGROUND_CONTEXT);
+	if (!bytes.ok) throw bytes.error;
+	return bytes.value;
 }
 
 export async function copyIn(env: ExecutionEnv, path: string, bytes: Uint8Array): Promise<void> {

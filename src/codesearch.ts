@@ -92,16 +92,8 @@ export async function readCode(repo: SearchableRepo, path: string, from = 1, to?
  * repository the person asking couldn't.
  */
 export function codeSearchExtension(repos: (conversationId: number) => SearchableRepo[] | Promise<SearchableRepo[]>) {
-	const fetchedAt = new Map<string, number>();
 	const fresh = async (list: SearchableRepo[]) => {
-		const now = Date.now();
-		await Promise.all(
-			list.map(async (r) => {
-				if (now - (fetchedAt.get(r.name) ?? 0) < FRESH_MS) return;
-				await r.mirror.refresh();
-				fetchedAt.set(r.name, Date.now());
-			}),
-		);
+		await Promise.all(list.map((r) => r.mirror.refresh(FRESH_MS)));
 		return list;
 	};
 	const pick = async (conversationId: number, name?: string) => {
