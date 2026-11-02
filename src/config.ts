@@ -269,6 +269,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	if (kind === "forgejo" && !env.SCOUT_CODEHOST_API) {
 		throw new ConfigError("SCOUT_CODEHOST_API is required for Forgejo: its API address, like https://forgejo.example.com/api/v1");
 	}
+	const staleDays = count(env, "SCOUT_PR_STALE_DAYS", 14, 0);
 	const reflectHour = Number(env.SCOUT_REFLECT_HOUR ?? 3);
 	if (!Number.isInteger(reflectHour) || reflectHour < 0 || reflectHour > 23) throw new ConfigError(`SCOUT_REFLECT_HOUR should be an hour, 0 to 23, not "${env.SCOUT_REFLECT_HOUR}"`);
 	const benchHour = Number(env.SCOUT_BENCH_HOUR ?? 1);
@@ -326,11 +327,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		},
 		...(benchModels.length === 0 ? {} : { bench: { models: benchModels, hour: benchHour, tasksDir: resolve(env.SCOUT_BENCH_TASKS ?? join(dataDir, "bench")), ...(benchRepos.length === 0 ? {} : { repos: benchRepos }) } }),
 		...(fallbackModels.length === 0 ? {} : { fallback: { models: fallbackModels, after: fallbackAfter, minutes: fallbackFor } }),
-		maxPullLines: Number(env.SCOUT_PR_MAX_LINES ?? 1000),
+		maxPullLines: count(env, "SCOUT_PR_MAX_LINES", 1000, 1),
 		pullUpkeep: {
-			staleDays: Number(env.SCOUT_PR_STALE_DAYS ?? 14),
+			staleDays,
 			// Half as long again, unless set.
-			closeDays: Number(env.SCOUT_PR_CLOSE_DAYS ?? Number(env.SCOUT_PR_STALE_DAYS ?? 14) / 2),
+			closeDays: count(env, "SCOUT_PR_CLOSE_DAYS", Math.ceil(staleDays / 2), 1),
 		},
 		weeklySummary: env.SCOUT_WEEKLY_SUMMARY !== "off",
 		initiative: parseInitiative(env.SCOUT_INITIATIVE),
@@ -345,9 +346,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		codeSearch: env.SCOUT_CODE_SEARCH !== "off",
 		parallel: env.SCOUT_PARALLEL !== "off",
 		...(env.SCOUT_REPOS_FILE ? { reposFile: resolve(env.SCOUT_REPOS_FILE) } : {}),
-		reviewNudgeDays: Number(env.SCOUT_REVIEW_NUDGE_DAYS ?? 3),
-		closedBranchDays: Number(env.SCOUT_CLOSED_BRANCH_DAYS ?? 30),
-		threadRecapDays: Number(env.SCOUT_THREAD_RECAP_DAYS ?? 3),
+		reviewNudgeDays: count(env, "SCOUT_REVIEW_NUDGE_DAYS", 3, 0),
+		closedBranchDays: count(env, "SCOUT_CLOSED_BRANCH_DAYS", 30, 1),
+		threadRecapDays: count(env, "SCOUT_THREAD_RECAP_DAYS", 3, 0),
 		...(env.SCOUT_MCP_FILE ? { mcpFile: resolve(env.SCOUT_MCP_FILE) } : {}),
 		governance: {
 			...(env.SCOUT_PRICES_FILE ? { pricesFile: resolve(env.SCOUT_PRICES_FILE) } : {}),
@@ -358,7 +359,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 			codeHostLogins: codeHostLogins(env.SCOUT_CODEHOST_LOGINS, kind),
 			...(env.SCOUT_PEOPLE_FILE ? { peopleFile: resolve(env.SCOUT_PEOPLE_FILE) } : {}),
 			...(env.SCOUT_ALLOWED_USERGROUP ? { allowedUserGroup: env.SCOUT_ALLOWED_USERGROUP } : {}),
-			...(env.SCOUT_RETENTION_DAYS ? { retentionDays: Number(env.SCOUT_RETENTION_DAYS) } : {}),
+			...(env.SCOUT_RETENTION_DAYS?.trim() ? { retentionDays: count(env, "SCOUT_RETENTION_DAYS", 90, 1) } : {}),
 			...(env.SCOUT_OTLP_ENDPOINT
 				? {
 						otlp: {
@@ -386,7 +387,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 					dash: {
 						addr: env.SCOUT_DASH_ADDR ?? "127.0.0.1:8893",
 						...(env.SCOUT_DASH_USER && env.SCOUT_DASH_PASSWORD_HASH
-							? { auth: { user: env.SCOUT_DASH_USER, passwordHash: env.SCOUT_DASH_PASSWORD_HASH } }
+							? { auth: { user: env.SCOUT_DASH_USER, passwordHash: passwordHash(env.SCOUT_DASH_PASSWORD_HASH) } }
 							: {}),
 					},
 				}),
@@ -411,6 +412,14 @@ function backupSetting(value: string | undefined): BackupSetting {
 	if (v === "" || v === "litestream") return "litestream";
 	if (v === "none") return "none";
 	throw new ConfigError(`SCOUT_BACKUP must be litestream or none (it's "${value}"). See docs/operations.md, "Backups".`);
+}
+
+/** `scrypt$<salt>$<hash>`, base64, as `npm run dash-password` prints; anything else would lock everyone out silently. */
+function passwordHash(value: string): string {
+	if (!/^scrypt\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]{22,}$/.test(value)) {
+		throw new ConfigError("SCOUT_DASH_PASSWORD_HASH should look like scrypt$<salt>$<hash>; `npm run dash-password -- '<password>'` prints one (quote it, a bare $ is eaten by the shell).");
+	}
+	return value;
 }
 
 /** A whole-number setting, at least `min`, with a plain message when it isn't one. */

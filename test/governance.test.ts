@@ -11,6 +11,7 @@ import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } f
 import type { Approach } from "../src/approaches.ts";
 import { Audit } from "../src/audit.ts";
 import { loadConfig } from "../src/config.ts";
+import { hashPassword } from "../src/dash/server.ts";
 import { ThreadDoc } from "../src/docs.ts";
 import { Limits, SpendLedger, weekStart } from "../src/limits.ts";
 import { observeExtension } from "../src/observe.ts";
@@ -241,6 +242,21 @@ describe("requester permissions", () => {
 			warned.mock.calls.map((c) => String(c.arguments[0])),
 			["requester check (warn): would refuse UB in o/r: You (bob) can't change o/r, so I can't change it for you. Someone who can could ask instead.", "requester check (warn): would refuse mallory in o/r: You (mallory) can't change o/r, so I can't change it for you. Someone who can could ask instead."],
 		);
+	});
+
+	it("refuses day counts and a dashboard hash that would misbehave, and keeps the defaults when unset", () => {
+		const env = { SCOUT_REPO_URL: "ssh://forge/o/r.git", SCOUT_REPO_SLUG: "o/r", SCOUT_CODEHOST_TOKEN: "t", SCOUT_CODEHOST_API: "http://forge/api/v1" };
+		const c = loadConfig(env);
+		assert.equal(c.governance.retentionDays, undefined);
+		assert.deepEqual([c.maxPullLines, c.pullUpkeep.staleDays, c.pullUpkeep.closeDays, c.reviewNudgeDays, c.closedBranchDays, c.threadRecapDays], [1000, 14, 7, 3, 30, 3]);
+		assert.equal(loadConfig({ ...env, SCOUT_RETENTION_DAYS: "30" }).governance.retentionDays, 30);
+		assert.equal(loadConfig({ ...env, SCOUT_PR_STALE_DAYS: "0", SCOUT_THREAD_RECAP_DAYS: "0", SCOUT_REVIEW_NUDGE_DAYS: "0" }).pullUpkeep.staleDays, 0);
+		for (const [name, value] of [["SCOUT_RETENTION_DAYS", "0"], ["SCOUT_RETENTION_DAYS", "-1"], ["SCOUT_RETENTION_DAYS", "abc"], ["SCOUT_PR_MAX_LINES", "abc"], ["SCOUT_PR_STALE_DAYS", "-2"], ["SCOUT_PR_CLOSE_DAYS", "x"], ["SCOUT_REVIEW_NUDGE_DAYS", "-1"], ["SCOUT_CLOSED_BRANCH_DAYS", "0"], ["SCOUT_THREAD_RECAP_DAYS", "1.5"]]) {
+			assert.throws(() => loadConfig({ ...env, [name!]: value! }), new RegExp(`${name}`), `${name}=${value}`);
+		}
+		const hash = hashPassword("pw");
+		assert.equal(loadConfig({ ...env, SCOUT_DASH_USER: "ops", SCOUT_DASH_PASSWORD_HASH: hash }).dash?.auth?.passwordHash, hash);
+		assert.throws(() => loadConfig({ ...env, SCOUT_DASH_USER: "ops", SCOUT_DASH_PASSWORD_HASH: "scrypt" }), /SCOUT_DASH_PASSWORD_HASH/);
 	});
 
 	it("checks requesters unless told off, and refuses a setting it doesn't know rather than guess", () => {
