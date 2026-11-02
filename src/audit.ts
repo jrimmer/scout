@@ -138,10 +138,18 @@ if (import.meta.main) {
 		const i = args.indexOf(`--${name}`);
 		return i === -1 ? undefined : args[i + 1];
 	};
-	const day = (value: string | undefined) => (value === undefined ? undefined : Date.parse(value));
+	const day = (value: string | undefined, name: string) => {
+		if (value === undefined) return undefined;
+		const at = Date.parse(value);
+		if (Number.isNaN(at)) {
+			console.error(`--${name} needs a date such as 2026-10-01 (it's "${value}").\nUsage: npm run audit -- [--since DATE] [--until DATE] [--kind KIND] [--data DIR]`);
+			process.exit(2);
+		}
+		return at;
+	};
 	const audit = new Audit(`${flag("data") ?? process.env.SCOUT_DATA_DIR ?? "data"}/scout.sqlite`);
-	const since = day(flag("since"));
-	const until = day(flag("until"));
+	const since = day(flag("since"), "since");
+	const until = day(flag("until"), "until");
 	const kind = flag("kind");
 	for (const record of audit.list({ ...(since === undefined ? {} : { since }), ...(until === undefined ? {} : { until }), ...(kind === undefined ? {} : { kind }) })) {
 		process.stdout.write(`${JSON.stringify({ ...record, at: new Date(record.at).toISOString() })}\n`);
