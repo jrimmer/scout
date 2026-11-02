@@ -56,6 +56,7 @@ describe("alerts", () => {
 			sources: [{ source: "gatus", read: async () => (readable ? now : Promise.reject(new Error("down"))) }],
 			handlers: {
 				baseline: async (alerts) => void events.push(`baseline ${alerts.map((a) => a.key)}`),
+				storm: async () => {},
 				firing: async (a) => (events.push(`firing ${a.key}`), { channel: "C1", threadTs: "1.1" }),
 				resolved: async (a) => void events.push(`resolved ${a.key} in ${a.threadTs ?? "no thread"}`),
 				returned: async (a) => void events.push(`returned ${a.key} in ${a.threadTs} (${a.returns})`),
@@ -72,6 +73,72 @@ describe("alerts", () => {
 		now = [];
 		await watcher.poll();
 		assert.deepEqual(events, ["baseline gatus:a", "firing gatus:b", "resolved gatus:a in no thread", "resolved gatus:b in 1.1"]);
+	});
+
+	it("retries an alert whose raising failed, instead of marking it opened without a thread", async () => {
+		const alert: Alert = { key: "gatus:a", source: "gatus", title: "a", detail: "down", labels: {} };
+		let now: Alert[] = [];
+		let broken = true;
+		const events: string[] = [];
+		const log = new AlertLog(":memory:");
+		const watcher = new AlertWatcher({
+			log,
+			sources: [{ source: "gatus", read: async () => now }],
+			handlers: {
+				baseline: async () => {},
+				storm: async () => {},
+				firing: async (a) => {
+					if (broken) throw new Error("slack is down");
+					events.push(`firing ${a.key}`);
+					return { channel: "C1", threadTs: "1.1" };
+				},
+				resolved: async () => {},
+				returned: async () => {},
+			},
+		});
+		await watcher.poll();
+		now = [alert];
+		await watcher.poll();
+		assert.deepEqual(log.open(), [], "not opened without a thread");
+		broken = false;
+		await watcher.poll();
+		assert.deepEqual(events, ["firing gatus:a"]);
+		assert.equal(log.open()[0]?.threadTs, "1.1");
+	});
+
+	it("starts a few threads when many alerts fire at once, and sums up the rest in one message", async () => {
+		const many = Array.from({ length: 8 }, (_, i): Alert => ({ key: `gatus:${i}`, source: "gatus", title: `svc ${i}`, detail: "down", labels: {} }));
+		let now: Alert[] = [];
+		let summarising = false;
+		const events: string[] = [];
+		const log = new AlertLog(":memory:");
+		const watcher = new AlertWatcher({
+			log,
+			sources: [{ source: "gatus", read: async () => now }],
+			maxNew: 3,
+			handlers: {
+				baseline: async () => {},
+				storm: async (alerts) => {
+					if (summarising) throw new Error("slack is down");
+					events.push(`storm ${alerts.map((a) => a.key).join(",")}`);
+				},
+				firing: async (a) => (events.push(`firing ${a.key}`), { channel: "C1", threadTs: "1.1" }),
+				resolved: async () => {},
+				returned: async () => {},
+			},
+		});
+		await watcher.poll();
+		now = many;
+		summarising = true;
+		await watcher.poll();
+		assert.equal(log.open().length, 3, "a failed summary leaves the rest to the next poll");
+		summarising = false;
+		events.length = 0;
+		await watcher.poll();
+		assert.deepEqual(events, ["firing gatus:3", "firing gatus:4", "firing gatus:5", "storm gatus:6,gatus:7"]);
+		await watcher.poll();
+		assert.equal(events.length, 4, "nothing again once they're all opened");
+		assert.equal(log.open().length, 8);
 	});
 
 	it("upgrades an alert table from before flapping was handled", () => {
@@ -94,6 +161,7 @@ describe("alerts", () => {
 			sources: [{ source: "grafana", read: async () => (firing ? [flapping] : []) }],
 			handlers: {
 				baseline: async () => {},
+				storm: async () => {},
 				firing: async (a) => (events.push(`firing ${a.key}`), { channel: "C1", threadTs: "2.2" }),
 				resolved: async () => void events.push("resolved"),
 				returned: async (a) => void events.push(`returned in ${a.threadTs} (${a.returns})`),
@@ -155,6 +223,7 @@ describe("alerts", () => {
 			policy: () => policy,
 			handlers: {
 				baseline: async () => {},
+				storm: async () => {},
 				firing: async (a, investigate) => (events.push(`${investigate ? "investigate" : "post"} ${a.key}`), { channel: "C1", threadTs: "3.3" }),
 				resolved: async (a) => void events.push(`resolved ${a.key}`),
 				returned: async () => {},

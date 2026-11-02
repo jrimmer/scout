@@ -550,6 +550,9 @@ from is yours to set; which ones it looks into is the profile's (below), so it c
   alert's label values, or `label=value`; a Gatus check's labels are `group`, `name` and `endpoint`), or the alerts
   channel. Its thread is an investigation: the
   profile's `responder.md` says how. Scout mentions the channel's `oncall:` people.
+- At most 5 new alerts a poll get a thread. When more fire at once (an outage taking a lot of checks with it), the rest
+  are listed in one message in the alerts channel and left be unless someone asks. An alert whose thread couldn't be
+  raised (Slack down, say) isn't marked as seen; the next poll tries it again.
 - When the alert clears, Scout says so in the same thread. People can join, steer, or ask it to fix what it found.
 - An alert that clears and comes back soon after (`returns_within`, six hours unless the profile says otherwise) is
   the same incident: Scout says so in its thread instead of opening another and investigating again.

@@ -270,7 +270,15 @@ export type AlertHandlers = {
 	returned(alert: OpenAlert): Promise<void>;
 	/** The first look: what was already firing when Scout started watching. */
 	baseline(alerts: Alert[]): Promise<void>;
+	/**
+	 * More alerts fired in one poll than get threads (`maxNew`): one message for the rest, which are left be unless
+	 * someone asks. If it throws, they're not marked opened, so the next poll tries them again.
+	 */
+	storm(alerts: Alert[]): Promise<void>;
 };
+
+/** Threads started in one poll before the rest of what fired is summed up in one message. */
+export const MAX_NEW_PER_POLL = 5;
 
 export type AlertSource = { source: Alert["source"]; read: () => Promise<Alert[]> };
 
@@ -279,9 +287,11 @@ export class AlertWatcher {
 	readonly #sources: AlertSource[];
 	readonly #handlers: AlertHandlers;
 	readonly #policy: (source: Alert["source"]) => AlertPolicy;
+	readonly #maxNew: number;
 	#polling = false;
 
-	constructor(options: { log: AlertLog; sources: AlertSource[]; handlers: AlertHandlers; policy?: (source: Alert["source"]) => AlertPolicy }) {
+	constructor(options: { log: AlertLog; sources: AlertSource[]; handlers: AlertHandlers; policy?: (source: Alert["source"]) => AlertPolicy; maxNew?: number }) {
+		this.#maxNew = options.maxNew ?? MAX_NEW_PER_POLL;
 		this.#log = options.log;
 		this.#sources = options.sources;
 		this.#handlers = options.handlers;
@@ -318,6 +328,8 @@ export class AlertWatcher {
 			}
 			this.#log.prune(now - Math.max(...ALERT_SOURCES.map((s) => this.#policy(s).returnsWithinMs)));
 			const open = new Map(this.#log.open().map((alert) => [alert.key, alert]));
+			let started = 0;
+			const overflow: Alert[] = [];
 			for (const [key, alert] of firing) {
 				if (open.has(key)) continue;
 				const policy = this.#policy(alert.source);
@@ -327,12 +339,27 @@ export class AlertWatcher {
 					await this.#handlers.returned({ ...back, returns: back.returns + 1 }).catch((error: unknown) => console.error(`${alert.title} came back, but saying so failed:`, error));
 					continue;
 				}
+				// A storm gets a few threads and one summary, not a thread (and an investigation) for every alert.
+				if (started >= this.#maxNew) {
+					overflow.push(alert);
+					continue;
+				}
+				started++;
 				const investigate = policy.investigate === undefined || policy.investigate.some((term) => alertMatches(alert, term));
-				const where = await this.#handlers.firing(alert, investigate).catch((error: unknown) => {
+				try {
+					this.#log.opened(alert, await this.#handlers.firing(alert, investigate), now);
+				} catch (error) {
+					// Not opened, so the next poll raises it again instead of losing it without a thread.
 					console.error(`raising ${alert.title} failed:`, error);
-					return undefined;
-				});
-				this.#log.opened(alert, where, now);
+				}
+			}
+			if (overflow.length > 0) {
+				try {
+					await this.#handlers.storm(overflow);
+					for (const alert of overflow) this.#log.opened(alert, undefined, now);
+				} catch (error) {
+					console.error(`summing up ${overflow.length} more alerts failed:`, error);
+				}
 			}
 			for (const [key, alert] of open) {
 				if (firing.has(key) || unread.has(alert.source)) continue;
