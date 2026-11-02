@@ -138,6 +138,7 @@ export async function openScout(options: ScoutOptions) {
 			image: config.sandbox.image,
 			network: config.sandbox.network,
 			registryCdns: config.sandbox.registryCdns,
+			registries: config.sandbox.registries,
 			...(config.sandbox.size === undefined ? {} : { size: config.sandbox.size }),
 		},
 		git: config.git,
@@ -383,7 +384,7 @@ export async function openScout(options: ScoutOptions) {
 	});
 	// A sandbox that can't reach a host asks whoever runs Scout to allow it (egress.ts); the service posts the question.
 	let proposeEgress: (conversationId: number, host: string, why: string) => Promise<string> = async () => "I can't ask anyone about network access from here.";
-	const egressTools = egressExtension((id, host, why) => proposeEgress(id, host, why));
+	const egressTools = egressExtension((id, host, why) => proposeEgress(id, host, why), Object.keys(config.sandbox.registries));
 	// Other repositories' code, from the host's mirrors, read-only (codesearch.ts): a thread reads its own repository and
 	// those the person asking there may ask for work in (by the same rules), so someone admitted on a public repository
 	// can't have Scout read them a private one. Who asked on the code host is the service's to say (it sets this).

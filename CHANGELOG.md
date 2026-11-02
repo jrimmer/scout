@@ -18,7 +18,8 @@ A change to any of these that needs people to act is a major version. Everything
   doesn't wait on a person for each host. A public repository gets all of them unless it says otherwise; a private one
   gets none until the egress approvers allow an ecosystem from Slack, one button with the hosts listed. **Upgrading:**
   public repositories' sandboxes can now reach those hosts; set `registries` to `[]` on one to keep it closed.
-  `SCOUT_REGISTRY_CDNS=off` leaves out the download hosts registries redirect to.
+  `SCOUT_REGISTRY_CDNS=off` leaves out the download hosts registries redirect to, and `SCOUT_REGISTRIES_FILE` points at
+  your own copy of `registries.json` to add a mirror, an internal registry or another ecosystem.
 - **`npm run bench:mine` finds the benchmark's tasks** in fixes merged into the team's repositories
   (`SCOUT_BENCH_REPOS`), keeping each fix whose tests fail without it and pass with it, in a sandbox. A task's request
   is the problem as it might have been reported before the fix, written by Scout's model, never the commit message

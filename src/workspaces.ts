@@ -1,4 +1,4 @@
-import { registryHosts } from "./registries.ts";
+import { registryHosts, type RegistryTable } from "./registries.ts";
 import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -39,7 +39,7 @@ export type WorkspacesConfig = {
 	/** The first is the default. */
 	repos: WorkspaceRepo[];
 	driver: SandboxDriver;
-	sandbox: { image: string; network: "none" | "open"; size?: string; registryCdns?: boolean };
+	sandbox: { image: string; network: "none" | "open"; size?: string; registryCdns?: boolean; registries?: RegistryTable };
 	git: { name: string; email: string };
 };
 
@@ -180,7 +180,7 @@ export class Workspaces {
 	 * when it has neither, and when the network is open (which already includes them: a list would only narrow it).
 	 */
 	egressOf(repo: WorkspaceRepo): string[] | undefined {
-		const registries = this.#config.sandbox.network === "open" ? [] : registryHosts(repo.registries ?? [], this.#config.sandbox.registryCdns !== false);
+		const registries = this.#config.sandbox.network === "open" ? [] : registryHosts(this.#config.sandbox.registries ?? {}, repo.registries ?? [], this.#config.sandbox.registryCdns !== false);
 		if (repo.egress === undefined && registries.length === 0) return undefined;
 		return [...new Set([...(repo.egress ?? []), ...registries])];
 	}

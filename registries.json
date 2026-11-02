@@ -1,0 +1,100 @@
+{
+  "python": {
+    "about": "pip, uv and PyPI",
+    "hosts": [
+      "pypi.org",
+      "files.pythonhosted.org"
+    ]
+  },
+  "node": {
+    "about": "npm and Yarn",
+    "hosts": [
+      "registry.npmjs.org",
+      "registry.yarnpkg.com"
+    ]
+  },
+  "rust": {
+    "about": "cargo and rustup",
+    "hosts": [
+      "crates.io",
+      "index.crates.io",
+      "static.crates.io",
+      "static.rust-lang.org"
+    ]
+  },
+  "go": {
+    "about": "Go modules",
+    "hosts": [
+      "proxy.golang.org",
+      "sum.golang.org"
+    ]
+  },
+  "jvm": {
+    "about": "Maven and Gradle",
+    "hosts": [
+      "repo.maven.apache.org",
+      "repo1.maven.org",
+      "plugins.gradle.org",
+      "services.gradle.org"
+    ],
+    "cdn": [
+      "downloads.gradle.org"
+    ]
+  },
+  "dotnet": {
+    "about": "NuGet and the .NET SDK",
+    "hosts": [
+      "api.nuget.org",
+      "builds.dotnet.microsoft.com"
+    ],
+    "cdn": [
+      "globalcdn.nuget.org",
+      "ci.dot.net"
+    ]
+  },
+  "ruby": {
+    "about": "RubyGems",
+    "hosts": [
+      "rubygems.org",
+      "index.rubygems.org"
+    ]
+  },
+  "php": {
+    "about": "Composer and Packagist",
+    "hosts": [
+      "repo.packagist.org",
+      "packagist.org"
+    ]
+  },
+  "elixir": {
+    "about": "Hex",
+    "hosts": [
+      "hex.pm",
+      "repo.hex.pm",
+      "builds.hex.pm"
+    ]
+  },
+  "terraform": {
+    "about": "Terraform and OpenTofu providers",
+    "hosts": [
+      "registry.terraform.io",
+      "releases.hashicorp.com",
+      "registry.opentofu.org"
+    ]
+  },
+  "ansible": {
+    "about": "Ansible Galaxy (Ansible itself comes from python)",
+    "hosts": [
+      "galaxy.ansible.com"
+    ]
+  },
+  "apt": {
+    "about": "Debian and Ubuntu packages (a JDK, ImageMagick\u2026)",
+    "hosts": [
+      "deb.debian.org",
+      "security.debian.org",
+      "archive.ubuntu.com",
+      "security.ubuntu.com"
+    ]
+  }
+}

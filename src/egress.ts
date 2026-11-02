@@ -3,7 +3,6 @@ import { isIP } from "node:net";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Type } from "@earendil-works/pi-ai";
-import { registryName } from "./registries.ts";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 
 /**
@@ -79,9 +78,10 @@ function publicSuffix(name: string): boolean {
 }
 
 function checkHost(text: string): { host: string } | { reason: string } {
-	// `@python`: a package ecosystem's registries (registries.ts), asked for as one so a private repository can have them.
-	const ecosystem = text.trim().startsWith("@") ? registryName(text) : undefined;
-	if (ecosystem !== undefined) return { host: `@${ecosystem}` };
+	// `@python`: a package ecosystem's registries (registries.json), asked for as one so a private repository can have
+	// them. Whether the install has that ecosystem is for whoever asks to check against its table.
+	const ecosystem = /^@([a-z][a-z0-9-]*)$/.exec(text.trim().toLowerCase());
+	if (ecosystem !== null) return { host: `@${ecosystem[1]}` };
 	const raw = text
 		.trim()
 		.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
@@ -198,7 +198,7 @@ export function allowInReposFile(path: string, repo: string, host: string): bool
  * `ask_for_network`: for a thread whose sandbox couldn't reach a host. `propose` records the request and asks the
  * people who decide; what it returns is what the thread hears.
  */
-export function egressExtension(propose: (conversationId: number, host: string, why: string) => Promise<string>) {
+export function egressExtension(propose: (conversationId: number, host: string, why: string) => Promise<string>, ecosystems: string[] = []) {
 	const ask = defineTool({
 		name: "ask_for_network",
 		description:
@@ -206,9 +206,10 @@ export function egressExtension(propose: (conversationId: number, host: string, 
 			"host', connections refused or timing out during an install. Ask whoever runs you to allow that host for this " +
 			"repository's sandboxes. Use it once per host, say in the thread that you've asked, and don't try to work " +
 			"around the network. When the tool you need isn't installed (a JDK, an image library, a Terraform provider) and " +
-			"the install can't reach its registry, ask for that ecosystem as one (@python, @jvm, @apt…) instead of host by host.",
+			"the install can't reach its registry, ask for that ecosystem as one instead of host by host" +
+			(ecosystems.length === 0 ? "." : `: ${ecosystems.map((e) => `@${e}`).join(", ")}, or @all.`),
 		parameters: Type.Object({
-			host: Type.String({ description: "The host name, e.g. registry.npmjs.org (no scheme or path); or @python, @node, @rust, @go, @jvm, @dotnet, @ruby, @php, @elixir, @terraform, @ansible or @apt for that ecosystem's package registries" }),
+			host: Type.String({ description: "The host name, e.g. registry.npmjs.org (no scheme or path); or @ and an ecosystem (the ones named in the tool's description) for its package registries" }),
 			why: Type.String({ description: "What needed it, in a sentence: the command and what it was fetching" }),
 		}),
 		execute: async (args, api) => {

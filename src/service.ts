@@ -23,7 +23,7 @@ import { startDashboard } from "./dash/server.ts";
 import { ThreadDoc } from "./docs.ts";
 import { countMcpTools, doctor, formatChecks, restartsOf, type Unit, unitOf } from "./doctor.ts";
 import type { SandboxDriver } from "./drivers/types.ts";
-import { registryHosts } from "./registries.ts";
+import { registryHosts, registryName } from "./registries.ts";
 import { allowInReposFile, EgressRequests, whyNotHost } from "./egress.ts";
 import { loadTasks } from "./evals.ts";
 import { type Ask, askerOf, forgeFor, Inbox } from "./forge.ts";
@@ -371,7 +371,8 @@ export async function startService(options: ServiceOptions) {
 		const name = scout.workspaces.repo((await scout.repoOfConversation(conversationId)).name).name;
 		const repo = config.repos.find((r) => r.name === name);
 		if (repo === undefined) return "I couldn't tell which repository this thread works in, so I can't ask for its network.";
-		const ecosystem = host.startsWith("@") ? host.slice(1) : undefined;
+		const ecosystem = host.startsWith("@") ? registryName(config.sandbox.registries, host) : undefined;
+		if (host.startsWith("@") && ecosystem === undefined) return `There's no ${host} among the package registries I know: ${Object.keys(config.sandbox.registries).map((e) => `@${e}`).join(", ")}, or @all. For a host of its own, ask for the host.`;
 		if (repo.egress?.includes(host) === true || (ecosystem !== undefined && (repo.registries?.includes(ecosystem) === true || repo.registries?.includes("all") === true))) {
 			return `${host} is already allowed for ${repo.name}. This thread's sandbox may have started before it was; a new thread gets it.`;
 		}
@@ -395,7 +396,7 @@ export async function startService(options: ServiceOptions) {
 		audit.record("egress_requested", { actor: "scout", conversationId, detail: { id: request.id, repo: repo.name, host, why } });
 		if (home === undefined) return `I'd ask for ${host} to be allowed for ${repo.name}, but I have no home channel to ask in. Whoever runs me can add it to the repository's egress list.`;
 		const text = `Allow \`${host}\` for ${repo.name}'s sandboxes?`;
-		const hosts = ecosystem === undefined ? undefined : registryHosts([ecosystem], config.sandbox.registryCdns);
+		const hosts = ecosystem === undefined ? undefined : registryHosts(config.sandbox.registries, [ecosystem], config.sandbox.registryCdns);
 		const what =
 			hosts === undefined
 				? `*${text}*\nAllowing it lets every new sandbox for ${repo.name} connect to \`${host}\` from now on, not just this thread's, until someone takes it out of the repository's egress list. ${thread} couldn't reach it.`

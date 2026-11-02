@@ -151,7 +151,7 @@ can't, and Scout falls back to the default network there and says so.
 without anyone approving host after host, a repository's sandboxes may reach its ecosystems' package registries, on
 top of its `egress` list. `registries` in `SCOUT_REPOS_FILE` (`SCOUT_REPO_REGISTRIES` for the default repository) names
 the ecosystems: `python`, `node`, `rust`, `go`, `jvm`, `dotnet`, `ruby`, `php`, `elixir`, `terraform`, `ansible`, `apt`,
-or `all` (the hosts are in `src/registries.ts`; exact hosts, never a wildcard or a place anyone can publish a page).
+or `all`. The hosts are data, `registries.json`: copy it, edit it (a mirror, an internal registry, another ecosystem) and point `SCOUT_REGISTRIES_FILE` at the copy. Exact hosts, never a place anyone can publish a page; a file with one Scout wouldn't allow from Slack is refused at start.
 Left out, **a public repository gets all of them and a private one none**, as the code host says at start (and when it
 won't say, private). A private repository gets an ecosystem the usual way: a thread that needs one asks for it
 (`@python`, `@jvm`, `@apt`, or `@all`) and the egress approvers press Allow in the home channel, which saves it in the

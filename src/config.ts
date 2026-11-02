@@ -1,4 +1,4 @@
-import { REGISTRIES, unknownRegistries } from "./registries.ts";
+import { loadRegistries, type RegistryTable, unknownRegistries } from "./registries.ts";
 import { ConfigError } from "./startup.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { type Initiative, parseInitiative } from "./initiative.ts";
@@ -41,6 +41,8 @@ export type SandboxConfig = {
 	dockerNetwork: string;
 	/** Whether a registry's download hosts (the ones it redirects to) come with it (registries.ts); SCOUT_REGISTRY_CDNS=off leaves them out. */
 	registryCdns: boolean;
+	/** The package registries by ecosystem (registries.json, or SCOUT_REGISTRIES_FILE). */
+	registries: RegistryTable;
 	/** `transport`: the pi-env daemon over spoond's stream WebSocket, or spoond's REST API with no connection held. */
 	spoond?: { url: string; token: string; transport: "stream" | "rest" };
 };
@@ -204,7 +206,7 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
 }
 
 /** More repositories, from a JSON file: `[{ "name", "gitUrl", "slug", "base"?, "image"?, "snapshot"?, "egress"?, "size"? }]`. */
-function moreRepos(path: string | undefined): RepoConfig[] {
+function moreRepos(path: string | undefined, table: RegistryTable): RepoConfig[] {
 	if (path === undefined || path === "") return [];
 	let text: string;
 	try {
@@ -229,21 +231,21 @@ function moreRepos(path: string | undefined): RepoConfig[] {
 			...(r.image ? { image: r.image } : {}),
 			...(r.snapshot ? { snapshot: r.snapshot } : {}),
 			...(Array.isArray(r.egress) ? { egress: r.egress } : {}),
-			...(Array.isArray(r.registries) ? { registries: registryList(r.registries, `${path}: ${r.name}`) } : {}),
+			...(Array.isArray(r.registries) ? { registries: registryList(table, r.registries, `${path}: ${r.name}`) } : {}),
 			...(typeof r.size === "string" && r.size !== "" ? { size: r.size } : {}),
 		};
 	});
 }
 
-/** A registries list: ecosystem names from registries.ts, or `all`; empty means none. A typo stops Scout at start. */
-function registryList(names: unknown[], where: string): string[] {
+/** A registries list: ecosystem names from the table, or `all`; empty means none. A typo stops Scout at start. */
+function registryList(table: RegistryTable, names: unknown[], where: string): string[] {
 	const list = names.map((n) => String(n).trim()).filter(Boolean);
-	const unknown = unknownRegistries(list);
-	if (unknown.length > 0) throw new ConfigError(`${where}: unknown package registries ${unknown.join(", ")}; the ecosystems are ${Object.keys(REGISTRIES).join(", ")}, or all`);
+	const unknown = unknownRegistries(table, list);
+	if (unknown.length > 0) throw new ConfigError(`${where}: unknown package registries ${unknown.join(", ")}; the ecosystems are ${Object.keys(table).join(", ")}, or all`);
 	return list;
 }
 
-function sandboxConfig(env: NodeJS.ProcessEnv): SandboxConfig {
+function sandboxConfig(env: NodeJS.ProcessEnv, registries: RegistryTable): SandboxConfig {
 	const driver = env.SCOUT_SANDBOX_DRIVER ?? "docker";
 	if (driver !== "docker" && driver !== "spoond" && driver !== "local") {
 		throw new ConfigError("SCOUT_SANDBOX_DRIVER must be docker, spoond or local");
@@ -260,11 +262,18 @@ function sandboxConfig(env: NodeJS.ProcessEnv): SandboxConfig {
 		...(size === undefined ? {} : { size }),
 		dockerNetwork: env.SCOUT_DOCKER_NETWORK ?? "bridge",
 		registryCdns: (env.SCOUT_REGISTRY_CDNS ?? "on") !== "off",
+		registries,
 		...(driver === "spoond" ? { spoond: { url: required(env, "SCOUT_SPOOND_URL"), token: required(env, "SCOUT_SPOOND_TOKEN"), transport } } : {}),
 	};
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+	let registries: RegistryTable;
+	try {
+		registries = loadRegistries(env.SCOUT_REGISTRIES_FILE || undefined);
+	} catch (error) {
+		throw new ConfigError(`SCOUT_REGISTRIES_FILE: ${error instanceof Error ? error.message : String(error)}`);
+	}
 	const slug = required(env, "SCOUT_REPO_SLUG");
 	if (!/^[^/\s]+\/[^/\s]+$/.test(slug)) throw new ConfigError(`SCOUT_REPO_SLUG should look like owner/name, not "${slug}"`);
 	const repo: RepoConfig = {
@@ -274,7 +283,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		slug,
 		...(env.SCOUT_REPO_SNAPSHOT ? { snapshot: env.SCOUT_REPO_SNAPSHOT } : {}),
 		...(env.SCOUT_REPO_EGRESS ? { egress: env.SCOUT_REPO_EGRESS.split(",").map((h) => h.trim()).filter(Boolean) } : {}),
-		...(env.SCOUT_REPO_REGISTRIES === undefined ? {} : { registries: registryList(env.SCOUT_REPO_REGISTRIES.split(","), "SCOUT_REPO_REGISTRIES") }),
+		...(env.SCOUT_REPO_REGISTRIES === undefined ? {} : { registries: registryList(registries, env.SCOUT_REPO_REGISTRIES.split(","), "SCOUT_REPO_REGISTRIES") }),
 	};
 	const [provider, ...rest] = (env.SCOUT_MODEL ?? "anthropic/claude-opus-5-5").split("/");
 	const modelId = rest.join("/");
@@ -313,7 +322,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		// profile/ that ships here is not a clone, so it can't be the default.
 		profileDir: resolve(env.SCOUT_PROFILE_DIR ?? (env.SCOUT_PROFILE_REPO_URL ? join(dataDir, "profile") : "profile")),
 		repo,
-		repos: [repo, ...moreRepos(env.SCOUT_REPOS_FILE).filter((r) => r.name !== repo.name)],
+		repos: [repo, ...moreRepos(env.SCOUT_REPOS_FILE, registries).filter((r) => r.name !== repo.name)],
 		codeHost: {
 			kind,
 			apiUrl: (env.SCOUT_CODEHOST_API ?? (kind === "github" ? "https://api.github.com" : "")).replace(/\/$/, ""),
@@ -407,7 +416,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 							: {}),
 					},
 				}),
-		sandbox: sandboxConfig(env),
+		sandbox: sandboxConfig(env, registries),
 		git: {
 			name: env.SCOUT_GIT_NAME ?? "Scout",
 			email: env.SCOUT_GIT_EMAIL ?? "scout@localhost",
