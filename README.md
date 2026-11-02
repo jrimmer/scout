@@ -9,7 +9,7 @@ from it.
   ([Pi Durable](https://earendil.com/posts/pi-durable/)).
   - It survives restarts.
   - Anyone in the thread who may ask for work (by default, people who can change the repository) can redirect it.
-  - A stop sign (or "@Scout stop") stops it.
+  - A stop sign (or "@Scout stop") stops it, and drops a request still waiting its turn. A bare "stop" without the mention is a comment to the thread, since people say it to each other.
   - A change made through a tool that needs approval waits for "approve", or a 👍 on Scout's request.
   - 🔁 on its answer tries again; editing a request steers the work.
   - Nothing said while Scout restarts is lost, and its progress message says what it's waiting on.
