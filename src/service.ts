@@ -1276,7 +1276,7 @@ export async function startService(options: ServiceOptions) {
 		const now = new Date(clock());
 		const night = localDay(now);
 		// Once a night, whether it worked or not: a broken run shouldn't start again every few minutes.
-		if (now.getHours() < config.bench.hour || benchTried === night || benchStore?.lastRun() === night) return;
+		if (now.getHours() < config.bench.hour || benchTried === night || benchStore?.nightDone(night) === true) return;
 		benchTried = night;
 		console.log(`benchmark: starting tonight's runs (${config.bench.models.map((m) => `${m.provider}/${m.modelId}`).join(", ")})`);
 		benchChild = spawn(process.execPath, [join(import.meta.dirname, "bench-cli.ts")], { stdio: "inherit" });

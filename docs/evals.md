@@ -81,7 +81,9 @@ like to use through our gateway?", night after night. It's **off** unless `SCOUT
 runs: 3 changes and 4 bugs to find, the ones run longest ago, so the pool comes round in turn and no task gets
 learned by being there every night (SWE-rebench keeps its tasks fresh for the same reason).
 The **Benchmark** page shows the result, linked from the foot of the dashboard. `npm run bench` runs a night by hand (`--only <text>` for
-every task whose name has the text).
+every task whose name has the text). Only a whole night, every model and task, marks the night done; a hand run, or
+one that stopped part way, leaves tonight's to start again. A task counts as recently run only once every configured
+model has run it.
 
 **The tasks** come from the work of the team Scout is deployed with, never from Scout's own code: fixes that were
 merged into the team's repositories, and threads where someone had to correct Scout, with the corrected outcome as the
@@ -141,7 +143,9 @@ oldest run goes as each new one comes in.
 | Tasks not lost | Tasks the provider didn't cut short (the 90-minute limit, or calls that kept failing), as counts |
 
 It's small: a few tasks, one team's code. Read it as a comparison of models on this work, not a ranking.
-Costs come from the prices file, so a model without a price there shows as free; add list prices (OpenRouter's, or
-the gateway's own catalog) for every model you compare. The nights cost about a task's worth of model calls per
+Scores are over the tasks every compared model has a scored run of, so one model's easier tasks don't flatter it; the
+page shows n beside each score, and says so when the models share no task. Costs come from the prices file: a model
+without a price there is warned about in the bench log and its cost efficiency shows "no price set" rather than
+free. Add list prices (OpenRouter's, or the gateway's own catalog) for every model you compare. The nights cost about a task's worth of model calls per
 model per task, a few dollars a week for three models at today's prices.
 
