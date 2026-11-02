@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { combineChecks } from "./ci.ts";
 import type { CodeHost } from "./codehost.ts";
 
 /**
@@ -299,9 +300,11 @@ class RestForge implements Forge {
 	}
 
 	async ciState(slug: string, sha: string): Promise<"passing" | "failing" | "pending" | undefined> {
-		const status = (await this.#api("GET", `/repos/${slug}/commits/${sha}/status`)) as { state?: string; total_count?: number };
-		if ((status.total_count ?? 0) === 0) return undefined;
-		return status.state === "success" ? "passing" : status.state === "pending" ? "pending" : "failing";
+		const status = (await this.#api("GET", `/repos/${slug}/commits/${sha}/status`)) as { state: string; total_count: number };
+		// GitHub Actions reports as check runs, which the combined status does not include.
+		const runs = this.#host.kind === "github" ? await this.#api("GET", `/repos/${slug}/commits/${sha}/check-runs?per_page=100`) : undefined;
+		const { state } = combineChecks({ ...status, total_count: status.total_count ?? 0 }, runs as Parameters<typeof combineChecks>[1], "");
+		return state === "none" ? undefined : state === "success" ? "passing" : state === "pending" ? "pending" : "failing";
 	}
 
 	async closePull(slug: string, number: number): Promise<void> {

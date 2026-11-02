@@ -3,8 +3,8 @@ import type { CiRow, PullRow, Pulls } from "./pulls.ts";
 
 /**
  * Watching CI on Scout's own pull requests, so a red build comes back to the thread that made it instead of waiting
- * for someone to notice. Scout reads the head commit's combined status (Forgejo Actions and GitHub both report there):
- * green, it says so; red, it's asked to read the logs and fix what its change broke, at most `MAX_FIXES` times per
+ * for someone to notice. Scout reads the head commit's combined status (Forgejo Actions reports there, and so do GitHub's
+ * older integrations) and, on GitHub, its check runs (where GitHub Actions reports): green, it says so; red, it's asked to read the logs and fix what its change broke, at most `MAX_FIXES` times per
  * pull request before it hands over to a person. A repository without CI never reports, and Scout stops waiting.
  *
  * Polled (Scout has no public address). Pi Durable's sleeping tools (#23) could later let the thread itself wait.
@@ -25,6 +25,53 @@ export type CiHandlers = {
 };
 
 type Status = { state: string; total_count: number; statuses?: { context?: string; status?: string; state?: string; target_url?: string; description?: string }[] };
+type CheckRuns = { total_count?: number; check_runs?: { name?: string; status?: string; conclusion?: string | null; html_url?: string; output?: { title?: string | null } }[] };
+
+/** A commit's checks across both ways a code host reports them: `none` when nothing has reported. */
+export type Outcome = { state: "success" | "failure" | "pending" | "none"; checks: Check[] };
+
+/**
+ * The commit status and (on GitHub) the check runs, as one outcome: red if anything is red, else pending if anything
+ * is, else green. `checks` lists what is not green. `origin` makes the status's relative links absolute.
+ */
+export function combineChecks(status: Status, runs: CheckRuns | undefined, origin: string): Outcome {
+	const checks: Check[] = [];
+	let failing = false;
+	let pending = false;
+	let total = 0;
+	if (status.total_count > 0) {
+		total += status.total_count;
+		if (status.state === "pending") pending = true;
+		else if (status.state !== "success") failing = true;
+		for (const s of status.statuses ?? []) {
+			const state = s.status ?? s.state ?? status.state;
+			if (state === "success") continue;
+			checks.push({
+				context: s.context ?? "check",
+				state,
+				...(s.target_url ? { url: s.target_url.startsWith("/") ? `${origin}${s.target_url}` : s.target_url } : {}),
+				...(s.description ? { description: s.description } : {}),
+			});
+		}
+	}
+	for (const run of runs?.check_runs ?? []) {
+		total++;
+		if (run.status !== "completed") {
+			pending = true;
+			continue;
+		}
+		if (run.conclusion === "success" || run.conclusion === "neutral" || run.conclusion === "skipped") continue;
+		failing = true;
+		checks.push({
+			context: run.name ?? "check",
+			state: run.conclusion ?? "failure",
+			...(run.html_url ? { url: run.html_url } : {}),
+			...(run.output?.title ? { description: run.output.title } : {}),
+		});
+	}
+	if (total === 0) return { state: "none", checks };
+	return { state: failing ? "failure" : pending ? "pending" : "success", checks };
+}
 
 export class CiWatcher {
 	readonly #pulls: Pulls;
@@ -67,27 +114,23 @@ export class CiWatcher {
 		const save = (row: Omit<CiRow, "sha" | "since">) => this.#pulls.ciSaw(pull.url, { sha: head, since, ...row });
 
 		const status = (await this.#api(`/repos/${pull.slug}/commits/${head}/status`)) as Status;
-		if (status.total_count === 0) {
+		// GitHub Actions reports as check runs, which the combined status does not include.
+		const runs = this.#host.kind === "github" ? ((await this.#api(`/repos/${pull.slug}/commits/${head}/check-runs?per_page=100`)) as CheckRuns) : undefined;
+		const outcome = combineChecks(status, runs, new URL(this.#host.apiUrl).origin);
+		if (outcome.state === "none") {
 			save({ outcome: now - since > NO_CI_AFTER_MS ? "none" : "pending", attempts });
 			return;
 		}
-		if (status.state === "pending") {
+		if (outcome.state === "pending") {
 			save({ outcome: "pending", attempts });
 			return;
 		}
-		if (status.state === "success") {
+		if (outcome.state === "success") {
 			save({ outcome: "success", attempts });
 			await this.#handlers.passed(pull, head);
 			return;
 		}
-		const checks: Check[] = (status.statuses ?? [])
-			.map((s) => ({
-				context: s.context ?? "check",
-				state: s.status ?? s.state ?? status.state,
-				...(s.target_url ? { url: s.target_url.startsWith("/") ? `${new URL(this.#host.apiUrl).origin}${s.target_url}` : s.target_url } : {}),
-				...(s.description ? { description: s.description } : {}),
-			}))
-			.filter((c) => c.state !== "success");
+		const checks = outcome.checks;
 		if (attempts >= MAX_FIXES) {
 			save({ outcome: "failure", attempts });
 			await this.#handlers.stuck(pull, head, checks);
