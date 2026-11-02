@@ -45,6 +45,7 @@ export class Tracer implements Observer {
 	readonly #runs = new Map<number, Span>();
 	readonly #open = new Map<string, Span>();
 	#done: Span[] = [];
+	#sending: Promise<void> | undefined;
 	#pi = false;
 	readonly #cost = new Map<number, number>();
 	readonly #timer: ReturnType<typeof setInterval>;
@@ -143,7 +144,17 @@ export class Tracer implements Observer {
 
 	/** Send what's finished. Failures are logged and dropped: telemetry never gets in the way of work. */
 	async flush(): Promise<void> {
-		if (this.#done.length === 0) return;
+		// One export at a time: a slow collector holds the next ticks off (spans wait here) instead of piling up requests.
+		if (this.#sending !== undefined || this.#done.length === 0) return;
+		this.#sending = this.#send();
+		try {
+			await this.#sending;
+		} finally {
+			this.#sending = undefined;
+		}
+	}
+
+	async #send(): Promise<void> {
 		const spans = this.#done;
 		this.#done = [];
 		const body = {
@@ -159,6 +170,7 @@ export class Tracer implements Observer {
 				method: "POST",
 				headers: { "content-type": "application/json", ...this.#headers },
 				body: JSON.stringify(body),
+				signal: AbortSignal.timeout(10_000),
 			});
 			if (!response.ok) console.error(`telemetry export: ${response.status}`);
 		} catch (error) {
@@ -166,8 +178,9 @@ export class Tracer implements Observer {
 		}
 	}
 
-	close(): Promise<void> {
+	async close(): Promise<void> {
 		clearInterval(this.#timer);
+		await this.#sending;
 		return this.flush();
 	}
 }

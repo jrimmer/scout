@@ -345,6 +345,41 @@ describe("observers in a real run", () => {
 	});
 });
 
+describe("telemetry export", () => {
+	it("gives a slow collector a deadline, and holds the next flush off while one is in flight", async () => {
+		const calls: { signal?: AbortSignal | null; spans: number }[] = [];
+		let release: () => void = () => {};
+		const tracer = new Tracer({
+			endpoint: "http://otel/v1/traces",
+			pricing: new Pricing({}),
+			intervalMs: 3_600_000,
+			fetch: async (_url, init) => {
+				calls.push({ signal: init?.signal, spans: JSON.parse(String(init?.body)).resourceSpans[0].scopeSpans[0].spans.length });
+				await new Promise<void>((resolve) => (release = resolve));
+				return new Response("{}");
+			},
+		});
+		const span = (callId: string) => {
+			const e = { conversationId: 1, channel: "C", callId, name: "echo", nested: false } as never;
+			tracer.toolStarted(e);
+			tracer.toolEnded({ ...(e as object), isError: false } as never);
+		};
+		span("a");
+		const first = tracer.flush();
+		span("b");
+		await tracer.flush();
+		assert.equal(calls.length, 1, "no second export while one is out");
+		assert.ok(calls[0]!.signal instanceof AbortSignal, "with a deadline");
+		release();
+		await first;
+		const last = tracer.close();
+		await new Promise((resolve) => setImmediate(resolve));
+		release();
+		await last;
+		assert.deepEqual(calls.map((c) => c.spans), [1, 1], "what waited goes next");
+	});
+});
+
 describe("retention", () => {
 	it("deletes what quiet threads leave behind and keeps the audit trail", async () => {
 		const threads = new Threads(":memory:");
