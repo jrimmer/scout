@@ -1,5 +1,5 @@
 import type { Context } from "@earendil-works/chord";
-import { type AgentChange, type ConversationId, type Harness, watchEvents } from "@earendil-works/pi-durable";
+import { type AgentChange, type AgentEventStream, type ConversationId, type Harness, watchEvents } from "@earendil-works/pi-durable";
 import type { Audit } from "./audit.ts";
 import { delivery } from "./etiquette.ts";
 import type { Admission } from "./limits.ts";
@@ -95,6 +95,8 @@ export type BridgeOptions = {
 
 /** Say the same refusal to the same person in the same thread at most this often. */
 const REFUSAL_QUIET_MS = 60 * 60 * 1000;
+/** A thread quiet (and not running) this long gives up its view and event stream; the next message makes a new one. */
+const IDLE_VIEW_MS = 3 * 60 * 60 * 1000;
 
 /** Reactions that stop Scout's work in a thread, on the thread's first message or on Scout's progress message. */
 export const STOP_REACTIONS = new Set(["octagonal_sign", "no_entry", "no_entry_sign"]);
@@ -126,6 +128,9 @@ export const DECLINE_PRIVATE =
 export class Bridge {
 	readonly #options: BridgeOptions;
 	readonly #views = new Map<number, ThreadView>();
+	/** Each view's event stream, and when its thread last had a request, a run or a view made (for releasing idle ones). */
+	readonly #streams = new Map<number, AgentEventStream>();
+	readonly #usedAt = new Map<number, number>();
 	/** The messages each conversation's current run took as requests, whose reaction follows the run. */
 	readonly #requests = new Map<number, { channel: string; ts: string }[]>();
 	/** One reaction per request, smoothed and paced for the whole workspace (reactions.ts). */
@@ -319,6 +324,7 @@ export class Bridge {
 		}
 	}
 
+	/** The watchdog, every minute: stops runs that have stalled, and releases the views of threads gone quiet for hours. */
 	async watch(now = Date.now()): Promise<void> {
 		const { harness, context } = this.#options;
 		for (const [conversationId, view] of this.#views) {
@@ -327,6 +333,24 @@ export class Bridge {
 			const conversation = await harness.conversation(conversationId as ConversationId, context);
 			await conversation?.abort(context);
 		}
+		await this.#release(now);
+	}
+
+	/**
+	 * Views of idle threads are released, with their event streams, so a long-running bridge holds only the threads it's
+	 * talking to. A view is made again on demand (`#view`). Refusals older than their quiet period are forgotten.
+	 */
+	async #release(now: number): Promise<void> {
+		for (const [conversationId, view] of [...this.#views]) {
+			const stream = this.#streams.get(conversationId);
+			// Not while a run is going, nor while its stream is still being set up (`#view` is awaiting it).
+			if (stream === undefined || view.busy || now - (this.#usedAt.get(conversationId) ?? 0) < IDLE_VIEW_MS) continue;
+			this.#views.delete(conversationId);
+			this.#streams.delete(conversationId);
+			this.#usedAt.delete(conversationId);
+			await stream.stop().catch((error: unknown) => console.error(`stopping thread ${conversationId}'s events failed:`, error));
+		}
+		for (const [key, at] of this.#refused) if (now - at >= REFUSAL_QUIET_MS) this.#refused.delete(key);
 	}
 
 	async #stop(thread: ThreadRow, user: string): Promise<void> {
@@ -615,6 +639,7 @@ export class Bridge {
 	}
 
 	async #view(thread: ThreadRow): Promise<ThreadView> {
+		this.#usedAt.set(thread.conversationId, Date.now());
 		const existing = this.#views.get(thread.conversationId);
 		if (existing !== undefined) return existing;
 		const { harness, threads, surface, context } = this.#options;
@@ -636,6 +661,7 @@ export class Bridge {
 			...(this.#options.costNote === undefined ? {} : { cost: (since: number) => this.#options.costNote?.(thread.conversationId, since) }),
 			pacer: this.pacer,
 			onRunEnd: (answer, ts, outcome, durationMs) => {
+				this.#usedAt.set(thread.conversationId, Date.now());
 				this.#options.ran?.(durationMs);
 				// How the requests this run took ended: ✅, ⚠️, ✋ when stopped, 🙋 when the answer waits on someone.
 				const ending: Ending = outcome === "stopped" ? "stopped" : outcome === "problem" ? "problem" : answer !== undefined && asksSomething(answer) ? "waiting" : "done";
@@ -661,6 +687,7 @@ export class Bridge {
 		});
 		this.#views.set(thread.conversationId, view);
 		const stream = await watchEvents(harness, thread.conversationId as ConversationId, context);
+		this.#streams.set(thread.conversationId, stream);
 		view.handle([stream.snapshot]);
 		stream.start(async (events) => view.handle(events));
 		return view;

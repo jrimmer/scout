@@ -551,6 +551,25 @@ describe("bridge", () => {
 		assert.equal(threads.queued().length, 0);
 	});
 
+	it("releases a quiet thread's view after hours, and makes one again when the thread speaks", async () => {
+		faux.setResponses([fauxAssistantMessage("First.")]);
+		await bridge.onMessage(message({}));
+		const id = threads.get(threadKey("C1", "100.1"))!.conversationId;
+		await settle(id);
+		const hours = (n: number) => Date.now() + n * 60 * 60 * 1000;
+
+		await bridge.watch(hours(2));
+		assert.ok(bridge.view(id), "two hours quiet is not yet long enough");
+		await bridge.watch(hours(4));
+		assert.equal(bridge.view(id), undefined, "four hours is");
+
+		faux.setResponses([fauxAssistantMessage("Second.")]);
+		await bridge.onMessage(message({ text: `<@${BOT}> and now?`, ts: "100.2", threadTs: "100.1" }));
+		await settle(id);
+		assert.match(surface.texts().at(-1) ?? "", /Second\./, "the thread's next message is answered as before");
+		assert.ok(bridge.view(id), "with a view again");
+	});
+
 	it("tries again on a 🔁 to its latest answer, and only that one", async () => {
 		faux.setResponses([fauxAssistantMessage("I ran into a problem."), (t) => fauxAssistantMessage(JSON.stringify(t).includes("try that again") ? "Second time lucky." : "?")]);
 		await bridge.onMessage(message({}));
