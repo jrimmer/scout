@@ -16,6 +16,16 @@ const PATTERNS: [kind: string, pattern: RegExp][] = [
 	["Google API key", /\bAIza[0-9A-Za-z_-]{35}\b/],
 	["Stripe key", /\b(?:sk|rk)_live_[A-Za-z0-9]{20,}\b/],
 	["Grafana token", /\b(?:glsa|glc)_[A-Za-z0-9_+/=-]{20,}/],
+	["npm token", /\bnpm_[A-Za-z0-9]{36}\b/],
+	["PyPI token", /\bpypi-[A-Za-z0-9_-]{50,}/],
+	["Hugging Face token", /\bhf_[A-Za-z0-9]{34,}\b/],
+	["SendGrid key", /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/],
+	["DigitalOcean token", /\bdo[opr]_v1_[a-f0-9]{64}\b/],
+	["Twilio API key", /\bSK[0-9a-f]{32}\b/],
+	["Mailgun key", /\bkey-[0-9a-f]{32}\b/],
+	["Slack webhook", /\bhttps:\/\/hooks\.slack\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9/_-]{20,}/],
+	["Discord webhook", /\bhttps:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/\d+\/[A-Za-z0-9_-]{20,}/],
+	["Azure storage key", /\bAccountKey=[A-Za-z0-9+/]{40,}={0,2}/],
 	["JWT", /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{3,}/],
 	// A bare 40-hex string is a commit hash as often as a token: only next to a name that says token, or in a header.
 	[
@@ -23,7 +33,8 @@ const PATTERNS: [kind: string, pattern: RegExp][] = [
 		/(?:token|authoriz\w*|secret|passw(?:or)?d|api[_-]?key|access[_-]?key|credential)\w*["':= \t]+(?:(?:token|bearer|basic)\s+)?[0-9a-f]{40}\b/i,
 	],
 	["authorization header", /\b(?:proxy-)?authorization["']?\s*[:=]\s*["']?(?:bearer|basic|token|digest)\s+[A-Za-z0-9._~+/=-]{8,}/i],
-	["bearer token", /\bbearer\s+[A-Za-z0-9._~+/-]{16,}=*/i],
+	// Not /i: a token has a digit in it or switches case mid-word, which plain words ("Bearer authentication-scheme") do not.
+	["bearer token", /\b[Bb][Ee][Aa][Rr][Ee][Rr]\s+(?=[A-Za-z0-9._~+/-]*(?:\d|[a-z][A-Z]))[A-Za-z0-9._~+/-]{16,}=*/],
 	["password in a URL", /\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]{6,}@/i],
 ];
 

@@ -73,7 +73,7 @@ export class Audit implements Observer {
 	record(kind: AuditKind, entry: { actor: string; conversationId?: number; channel?: string; detail?: Record<string, unknown> }, now = Date.now()): void {
 		this.#db
 			.prepare("INSERT INTO audit (at, kind, actor, conversation_id, channel, detail) VALUES (?, ?, ?, ?, ?, ?)")
-			.run(now, kind, entry.actor, entry.conversationId ?? null, entry.channel ?? null, redact(JSON.stringify(entry.detail ?? {})));
+			.run(now, kind, entry.actor, entry.conversationId ?? null, entry.channel ?? null, JSON.stringify(redactAll(entry.detail ?? {})));
 	}
 
 	toolStarted(e: ToolCallEvent): undefined {
@@ -94,13 +94,30 @@ export class Audit implements Observer {
 				actor: String(row.actor),
 				...(row.conversation_id === null ? {} : { conversationId: Number(row.conversation_id) }),
 				...(row.channel === null ? {} : { channel: String(row.channel) }),
-				detail: JSON.parse(String(row.detail)) as Record<string, unknown>,
+				detail: detailOf(String(row.detail)),
 			}));
 	}
 
 	close(): void {
 		this.#db.close();
 	}
+}
+
+/** Every string in `value`, keys included, redacted one at a time: a match can't run on into the JSON around it. */
+function redactAll(value: unknown): unknown {
+	if (typeof value === "string") return redact(value);
+	if (Array.isArray(value)) return value.map(redactAll);
+	if (typeof value === "object" && value !== null) return Object.fromEntries(Object.entries(value).map(([key, inner]) => [redact(key), redactAll(inner)]));
+	return value;
+}
+
+/** A row's detail; a row that isn't JSON (damaged, or written by something older) is shown as it is, not thrown over. */
+function detailOf(text: string): Record<string, unknown> {
+	try {
+		const parsed: unknown = JSON.parse(text);
+		if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+	} catch {}
+	return { raw: text };
 }
 
 /** Arguments as the audit keeps them: strings cut short, so a written file's content isn't copied in whole. */
