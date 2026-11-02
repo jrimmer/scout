@@ -1,3 +1,5 @@
+import { redact } from "./scan.ts";
+
 /**
  * Things that need a person: a background job that keeps failing, a server that is unreachable. Each has a key, so a
  * later success clears it. The dashboard shows them; logs keep the details.
@@ -7,7 +9,7 @@ export class Health {
 
 	problem(key: string, message: string, now = Date.now()): void {
 		const existing = this.#problems.get(key);
-		this.#problems.set(key, { message, since: existing?.since ?? now });
+		this.#problems.set(key, { message: redact(message), since: existing?.since ?? now });
 	}
 
 	ok(key: string): void {

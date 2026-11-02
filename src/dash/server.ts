@@ -55,11 +55,12 @@ export async function startDashboard(options: DashOptions): Promise<{ port: numb
 	const clients = new Set<Client>();
 	const login = gate(options.auth);
 	const links = { bench: options.bench !== undefined };
-	let current: Grid = layout(await options.collector.collect(), undefined, links);
+	let current: Grid = layout(await options.collector.collect(Date.now(), true), undefined, links);
 
 	const tick = setInterval(async () => {
 		try {
-			current = layout(await options.collector.collect(), undefined, links);
+			// Only this tick adds to the sparklines' history; a request for /status.json reads without sampling.
+			current = layout(await options.collector.collect(Date.now(), true), undefined, links);
 		} catch (error) {
 			console.error("dashboard collect failed:", error);
 			return;
@@ -189,27 +190,42 @@ function send(client: Client, event: string, data: unknown): void {
 
 /**
  * The dashboard's login. scrypt is slow on purpose, so it runs off the event loop and one check at a time (a request that
- * comes while one runs gets a 429), and the last login that passed is remembered by its hash: a browser that's logged in
+ * comes while one runs gets a 429, as does an address that keeps failing), and the last login that passed is remembered by its hash: a browser that's logged in
  * doesn't pay for scrypt on every request, and bad logins can't stall Scout.
  */
 function gate(auth: DashOptions["auth"]): (req: IncomingMessage) => Promise<"ok" | "no" | "busy"> {
 	let passed: Buffer | undefined;
 	let checking = false;
+	// Recent failures by address, so one client guessing (or flooding bad headers) is slowed without costing anyone scrypt.
+	const failures = new Map<string, { count: number; at: number }>();
+	const failed = (ip: string, why: string): "no" => {
+		const now = Date.now();
+		const before = failures.get(ip);
+		failures.delete(ip);
+		failures.set(ip, { count: (before !== undefined && now - before.at < FAILURE_WINDOW ? before.count : 0) + 1, at: now });
+		if (failures.size > MAX_TRACKED) failures.delete(failures.keys().next().value!);
+		console.error(`dashboard login failed from ${ip}: ${why}`);
+		return "no";
+	};
 	return async (req) => {
 		if (auth === undefined) return "ok";
 		const header = req.headers.authorization ?? "";
 		if (!header.startsWith("Basic ")) return "no";
 		const digest = createHash("sha256").update(header).digest();
 		if (passed !== undefined && timingSafeEqual(digest, passed)) return "ok";
+		const ip = req.socket.remoteAddress ?? "unknown";
+		const recent = failures.get(ip);
+		if (recent !== undefined && recent.count >= MAX_FAILURES && Date.now() - recent.at < FAILURE_WINDOW) return "busy";
 		const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
 		const colon = decoded.indexOf(":");
-		if (colon < 0) return "no";
+		if (colon < 0) return failed(ip, "malformed header");
+		// A wrong name is answered before spending scrypt on it.
+		if (!safeEqual(decoded.slice(0, colon), auth.user)) return failed(ip, "unknown user");
 		if (checking) return "busy";
 		checking = true;
 		try {
-			const userOk = safeEqual(decoded.slice(0, colon), auth.user);
-			const passwordOk = await verifyPassword(decoded.slice(colon + 1), auth.passwordHash);
-			if (!userOk || !passwordOk) return "no";
+			if (!(await verifyPassword(decoded.slice(colon + 1), auth.passwordHash))) return failed(ip, "wrong password");
+			failures.delete(ip);
 			passed = digest;
 			return "ok";
 		} finally {
@@ -217,6 +233,10 @@ function gate(auth: DashOptions["auth"]): (req: IncomingMessage) => Promise<"ok"
 		}
 	};
 }
+
+const FAILURE_WINDOW = 60_000;
+const MAX_FAILURES = 5;
+const MAX_TRACKED = 1000;
 
 function refuse(res: ServerResponse, verdict: "no" | "busy"): void {
 	if (verdict === "busy") res.writeHead(429, { "retry-after": "1" });

@@ -1,5 +1,6 @@
 import type { Backup } from "../backups.ts";
 import type { MemoryNote } from "../memory.ts";
+import { redact } from "../scan.ts";
 import { nextTime, type Schedule } from "../schedules.ts";
 import type { PullRow, PullState, ReviewRow } from "../pulls.ts";
 import type { ThreadRow } from "../threads.ts";
@@ -104,6 +105,11 @@ export type Sources = {
 	backup?(): Backup;
 };
 
+/** Model outage errors can quote what a provider sent back; anyone who can see the dashboard shouldn't see a secret in it. */
+function redactOutages(m: ModelsSnapshot): ModelsSnapshot {
+	return { ...m, outages: m.outages.map((o) => (o.error === undefined ? o : { ...o, error: redact(o.error) })) };
+}
+
 const DAY = 24 * 60 * 60 * 1000;
 const HISTORY = 150;
 
@@ -118,7 +124,8 @@ export class Collector {
 		this.#sources = sources;
 	}
 
-	async collect(now = Date.now()): Promise<Snapshot> {
+	/** A snapshot of now. Only `sample` (the dashboard's own tick) adds to the history, so polling can't skew the sparklines or rates. */
+	async collect(now = Date.now(), sample = false): Promise<Snapshot> {
 		const s = this.#sources;
 		const working = s.working();
 		const workingIds = new Set(working.map((w) => w.conversationId));
@@ -126,11 +133,14 @@ export class Collector {
 		const byModel = await s.spend();
 		const total = Object.values(byModel).reduce((sum, cost) => sum + cost, 0);
 
-		this.#push(this.#working, working.length);
-		if (this.#lastSpend !== undefined && now > this.#lastSpend.at) {
-			this.#push(this.#spendPerHour, ((total - this.#lastSpend.total) * 3_600_000) / (now - this.#lastSpend.at));
+		if (sample) {
+			this.#push(this.#working, working.length);
+			// Too close to the last sample to make a rate of: leave it for the next one.
+			if (this.#lastSpend === undefined || now - this.#lastSpend.at >= 1000) {
+				if (this.#lastSpend !== undefined) this.#push(this.#spendPerHour, ((total - this.#lastSpend.total) * 3_600_000) / (now - this.#lastSpend.at));
+				this.#lastSpend = { at: now, total };
+			}
 		}
-		this.#lastSpend = { at: now, total };
 
 		const last = s.threads.lastReflection();
 		const proposal = last === undefined ? undefined : s.pulls.forConversation(last.conversationId)[0];
@@ -142,7 +152,7 @@ export class Collector {
 			model: s.model,
 			...(draining === undefined ? {} : { draining }),
 			...(s.backup === undefined ? {} : { backup: s.backup() }),
-			alerts: s.alerts(),
+			alerts: s.alerts().map((a) => ({ ...a, message: redact(a.message) })),
 			working: await Promise.all(
 				working.map(async (w) => ({
 					channel: await s.channelOf(w.conversationId),
@@ -184,7 +194,7 @@ export class Collector {
 				notes: s.memory.active(),
 			},
 			...(s.capacity === undefined ? {} : { capacity: s.capacity() }),
-			...(s.models === undefined ? {} : { models: s.models() }),
+			...(s.models === undefined ? {} : { models: redactOutages(s.models()) }),
 			schedules: (s.schedules?.() ?? []).map((sc) => {
 				const next = sc.paused ? undefined : nextTime(sc.cron, now);
 				return { id: sc.id, channel: sc.channel, when: sc.when, task: sc.task, paused: sc.paused, ...(next === undefined ? {} : { next }), ...(sc.lastRun === undefined ? {} : { lastRun: sc.lastRun }) };

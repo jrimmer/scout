@@ -112,18 +112,25 @@ describe("collector", () => {
 			working: () => [{ conversationId: 1, startedAt: 0, steps: 3, lastStep: "bash ls" }],
 			channelOf: async () => "team",
 			spend: async () => ({ "p/m": spent }),
-			alerts: () => [],
+			alerts: () => [{ message: `bad key ${fake("sk-", "ant-api03-abcdefghijklmnopqrstuvwxyz")}`, since: 0 }],
+			models: () => ({ primary: "p/m", fallbacks: [], outages: [{ model: "p/m", since: 0, retryAt: 1, failures: 2, error: `denied ${fake("sk-", "ant-api03-abcdefghijklmnopqrstuvwxyz")}` }] }),
 			backup: () => ({ status: "missing", problems: ["no Litestream copy of pi.sqlite"] }),
 		});
-		await collector.collect(1_000);
+		await collector.collect(1_000, true);
 		spent = 2;
-		const s = await collector.collect(3_601_000);
+		// Polling (what /status.json does) reads, but adds nothing to the history; samples too close together make no rate.
+		await collector.collect(2_000);
+		await collector.collect(3_000);
+		await collector.collect(1_200, true);
+		const s = await collector.collect(3_601_000, true);
+		assert.equal(s.alerts[0]?.message, "bad key [redacted Anthropic key]");
+		assert.equal(s.models?.outages[0]?.error, "denied [redacted Anthropic key]");
 		assert.deepEqual(s.working, [{ channel: "team", startedAt: 0, steps: 3, lastStep: "bash ls" }]);
 		assert.deepEqual(s.threads.map((t) => [t.channel, t.pulls, t.working]), [["team", 1, true]]);
 		assert.equal(s.pulls.openNow, 1);
 		assert.deepEqual(s.learning.notes.map((n) => n.note), ["a note"]);
-		assert.deepEqual(s.history.working, [1, 1]);
-		assert.deepEqual(s.history.spendPerHour, [1]);
+		assert.deepEqual(s.history.working, [1, 1, 1]);
+		assert.deepEqual(s.history.spendPerHour, [1], "one rate, over the samples a second or more apart");
 		assert.equal(s.spend.total, 2);
 		assert.deepEqual(s.backup, { status: "missing", problems: ["no Litestream copy of pi.sqlite"] }, "in /status.json for monitors and the doctor");
 		threads.close();
@@ -292,6 +299,24 @@ describe("dashboard server", () => {
 		assert.ok(statuses.slice(0, -1).every((s) => s === 401 || s === 429), String(statuses));
 		assert.ok(statuses.includes(429), `some turned away: ${statuses}`);
 		assert.equal((await get(dash.port, "/", bad(99))).status, 401);
+		await dash.close();
+	});
+
+	it("answers a wrong name before spending scrypt, and slows an address that keeps failing", async (t) => {
+		const logged = t.mock.method(console, "error", () => {});
+		const collector = { collect: async () => busy } as unknown as Collector;
+		const dash = await startDashboard({ addr: "127.0.0.1:0", auth: { user: "ops", passwordHash: hashPassword("pw") }, collector });
+		const as = (login: string) => ({ authorization: `Basic ${Buffer.from(login).toString("base64")}` });
+		// Sequential wrong names: none takes the scrypt slot, so none is ever turned away with a 429 until the address is slowed.
+		const started = Date.now();
+		const statuses: number[] = [];
+		for (let n = 0; n < 5; n++) statuses.push((await get(dash.port, "/", as(`root:guess${n}`))).status);
+		assert.deepEqual(statuses, [401, 401, 401, 401, 401]);
+		assert.ok(Date.now() - started < 1000, "no scrypt spent on them");
+		assert.equal((await get(dash.port, "/", as("ops:pw"))).status, 429, "five failures in a minute: this address waits");
+		const messages = logged.mock.calls.map((c) => String(c.arguments[0]));
+		assert.equal(messages.length, 5);
+		assert.ok(messages.every((m) => /dashboard login failed from .*unknown user/.test(m) && !m.includes("guess")), messages.join("|"));
 		await dash.close();
 	});
 
