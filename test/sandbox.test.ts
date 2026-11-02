@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { ConfinedEnv } from "../src/sandbox.ts";
-import { tempDir } from "./helpers.ts";
+import { ConfinedEnv, Mirror } from "../src/sandbox.ts";
+import { git, seedRepo, tempDir } from "./helpers.ts";
 
 function setup() {
 	const data = tempDir("scout-sandbox-");
@@ -72,5 +72,35 @@ describe("ConfinedEnv with protectGit", () => {
 		assert.equal(result.ok, false);
 		if (!result.ok) assert.equal(result.error.code, "permission_denied");
 		assert.equal((await env.exec("echo hi", undefined, context)).ok, false, "and runs no commands");
+	});
+});
+
+describe("Mirror.refresh", () => {
+	it("skips a fetch right after another, unless asked for a fresh one, and shares one in flight", async () => {
+		const root = tempDir("scout-mirror-");
+		const repo = seedRepo(root, "app");
+		const mirror = new Mirror(join(root, "mirror.git"), repo.remote);
+		const first = mirror.refresh();
+		assert.equal(mirror.refresh(), first, "the second caller gets the fetch under way");
+		await first;
+		const tip = repo.commit({ "a.txt": "x\n" }, "more");
+		repo.push();
+		await mirror.refresh();
+		assert.notEqual(git("--git-dir", mirror.path, "rev-parse", "main"), tip, "recent enough: no new fetch");
+		await mirror.refresh(0);
+		assert.equal(git("--git-dir", mirror.path, "rev-parse", "main"), tip);
+	});
+
+	it("doesn't prune the refs Scout keeps in the mirror, but does prune branches the remote lost", async () => {
+		const root = tempDir("scout-mirror-");
+		const repo = seedRepo(root, "app");
+		const mirror = new Mirror(join(root, "mirror.git"), repo.remote);
+		await mirror.refresh();
+		const main = git("--git-dir", mirror.path, "rev-parse", "main");
+		git("--git-dir", mirror.path, "update-ref", "refs/scout/outgoing/x", main);
+		git("--git-dir", mirror.path, "update-ref", "refs/heads/gone", main);
+		await mirror.refresh(0);
+		assert.equal(git("--git-dir", mirror.path, "rev-parse", "refs/scout/outgoing/x"), main);
+		assert.throws(() => git("--git-dir", mirror.path, "rev-parse", "--verify", "refs/heads/gone"));
 	});
 });

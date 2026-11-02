@@ -19,6 +19,9 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 
 const run = promisify(execFile);
 
+/** A mirror fetched this recently is current enough for most readers. */
+const MIRROR_FRESH_MS = 10_000;
+
 /**
  * A host-owned bare mirror of a remote. Clones made from it are cheap, and pushes go out through it, so the host
  * never runs git inside a clone an agent has written to.
@@ -27,19 +30,38 @@ export class Mirror {
 	readonly path: string;
 	readonly gitUrl: string;
 	#queue: Promise<void> = Promise.resolve();
+	#inflight: Promise<void> | undefined;
+	#fetchedAt = 0;
 
 	constructor(path: string, gitUrl: string) {
 		this.path = path;
 		this.gitUrl = gitUrl;
 	}
 
-	/** Fetch from the remote, or create the mirror. Serialized: one fetch at a time. */
-	refresh(): Promise<void> {
+	/**
+	 * Fetch from the remote, or create the mirror. Serialized: one fetch at a time. A fetch already under way is
+	 * shared, and one that finished less than `maxAgeMs` ago is enough; pass 0 when a commit that just appeared on
+	 * the remote has to be here.
+	 */
+	refresh(maxAgeMs = MIRROR_FRESH_MS): Promise<void> {
+		if (maxAgeMs > 0) {
+			if (this.#inflight !== undefined) return this.#inflight;
+			if (Date.now() - this.#fetchedAt < maxAgeMs) return Promise.resolve();
+		}
 		const next = this.#queue.then(async () => {
-			if (await exists(this.path)) await git(["-C", this.path, "fetch", "--quiet", "--prune", "origin"]);
-			else await git(["clone", "--mirror", "--quiet", this.gitUrl, this.path]);
+			if (await exists(this.path)) {
+				// Only the code host's own branches and tags, so the prune can't delete the refs Scout keeps here
+				// (refs/scout/*), as the mirror's default +refs/*:refs/* would.
+				await git(["-C", this.path, "fetch", "--quiet", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"]);
+			} else await git(["clone", "--mirror", "--quiet", this.gitUrl, this.path]);
+			this.#fetchedAt = Date.now();
 		});
 		this.#queue = next.catch(() => {});
+		this.#inflight = next;
+		const clear = () => {
+			if (this.#inflight === next) this.#inflight = undefined;
+		};
+		next.then(clear, clear);
 		return next;
 	}
 

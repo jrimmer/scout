@@ -125,7 +125,7 @@ export class PullReviewer {
 		}
 		this.#held.delete(key);
 		const mirror = workspaces.mirrorFor(repo.name);
-		await mirror.refresh();
+		await mirror.refresh(0);
 		const root = join(this.#config.dataDir, "reviews", `${slug.replace("/", "-")}-${pull.number}-${pull.head.sha.slice(0, 12)}`);
 		const cwd = join(root, "repo");
 		await mirror.checkout(cwd, pull.head.sha);
