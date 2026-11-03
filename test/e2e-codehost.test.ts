@@ -272,7 +272,7 @@ describe("end to end: Scout reviews pull requests it is asked to review", () => 
 			await e2e.mention("can you fix what you would change?", { threadTs: ts });
 			await until(() => e2e.said().some((t) => t.includes("in their fork")), 20_000, "the answer");
 			await runOver(e2e);
-			assert.match(transcripts[0] ?? "", /The pull request comes from a fork, so your sandbox has the repository's base branch, not its branch\./);
+			assert.match(transcripts[0] ?? "", /The pull request comes from a fork, so your workspace has the repository's base branch, not its branch\./);
 			assert.doesNotMatch(transcripts[0] ?? "", /a fix you open with open_pull_request goes into that branch/);
 		} finally {
 			await finish(e2e);

@@ -48,7 +48,7 @@ export function hostOf(text: string): string | undefined {
 const NOT_A_HOST = "it isn't a host name; give just the host, like registry.npmjs.org.";
 const ADDRESS = "it's an IP address, and I only ask for host names, like registry.npmjs.org. An address can be inside the network or the cloud's metadata service.";
 const RANGE = "it's an address range, and I only ask for host names, like registry.npmjs.org.";
-const INSIDE = "it's a name inside the network, or one that resolves to whatever address it's given, and sandboxes never get those.";
+const INSIDE = "it's a name inside the network, or one that resolves to whatever address it's given, and workspaces never get those.";
 const WIDE = "a wildcard can only stand for the hosts under one domain, like *.npmjs.org; ask for the host itself.";
 const SHARED_WILDCARD = "anyone can have a host under that domain, so ask for the exact host instead of a wildcard.";
 const SUFFIX = "that's a domain suffix anyone can register under, not a host.";
@@ -202,9 +202,9 @@ export function egressExtension(propose: (conversationId: number, host: string, 
 	const ask = defineTool({
 		name: "ask_for_network",
 		description:
-			"Your sandbox couldn't reach a host it needs (a package registry, a download): DNS failures, 'could not resolve " +
+			"Your workspace couldn't reach a host it needs (a package registry, a download): DNS failures, 'could not resolve " +
 			"host', connections refused or timing out during an install. Ask whoever runs you to allow that host for this " +
-			"repository's sandboxes. Use it once per host, say in the thread that you've asked, and don't try to work " +
+			"repository's workspaces. Use it once per host, say in the thread that you've asked, and don't try to work " +
 			"around the network. When the tool you need isn't installed (a JDK, an image library, a Terraform provider) and " +
 			"the install can't reach its registry, ask for that ecosystem as one instead of host by host" +
 			(ecosystems.length === 0 ? "." : `: ${ecosystems.map((e) => `@${e}`).join(", ")}, or @all.`),

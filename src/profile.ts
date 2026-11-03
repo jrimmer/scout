@@ -204,9 +204,9 @@ export function profileExtension(profile: Profile, workspace: WorkspaceFacts) {
 							"Commit with git, then call open_pull_request. Nobody else can see your changes until you do.",
 							...(workspace.offline
 								? [
-										"The sandbox has no network: installing packages and anything else that downloads will fail. " +
+										"The workspace has no network: installing packages and anything else that downloads will fail. " +
 											"Work with what is installed. If that blocks you, say so plainly in the thread; whoever runs " +
-											"Scout can turn the network on or add the dependencies to the sandbox image.",
+											"Scout can turn the network on or add the dependencies to the workspace image.",
 									]
 								: []),
 						].join("\n");

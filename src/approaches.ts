@@ -171,7 +171,7 @@ export function approachesExtension(options: ApproachesOptions): Extension {
 		name: "try_approaches",
 		description:
 			"Experimental. Only when someone asks you to try or compare several approaches: work on 2 to 4 of them at once, " +
-			"each in its own sandbox from your branch's last commit (commit first), and post a comparison people choose " +
+			"each in its own workspace from your branch's last commit (commit first), and post a comparison people choose " +
 			"from with a button. It costs about as much as that many separate requests; say so. Don't pick one yourself.",
 		parameters: Type.Object({
 			request: Type.String({ description: "What was asked, complete enough for someone starting fresh" }),

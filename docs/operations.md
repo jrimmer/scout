@@ -224,7 +224,7 @@ link-local and host addresses (DNS rebinding included) unless the allowlist name
 never adds. A substrate without that check shouldn't be given egress lists people can add to from Slack.
 
 Allow adds the host to the repository's egress list in the repos file (`SCOUT_REPOS_FILE`; a backup is kept as
-`.bak`, and the file is replaced in one step) and in memory, so new sandboxes get it at once. Sandboxes already running keep their network: the thread is told a new thread gets it.
+`.bak`, and the file is replaced in one step) and in memory, so new sandboxes get it at once. On spoond, the thread that asked gets it in place, running or asleep, and says so; on Docker its sandbox keeps its network, and the thread is told a new thread gets it.
 A repository configured in the environment rather than the repos file gets it until Scout restarts, and the decision
 message says to add it to `SCOUT_REPO_EGRESS`. Each host is asked about once per repository while it waits, and both
 the request and the decision are in the audit trail.

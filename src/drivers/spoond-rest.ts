@@ -487,15 +487,15 @@ export class SpoondRestEnv implements ExecutionEnv {
 							continue;
 						}
 						const minutes = Math.round(this.#outageMs / 60_000);
-						return err(await this.#stop(jobId, new ExecutionError("unknown", `spoond stopped answering while the command ran (${reason(error)}), for ${minutes > 0 ? `${minutes} minutes` : "too long"}. The command may still be running in the sandbox: check before running it again.`)));
+						return err(await this.#stop(jobId, new ExecutionError("unknown", `spoond stopped answering while the command ran (${reason(error)}), for ${minutes > 0 ? `${minutes} minutes` : "too long"}. The command may still be running in the workspace: check before running it again.`)));
 					}
 					return err(await this.#stop(jobId, error));
 				}
 				downSince = undefined;
 				if (job.state === "lost") {
 					// spoond 3.12.1 marks a command it lost on the way in, and says so; any other loss is the sandbox restarting under it.
-					if (job.reason === "never_started") return err(new ExecutionError("unknown", "spoond took the command but it never started in the sandbox (it was lost on the way in). Run it again."));
-					return err(new ExecutionError("unknown", "The sandbox restarted under the command, so it may have partly run: check what it changed before running it again."));
+					if (job.reason === "never_started") return err(new ExecutionError("unknown", "spoond took the command but it never started in the workspace (it was lost on the way in). Run it again."));
+					return err(new ExecutionError("unknown", "The workspace restarted under the command, so it may have partly run: check what it changed before running it again."));
 				}
 				const now = Date.now();
 				if (job.state === "running" && (started ? now - checked >= this.#aliveCheckMs : now - startedAt >= this.#startCheckMs)) {
@@ -507,14 +507,14 @@ export class SpoondRestEnv implements ExecutionEnv {
 					if (seen?.ok === true) started = true;
 					// Only a definite "no such file" counts: a sandbox slow to answer is asked again at the next poll.
 					else if (seen?.status === 404 && !started) {
-						return err(await this.#stop(jobId, new ExecutionError("unknown", "spoond took the command but it never started in the sandbox (it was lost on the way in). Run it again.")));
+						return err(await this.#stop(jobId, new ExecutionError("unknown", "spoond took the command but it never started in the workspace (it was lost on the way in). Run it again.")));
 					}
 					if (answered) unreachableSince = undefined;
 					else if (started) {
 						unreachableSince ??= now;
 						if (now - unreachableSince >= this.#unreachableMs) {
 							const minutes = Math.round(this.#unreachableMs / 60_000);
-							return err(await this.#stop(jobId, new ExecutionError("unknown", `The sandbox stopped answering while the command ran (nothing for ${minutes > 0 ? `${minutes} minutes` : "a while"}), so it has probably crashed. Run it again; if it keeps happening, the sandbox needs replacing.`)));
+							return err(await this.#stop(jobId, new ExecutionError("unknown", `The workspace stopped answering while the command ran (nothing for ${minutes > 0 ? `${minutes} minutes` : "a while"}), so it has probably crashed. Run it again; if it keeps happening, the workspace needs replacing.`)));
 						}
 					}
 				}

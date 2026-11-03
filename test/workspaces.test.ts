@@ -215,7 +215,7 @@ describe("workspaces: failures and limits", () => {
 		writeFileSync(small, "12345678");
 		const env = new NodeExecutionEnv({ cwd: root });
 		assert.deepEqual(Array.from(await readCapped(env, small, 8)), Array.from(Buffer.from("12345678")));
-		await assert.rejects(readCapped(env, small, 7), /more than the .* MB I'll take from a sandbox/);
+		await assert.rejects(readCapped(env, small, 7), /more than the .* MB I'll take from a workspace/);
 		assert.equal(MAX_SANDBOX_FILE_BYTES, 512 * 1024 * 1024);
 	});
 });

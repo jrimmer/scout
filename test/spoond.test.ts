@@ -68,6 +68,41 @@ describe("spoond driver", () => {
 		assert.ok(spoond.calls.includes("POST /api/leases/lease1/keepalive"));
 	});
 
+	it("gives a running thread a host that was allowed after its microVM was made", async () => {
+		const repos = [{ name: "app", gitUrl: remote, base: "main", egress: ["registry.npmjs.org", "proxy.golang.org"] as string[], registries: [] as string[] }];
+		const grown = new Workspaces({
+			dataDir: join(root, "data"),
+			instance: "t",
+			repos,
+			driver: new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest") }),
+			sandbox: { image: "dev-base", network: "none", size: "medium", registries: { python: { hosts: ["pypi.org", "files.pythonhosted.org"] } } },
+			git: { name: "Scout", email: "scout@localhost" },
+		});
+		try {
+			await grown.env(1);
+			assert.equal(await grown.refreshNetwork(1), true);
+			assert.deepEqual(spoond.leases.get("lease1")?.egress_allowlist, ["registry.npmjs.org", "proxy.golang.org"], "nothing new to give yet");
+			repos[0]!.registries = ["python"];
+			assert.equal(await grown.refreshNetwork(1), true);
+			assert.deepEqual(spoond.leases.get("lease1")?.egress_allowlist, ["registry.npmjs.org", "proxy.golang.org", "pypi.org", "files.pythonhosted.org"]);
+			assert.equal(spoond.calls.filter((c) => c === "POST /api/leases/lease1/network").length, 2);
+			assert.equal(await grown.refreshNetwork(999), false, "a thread with no microVM has nothing to update");
+		} finally {
+			await grown.close();
+		}
+	});
+
+	it("brings a sleeping microVM's network up to date when it wakes", async () => {
+		await workspaces.suspend(1);
+		const lease = spoond.leases.get("lease1")!;
+		lease.egress_allowlist = ["registry.npmjs.org"];
+		const before = spoond.calls.filter((c) => c === "POST /api/leases/lease1/network").length;
+		await workspaces.close();
+		await workspaces.env(1);
+		assert.deepEqual(spoond.leases.get("lease1")?.egress_allowlist, ["registry.npmjs.org", "proxy.golang.org"]);
+		assert.equal(spoond.calls.filter((c) => c === "POST /api/leases/lease1/network").length, before + 1);
+	});
+
 	it("starts a repository's threads from its snapshot, when it names one", async () => {
 		const warm = new Workspaces({
 			dataDir: join(root, "data-warm"),
@@ -224,7 +259,7 @@ describe("spoond driver when spoond is full", () => {
 	it("gives up when spoond stays full past its patience", async () => {
 		const spoond = answering([503, 503]);
 		const driver = new SpoondDriver({ url: "http://spoond", token: "t", fetch: spoond.fetch, patience: 0 });
-		await assert.rejects(driver.remove("t-1"), /The sandbox host stayed full for 0 minutes, so I couldn't get a workspace\. Try again in a while/);
+		await assert.rejects(driver.remove("t-1"), /There was no room for a workspace for 0 minutes, so I couldn't get one\. Try again in a while/);
 		assert.equal(spoond.calls, 1);
 	});
 

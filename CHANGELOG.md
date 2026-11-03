@@ -12,6 +12,9 @@ A change to any of these that needs people to act is a major version. Everything
 ## Unreleased
 
 ### Added
+- **A host someone allows reaches the thread that asked at once.** On spoond the running (or sleeping) microVM's egress
+  list is updated in place and the thread says to try again, instead of asking for a new thread. A sleeping microVM
+  also picks up the current list when it wakes. People now read "workspace" where Scout said "sandbox".
 - **Sandboxes can install from package registries.** A repository's sandboxes reach the registries of the ecosystems it
   names (`registries` in the repos file, `SCOUT_REPO_REGISTRIES`: `python`, `node`, `rust`, `go`, `jvm`, `dotnet`,
   `ruby`, `php`, `elixir`, `terraform`, `ansible`, `apt`, or `all`), so a task that needs a library, a JDK or a provider

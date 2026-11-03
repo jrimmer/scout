@@ -92,7 +92,7 @@ describe("spoond REST environment", () => {
 		const quick = (await new SpoondDriver({ url: spoond.url, token: "sdt-test", home: join(root, "guest"), transport: "rest" }).open("t", spec)).connect!({ id: "sandbox:t", cwd: root, startCheckMs: 300 } as never);
 		spoond.losing.next = true;
 		const lost = await quick.exec("echo hi", {}, context);
-		assert.ok(!lost.ok && /never started in the sandbox.*Run it again/.test(lost.error.message), String(!lost.ok && lost.error.message));
+		assert.ok(!lost.ok && /never started in the workspace.*Run it again/.test(lost.error.message), String(!lost.ok && lost.error.message));
 		const slow = await quick.exec("sleep 0.8; echo fine", {}, context);
 		assert.ok(slow.ok && slow.value.exitCode === 0, "a command that started is left to run past the check");
 	});
@@ -102,7 +102,7 @@ describe("spoond REST environment", () => {
 		spoond.losing.marked = true;
 		const lost = await env.exec("echo hi", {}, context);
 		spoond.losing.marked = false;
-		assert.ok(!lost.ok && /never started in the sandbox.*Run it again/.test(lost.error.message), String(!lost.ok && lost.error.message));
+		assert.ok(!lost.ok && /never started in the workspace.*Run it again/.test(lost.error.message), String(!lost.ok && lost.error.message));
 	});
 
 	it("follows a command through spoond restarting, and gives up only if spoond stays away", async () => {

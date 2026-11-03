@@ -227,8 +227,8 @@ export async function startService(options: ServiceOptions) {
 					review.body,
 					...(comments === "" ? [] : [`Your comments on lines:\n${comments}`]),
 					posted.head === undefined
-						? "You started this thread to say so. People may ask about your review here. The pull request comes from a fork, so your sandbox has the repository's base branch, not its branch."
-						: `You started this thread to say so. People may ask about your review here, or ask you to fix what you flagged. Your sandbox has the pull request's branch, ${posted.head}; a fix you open with open_pull_request goes into that branch, as a pull request its author can merge or not. Never push to their branch any other way.`,
+						? "You started this thread to say so. People may ask about your review here. The pull request comes from a fork, so your workspace has the repository's base branch, not its branch."
+						: `You started this thread to say so. People may ask about your review here, or ask you to fix what you flagged. Your workspace has the pull request's branch, ${posted.head}; a fix you open with open_pull_request goes into that branch, as a pull request its author can merge or not. Never push to their branch any other way.`,
 				].join("\n\n"),
 				...(posted.head === undefined ? {} : { base: posted.head }),
 			});
@@ -365,7 +365,7 @@ export async function startService(options: ServiceOptions) {
 		return threadTs;
 	}
 
-	// A sandbox that couldn't reach a host: ask the people who decide, in the home channel (egress.ts).
+	// A workspace that couldn't reach a host: ask the people who decide, in the home channel (egress.ts).
 	const egress = new EgressRequests(join(config.dataDir, "scout.sqlite"));
 	scout.setEgress(async (conversationId, host, why) => {
 		const name = scout.workspaces.repo((await scout.repoOfConversation(conversationId)).name).name;
@@ -374,10 +374,13 @@ export async function startService(options: ServiceOptions) {
 		const ecosystem = host.startsWith("@") ? registryName(config.sandbox.registries, host) : undefined;
 		if (host.startsWith("@") && ecosystem === undefined) return `There's no ${host} among the package registries I know: ${Object.keys(config.sandbox.registries).map((e) => `@${e}`).join(", ")}, or @all. For a host of its own, ask for the host.`;
 		if (repo.egress?.includes(host) === true || (ecosystem !== undefined && (repo.registries?.includes(ecosystem) === true || repo.registries?.includes("all") === true))) {
-			return `${host} is already allowed for ${repo.name}. This thread's sandbox may have started before it was; a new thread gets it.`;
+			const given = await scout.workspaces.refreshNetwork(conversationId);
+			return given
+				? `${host} is already allowed for ${repo.name}, and this thread's workspace has it now. Try the download again.`
+				: `${host} is already allowed for ${repo.name}. This thread's workspace may have started before it was; a new thread gets it.`;
 		}
 		if (repo.egress === undefined && config.sandbox.network === "open") {
-			return `Sandboxes for ${repo.name} already have an open network, so it isn't the egress list: ${host} may be down, or blocking us.`;
+			return `Workspaces for ${repo.name} already have an open network, so it isn't the egress list: ${host} may be down, or blocking us.`;
 		}
 		const home = config.reflect.channel === undefined ? undefined : await slack.channelId(config.reflect.channel);
 		const link = await linkOf(conversationId);
@@ -387,7 +390,7 @@ export async function startService(options: ServiceOptions) {
 		if (!scout.egressDecidable) {
 			audit.record("egress_requested", { actor: "scout", conversationId, detail: { repo: repo.name, host, why, undecidable: true } });
 			if (home === undefined) return `I'd ask for ${host} to be allowed for ${repo.name}, but nobody is named to decide network access, and I have no home channel to ask in. Whoever runs me can add it to the repository's egress list.`;
-			const text = `\`${host}\` for ${repo.name}'s sandboxes: ${thread} couldn't reach it. Nobody can allow network access from Slack yet: whoever runs me has to name egress approvers in the roles file (\`"approve": { "egress": [...] }\`), or add \`${host}\` to ${repo.name}'s egress list themselves.`;
+			const text = `\`${host}\` for ${repo.name}'s workspaces: ${thread} couldn't reach it. Nobody can allow network access from Slack yet: whoever runs me has to name egress approvers in the roles file (\`"approve": { "egress": [...] }\`), or add \`${host}\` to ${repo.name}'s egress list themselves.`;
 			await slack.surface.post(home, undefined, { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }, reason] });
 			return `I've told whoever runs me that this needs ${host}, but nobody is named to decide network access yet, so it's up to them to add it to ${repo.name}'s egress list.`;
 		}
@@ -395,12 +398,12 @@ export async function startService(options: ServiceOptions) {
 		if (!isNew) return `I've already asked for ${host} to be allowed for ${repo.name}; it's waiting on a decision.`;
 		audit.record("egress_requested", { actor: "scout", conversationId, detail: { id: request.id, repo: repo.name, host, why } });
 		if (home === undefined) return `I'd ask for ${host} to be allowed for ${repo.name}, but I have no home channel to ask in. Whoever runs me can add it to the repository's egress list.`;
-		const text = `Allow \`${host}\` for ${repo.name}'s sandboxes?`;
+		const text = `Allow \`${host}\` for ${repo.name}'s workspaces?`;
 		const hosts = ecosystem === undefined ? undefined : registryHosts(config.sandbox.registries, [ecosystem], config.sandbox.registryCdns);
 		const what =
 			hosts === undefined
-				? `*${text}*\nAllowing it lets every new sandbox for ${repo.name} connect to \`${host}\` from now on, not just this thread's, until someone takes it out of the repository's egress list. ${thread} couldn't reach it.`
-				: `*Allow ${ecosystem === "all" ? "every package registry" : `the ${ecosystem} package registries`} for ${repo.name}'s sandboxes?*\nThat lets every new sandbox for ${repo.name} install from ${hosts.map((h) => `\`${h}\``).join(", ")} from now on, not just this thread's. Anything it downloads there can run inside the sandbox, which has no credentials but can see the repository. ${thread} needed it.`;
+				? `*${text}*\nAllowing it lets every new workspace for ${repo.name} connect to \`${host}\` from now on, not just this thread's, until someone takes it out of the repository's egress list. ${thread} couldn't reach it.`
+				: `*Allow ${ecosystem === "all" ? "every package registry" : `the ${ecosystem} package registries`} for ${repo.name}'s workspaces?*\nThat lets every new workspace for ${repo.name} install from ${hosts.map((h) => `\`${h}\``).join(", ")} from now on, not just this thread's. Anything it downloads there can run inside the workspace, which has no credentials but can see the repository. ${thread} needed it.`;
 		await slack.surface.post(home, undefined, {
 			text,
 			blocks: [
@@ -415,7 +418,7 @@ export async function startService(options: ServiceOptions) {
 				},
 			],
 		});
-		return `I've asked whoever runs me to allow ${host} for ${repo.name}'s sandboxes. I'll say here when they decide.`;
+		return `I've asked whoever runs me to allow ${host} for ${repo.name}'s workspaces. I'll say here when they decide.`;
 	});
 
 	/** Allow or Decline on a network request: only the egress approvers named in the roles file decide; the thread hears the outcome. */
@@ -440,9 +443,13 @@ export async function startService(options: ServiceOptions) {
 			where = saved ? " (saved to the repos file)" : ` (until I restart: ${repo.name} isn't in the repos file, so add it to SCOUT_REPO_EGRESS to keep it)`;
 		}
 		audit.record("egress_decided", { actor: d.user, conversationId: decided.conversationId, detail: { id: d.id, repo: decided.repo, host: decided.host, allowed: d.allow } });
+		// Spoond changes a running lease's network in place, so the thread that asked needn't start over.
+		const live = d.allow && (await scout.workspaces.refreshNetwork(decided.conversationId));
 		const toThread = d.allow
-			? `<@${d.user}> allowed \`${decided.host}\` for ${decided.repo}'s sandboxes. New sandboxes get it; this thread's started without it, so a new thread (or a fresh sandbox) is where it works.`
-			: `<@${d.user}> declined \`${decided.host}\` for ${decided.repo}'s sandboxes, so I'll have to do without it.`;
+			? live
+				? `<@${d.user}> allowed \`${decided.host}\` for ${decided.repo}. It's on for this thread now and for every new one: ask me to try again.`
+				: `<@${d.user}> allowed \`${decided.host}\` for ${decided.repo}. Every new workspace gets it; this thread's picks it up the next time it starts one.`
+			: `<@${d.user}> declined \`${decided.host}\` for ${decided.repo}'s workspaces, so I'll have to do without it.`;
 		await inThread(decided.conversationId, toThread).catch(() => {});
 		await bridge.note(decided.conversationId, toThread.replace(/<@(\w+)>/g, "someone"), `egress:${d.id}`).catch(() => {});
 		return { text: `${d.allow ? "✅ Allowed" : "✋ Declined"} by <@${d.user}>: \`${decided.host}\` for ${decided.repo}${where}.`, final: true };

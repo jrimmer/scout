@@ -490,14 +490,14 @@ describe("e2e: network access for sandboxes", () => {
 		return e2e.slack.responded.at(-1)!.body;
 	}
 
-	it("asks the home channel when a sandbox can't reach a host, and an admin's Allow saves it to the repositories file and tells the thread", async () => {
+	it("asks the home channel when a workspace can't reach a host, and an admin's Allow saves it to the repositories file and tells the thread", async () => {
 		await withHome(async (e2e, files, file) => {
 			const told: string[] = [];
 			const { ts, id, question, blocks } = await askForHost(e2e, told, "registry.npmjs.org", "npm ci couldn't fetch packages <!channel> <https://evil.example|click here>");
-			assert.match(told[0] ?? "", /I've asked whoever runs me to allow registry\.npmjs\.org for app's sandboxes\. I'll say here when they decide\./);
+			assert.match(told[0] ?? "", /I've asked whoever runs me to allow registry\.npmjs\.org for app's workspaces\. I'll say here when they decide\./);
 			// The host comes first and plainly, with what allowing it means; the reason is labelled as Scout's, in plain text.
-			assert.equal(question, "Allow `registry.npmjs.org` for app's sandboxes?");
-			assert.match(blocks, /lets every new sandbox for app connect to `registry\.npmjs\.org` from now on/);
+			assert.equal(question, "Allow `registry.npmjs.org` for app's workspaces?");
+			assert.match(blocks, /lets every new workspace for app connect to `registry\.npmjs\.org` from now on/);
 			const parsed = JSON.parse(blocks) as { type: string; text?: { type: string; text: string }; elements?: { type: string; text?: string }[] }[];
 			const reason = parsed.flatMap((b) => b.elements ?? []).find((e) => e.text?.startsWith("Scout's reason: "));
 			assert.equal(reason?.type, "plain_text", "the model's words aren't rendered as markup");
@@ -514,7 +514,7 @@ describe("e2e: network access for sandboxes", () => {
 			assert.equal(allowed.replace_original, true);
 			assert.equal(allowed.text, "✅ Allowed by <@U0ANN00001>: `registry.npmjs.org` for app (saved to the repos file).");
 			assert.deepEqual(JSON.parse(readFileSync(file, "utf8"))[0].egress, ["registry.npmjs.org"], "the host is in the repositories file");
-			await until(() => inThread(e2e, ts).some((c) => /<@U0ANN00001> allowed `registry\.npmjs\.org` for app's sandboxes/.test(String(c.args.text))), WAIT, "the thread to be told");
+			await until(() => inThread(e2e, ts).some((c) => /<@U0ANN00001> allowed `registry\.npmjs\.org` for app\./.test(String(c.args.text))), WAIT, "the thread to be told");
 
 			// Pressing it again finds it decided.
 			const again = await decide(e2e, false, id, ANN);
@@ -534,7 +534,7 @@ describe("e2e: network access for sandboxes", () => {
 			const { ts, id } = await askForHost(e2e, [], "example.org");
 			const declined = await decide(e2e, false, id, ANN);
 			assert.equal(declined.text, "✋ Declined by <@U0ANN00001>: `example.org` for app.");
-			await until(() => inThread(e2e, ts).some((c) => /<@U0ANN00001> declined `example\.org` for app's sandboxes, so I'll have to do without it\./.test(String(c.args.text))), WAIT, "the thread to be told");
+			await until(() => inThread(e2e, ts).some((c) => /<@U0ANN00001> declined `example\.org` for app's workspaces, so I'll have to do without it\./.test(String(c.args.text))), WAIT, "the thread to be told");
 			assert.equal(JSON.parse(readFileSync(file, "utf8"))[0].egress, undefined);
 		});
 	});

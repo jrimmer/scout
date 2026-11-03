@@ -108,7 +108,7 @@ export function codeSearchExtension(repos: (conversationId: number) => Searchabl
 		name: "search_code",
 		description:
 			"Search the code of every repository you work in (or one of them), on each one's main branch, not just the " +
-			"repository checked out in your sandbox. For questions like where else something is used or how another " +
+			"repository checked out in your workspace. For questions like where else something is used or how another " +
 			"repository does it. Read-only. Results are `repo:path:line: text`.",
 		parameters: Type.Object({
 			pattern: Type.String({ description: "Text to find; a regular expression (extended) when regex is true" }),

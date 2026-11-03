@@ -665,7 +665,7 @@ export async function openScout(options: ScoutOptions) {
 			const sandboxSince = board.since("sandbox", workspaces.key(conversationId));
 			if (sandboxSince !== undefined) {
 				const usual = capacity.waits("sandbox", 7 * DAY, now);
-				return `Waiting for a workspace: the sandbox host is full right now (${minutes(now - sandboxSince)} so far). ${usual.count >= 3 ? `It usually frees up within ${minutes(usual.p90)}.` : "I'll carry on as soon as there's room."}`;
+				return `Waiting for a workspace: there's no room for one right now (${minutes(now - sandboxSince)} so far). ${usual.count >= 3 ? `It usually frees up within ${minutes(usual.p90)}.` : "I'll carry on as soon as there's room."}`;
 			}
 			const provider = harness === undefined ? undefined : await harness.snapshot(ProviderDoc, conversationId as ConversationId, context).catch(() => undefined);
 			const position = provider === undefined ? undefined : modelLimiter.position(provider.sessionId);

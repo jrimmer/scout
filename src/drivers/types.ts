@@ -47,6 +47,8 @@ export interface SandboxDriver {
 	suspend(key: string): Promise<void>;
 	/** Delete it and its files. */
 	remove(key: string): Promise<void>;
+	/** Change a running or sleeping sandbox's network policy in place, on substrates that can. False when there is none. */
+	setNetwork?(key: string, network: NetworkPolicy): Promise<boolean>;
 	/** Which network policies this substrate can enforce. */
 	supports(policy: NetworkPolicy): boolean;
 	/**

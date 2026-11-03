@@ -39,7 +39,7 @@ export type SpoondOptions = {
 export type SpoondRequest = (method: string, path: string, init?: RequestOptions) => Promise<Response>;
 type RequestOptions = { body?: string | Uint8Array<ArrayBuffer>; headers?: Record<string, string>; signal?: AbortSignal; waitingAs?: string };
 
-type Lease = { id: string; holder?: string; holder_url?: string; state?: string };
+type Lease = { id: string; holder?: string; holder_url?: string; state?: string; net_policy?: string; egress_allowlist?: string[] | null };
 
 const SIZES = new Set(["small", "medium", "large", "xlarge"]);
 const RELAY = fileURLToPath(new URL("./spoond-relay.ts", import.meta.url));
@@ -69,6 +69,8 @@ export class SpoondDriver implements SandboxDriver {
 		else {
 			await this.#api("POST", `/api/leases/${lease.id}/keepalive`, { ttl: 0 });
 			await this.#relabel(lease, key, spec);
+			// Hosts allowed since it was made: a lease keeps the list it started with unless it's told.
+			if (lease.net_policy !== undefined) await this.#network(lease, spec.network, false).catch((error: unknown) => console.error(`spoond: couldn't update ${key}'s network:`, error));
 		}
 		const home = this.#options.home ?? "/root";
 		if (this.#options.transport === "rest") {
@@ -88,6 +90,23 @@ export class SpoondDriver implements SandboxDriver {
 			workdir: `${home}/work`,
 			env: { HOME: home },
 		};
+	}
+
+	/** Give a lease the network policy a spec asks for, without restarting it. False when there's no lease. */
+	async setNetwork(key: string, network: NetworkPolicy): Promise<boolean> {
+		const lease = await this.#find(key);
+		if (lease === undefined) return false;
+		await this.#network(lease, network, true);
+		return true;
+	}
+
+	async #network(lease: Lease, network: NetworkPolicy, force: boolean): Promise<void> {
+		const policy = network.mode === "none" ? "none" : network.mode === "open" ? "internet" : "restricted";
+		const hosts = network.mode === "allow" ? network.hosts : [];
+		const have = new Set((lease.egress_allowlist ?? []).map((h) => h.toLowerCase()));
+		const same = lease.net_policy === policy && (policy !== "restricted" || (have.size === new Set(hosts.map((h) => h.toLowerCase())).size && hosts.every((h) => have.has(h.toLowerCase()))));
+		if (same && !force) return;
+		await this.#api("POST", `/api/leases/${lease.id}/network`, { network_policy: policy, egress_allowlist: hosts });
 	}
 
 	async suspend(key: string): Promise<void> {
@@ -168,7 +187,7 @@ export class SpoondDriver implements SandboxDriver {
 		if (response.status === 429 || response.status === 503) {
 			const minutes = Math.round((this.#options.patience ?? 600) / 60);
 			throw new Error(
-				`The sandbox host stayed full for ${minutes} minute${minutes === 1 ? "" : "s"}, so I couldn't get a workspace. Try again in a while; ` +
+				`There was no room for a workspace for ${minutes} minute${minutes === 1 ? "" : "s"}, so I couldn't get one. Try again in a while; ` +
 					"if this keeps happening, whoever runs me can give me a bigger share on spoond or let fewer threads run at once.",
 			);
 		}

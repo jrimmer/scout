@@ -626,6 +626,17 @@ export class Workspaces {
 		return path;
 	}
 
+	/**
+	 * A repository's network changed (someone allowed a host): give this thread's workspace the new list now, running or
+	 * asleep, instead of making the thread start over. False when the substrate can't, or the thread has no workspace.
+	 */
+	async refreshNetwork(conversationId: number): Promise<boolean> {
+		const { driver } = this.#config;
+		if (driver.setNetwork === undefined || !this.held().includes(conversationId)) return false;
+		const repo = this.repo(await this.repoOf(conversationId));
+		return driver.setNetwork(this.key(conversationId), this.spec(repo, conversationId).network).catch(() => false);
+	}
+
 	/** Free a quiet thread's sandbox; its files stay, and the next tool call resumes it. */
 	async suspend(conversationId: number): Promise<void> {
 		await this.#close(conversationId);
@@ -666,7 +677,7 @@ export async function readCapped(env: ExecutionEnv, path: string, max = MAX_SAND
 	const info = await env.fileInfo(path, BACKGROUND_CONTEXT);
 	if (!info.ok) throw info.error;
 	if (info.value.size > max) {
-		throw new Error(`${path.split("/").pop()} is ${Math.round(info.value.size / 1024 / 1024)} MB, more than the ${Math.round(max / 1024 / 1024)} MB I'll take from a sandbox. Trim what's in it (build output, big files) and try again.`);
+		throw new Error(`${path.split("/").pop()} is ${Math.round(info.value.size / 1024 / 1024)} MB, more than the ${Math.round(max / 1024 / 1024)} MB I'll take from a workspace. Trim what's in it (build output, big files) and try again.`);
 	}
 	const bytes = await env.readBinaryFile(path, BACKGROUND_CONTEXT);
 	if (!bytes.ok) throw bytes.error;
@@ -688,7 +699,7 @@ async function exec(env: ExecutionEnv, argv: string[], context: Context = BACKGR
 	let output = "";
 	const result = await env.exec(argv, { onOutput: (text) => (output += text), ...(timeout === undefined ? {} : { timeout }) }, context);
 	// Say what was being run: the sandbox's own error ("unknown: fetch failed") doesn't.
-	if (!result.ok) throw new Error(`${argv.slice(0, 3).join(" ")} in the sandbox didn't run (${result.error.code}): ${result.error.message}`, { cause: result.error });
+	if (!result.ok) throw new Error(`${argv.slice(0, 3).join(" ")} in the workspace didn't run (${result.error.code}): ${result.error.message}`, { cause: result.error });
 	return { code: result.value.exitCode, output };
 }
 

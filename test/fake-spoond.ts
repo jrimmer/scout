@@ -11,7 +11,7 @@ import type { Duplex } from "node:stream";
  * `ranges: false`, like spoond before 3.11), and the stream WebSocket in binary mode, which runs the uploaded pi-env
  * daemon. Guest paths are host paths (the driver's `home` points into a temporary directory).
  */
-export type FakeLease = { id: string; holder: string; holder_url?: string; state: string; body: Record<string, unknown> };
+export type FakeLease = { id: string; holder: string; holder_url?: string; state: string; net_policy?: string; egress_allowlist?: string[] | null; body: Record<string, unknown> };
 
 type Stream = { kept: Buffer; base: number; dropped: { bytes: number; newlines: number; ends_with_newline: boolean } };
 type FakeJob = { child: ChildProcess; state: "running" | "exited" | "lost"; reason?: string; exit: number | null; out: Stream; err: Stream; cap: number; exited: Promise<void> };
@@ -54,6 +54,8 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 			const created = JSON.parse(body.toString()) as Record<string, unknown>;
 			const lease: FakeLease = { id: `lease${next++}`, holder: String(created.holder), state: "running", body: created };
 			if (typeof created.holder_url === "string") lease.holder_url = created.holder_url;
+			lease.net_policy = typeof created.network_policy === "string" ? created.network_policy : "restricted";
+			lease.egress_allowlist = Array.isArray(created.egress_allowlist) ? (created.egress_allowlist as string[]) : null;
 			leases.set(lease.id, lease);
 			return json(201, { id: lease.id, holder: lease.holder });
 		}
@@ -65,6 +67,13 @@ export async function fakeSpoond(token: string, options: { ranges?: boolean; cod
 			return;
 		}
 		if (rest === "keepalive") return json(200, { id: lease.id });
+		if (rest === "network" && req.method === "POST") {
+			const change = JSON.parse(body.toString()) as { network_policy: string; egress_allowlist: string[] };
+			lease.net_policy = change.network_policy;
+			lease.egress_allowlist = change.egress_allowlist;
+			if (lease.state === "suspended") lease.state = "running";
+			return json(200, { id: lease.id, ...change });
+		}
 		if (rest === "holder" && req.method === "PUT") {
 			const label = JSON.parse(body.toString()) as { holder: string; holder_url: string };
 			lease.holder = label.holder;
