@@ -12,6 +12,11 @@ A change to any of these that needs people to act is a major version. Everything
 ## Unreleased
 
 ### Added
+- **`install.sh` and `npm run setup` walk through installing Scout.** `curl … | bash` installs what's missing (git, ssh,
+  Node 24 checked against its published checksum, Docker if wanted), makes the `scout` user, fetches the newest release
+  and starts the wizard. It tests each step as it goes: Slack's tokens, the code host token and SSH key, a real
+  `git ls-remote`, a container, a model request. It can be run again any time and only asks about what's missing or
+  broken; `npm run setup -- --check` just reports. It ends with the doctor and offers to run Scout as a service.
 - **A host someone allows reaches the thread that asked at once.** On spoond the running (or sleeping) microVM's egress
   list is updated in place and the thread says to try again, instead of asking for a new thread. A sleeping microVM
   also picks up the current list when it wakes. People now read "workspace" where Scout said "sandbox".

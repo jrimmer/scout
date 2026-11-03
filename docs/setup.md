@@ -3,6 +3,31 @@
 From nothing to Scout answering in a Slack channel. Each step says what it's for; `.env.example` lists every
 setting, and [operations.md](operations.md) explains what each feature does once it's running.
 
+## The quick way
+
+On a Debian, Ubuntu, Fedora or Arch machine, as root or with sudo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jrimmer/scout/main/install.sh | bash
+```
+
+It installs what's missing (git, ssh, Node 24 with its checksum checked, Docker if you want it here), makes the
+`scout` user, fetches the newest release into `/opt/scout`, and starts `npm run setup`. That walks through the steps
+below, one at a time, and tries each before moving on: the Slack tokens against Slack, the code host token and SSH
+key against the code host, a real `git ls-remote` of your repository, the sandbox with a real container, the model
+with a real request. It ends with the doctor, and offers to run Scout as a service.
+
+- **To read it first:** download `install.sh`, look at it, then `bash install.sh`. `SCOUT_REF=v1.1.0` pins a release;
+  `SCOUT_DIR`, `SCOUT_USER` and `SCOUT_REPO` choose where it goes, who runs it, and where it's fetched from.
+- **Run it again any time.** `npm run setup` only asks about what's missing or broken, never overwrites your `.env`
+  (it edits the lines it owns and keeps the rest), and `npm run setup -- --check` asks nothing and just reports each
+  step, then the doctor. `npm run setup -- --redo slack,model` goes through those steps again. `npm run doctor` is
+  the doctor alone.
+- **What it can't do for you:** make the Slack app and Scout's code host account. It tells you exactly what to click
+  (with the manifest already pointed at your code host) and checks what you paste back.
+
+The rest of this page is the same path by hand.
+
 ## 1. What you need
 
 - A machine to run it on, always on: Node 24+, git, curl and sudo (a minimal Debian image has neither curl nor sudo:

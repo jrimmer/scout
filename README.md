@@ -60,7 +60,13 @@ from it.
 Setting it up from scratch: [docs/setup.md](docs/setup.md). The security model: [docs/security.md](docs/security.md).
 
 
-Needs Node 24+, Docker, and git with access to your repositories. Give Scout its own code host account, token and SSH
+The quick way, on a Linux machine (it installs what's missing, asks for each credential and tests it, then runs the doctor):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jrimmer/scout/main/install.sh | bash
+```
+
+By hand: needs Node 24+, Docker, and git with access to your repositories. Give Scout its own code host account, token and SSH
 key, so its work is its own.
 
 ```bash
