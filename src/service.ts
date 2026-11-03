@@ -250,6 +250,17 @@ export async function startService(options: ServiceOptions) {
 		void work.finally(() => afterAnswers.delete(work));
 	};
 
+	// Declared before the bridge: a run resumed at start reports itself to `track` while the rest of this function is still
+	// being set up.
+	// The list of Scout's work (worklist.ts): one row per thread, kept up to date as the work moves. Shared with the home
+	// channel. Only where the workspace allows Lists; otherwise nothing changes.
+	const workList = new WorkList({
+		path: join(config.dataDir, "scout.sqlite"),
+		api: () => slack.lists as never,
+		shareWith: async () => (config.reflect.channel === undefined ? undefined : slack.channelId(config.reflect.channel)),
+	});
+	const trackedOnce = new Set<number>();
+
 	const bridge = new Bridge({
 		harness,
 		threads,
@@ -1195,13 +1206,6 @@ export async function startService(options: ServiceOptions) {
 		};
 	}
 
-	// The list of Scout's work (worklist.ts): one row per thread, kept up to date as the work moves. Shared with the home
-	// channel. Only where the workspace allows Lists; otherwise nothing changes.
-	const workList = new WorkList({
-		path: join(config.dataDir, "scout.sqlite"),
-		api: () => slack.lists as never,
-		shareWith: async () => (config.reflect.channel === undefined ? undefined : slack.channelId(config.reflect.channel)),
-	});
 	async function track(conversationId: number, row: WorkRow): Promise<void> {
 		if (!allows(config.initiative, "team")) return;
 		const thread = threads.byConversation(conversationId);
@@ -1219,7 +1223,6 @@ export async function startService(options: ServiceOptions) {
 			: row;
 		await capabilities.use("lists", () => workList.update(conversationId, full)).catch((error: unknown) => console.error("updating the list of Scout's work failed:", error));
 	}
-	const trackedOnce = new Set<number>();
 
 	// Each repository channel's Scout canvas (weekly.ts): what's open, who's waiting, schedules and notes, kept current.
 	const canvases = new ChannelCanvases(join(config.dataDir, "scout.sqlite"));
