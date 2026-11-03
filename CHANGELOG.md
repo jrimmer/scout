@@ -39,6 +39,9 @@ A change to any of these that needs people to act is a major version. Everything
   the Benchmark page says so. The page's note says where the tasks come from and now spans the page's full width.
 
 ### Fixed
+- **A run that was in flight when Scout restarted no longer stops it starting.** Resumed while Scout was still connecting
+  to Slack, it reported itself to parts of Scout not set up yet and Scout died on start, again and again. The work list,
+  the stalled-thread recaps and the code host inbox are now ready before the first run can reach them.
 - **A thread's approaches no longer keep their sandboxes past the retention period.** When a quiet thread's sandbox
   is deleted (`SCOUT_RETENTION_DAYS`), the sandboxes of the approaches it tried are deleted with it.
 - **A benchmark change that fixed the bug no longer counts as breaking the repository's tests** when the fix had

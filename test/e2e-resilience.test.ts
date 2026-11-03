@@ -182,6 +182,47 @@ describe("end to end: resilience", () => {
 		}
 	});
 
+	it("starts again with a run to carry on while it is still connecting to Slack", async () => {
+		const e2e = await startScout();
+		const { faux } = e2e;
+		const started = join(e2e.root, "started");
+		const done = join(e2e.root, "done");
+		const answer = "It was the missing Postgres.";
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("bash", { command: `touch ${started}; for i in $(seq 600); do [ -f ${done} ] && break; sleep 0.05; done; echo finished` })], toolUse),
+			fauxAssistantMessage(answer),
+		]);
+		const unhandled: unknown[] = [];
+		const noted = (reason: unknown) => void unhandled.push(reason);
+		process.on("unhandledRejection", noted);
+		// Scout logs what it caught, too: a run's own post failing on something not set up yet is such a line.
+		const logged: string[] = [];
+		const log = console.error;
+		console.error = (...args: unknown[]) => {
+			logged.push(args.map(String).join(" "));
+			log(...args);
+		};
+		try {
+			await e2e.mention("why does the test suite hang?");
+			await until(() => existsSync(started), 20_000, "the command to start");
+			// The run resumes as Scout opens, while it still waits to connect to Slack (a second or so, for real): anything
+			// that run reports itself to has to be set up by then.
+			e2e.slack.receiver.connectMs = 800;
+			const service = await e2e.restart();
+			writeFileSync(done, "");
+			await until(() => e2e.said().some((t) => t.includes(answer)), 30_000, "the answer after the restart");
+			await service.scout.harness.waitForIdle(context);
+			assert.deepEqual(logged.filter((l) => l.includes("before initialization")), [], "nothing was used before it was set up");
+			assert.deepEqual(unhandled, [], "nothing blew up while Scout was starting");
+			assert.deepEqual(e2e.exits, [], "and Scout didn't exit");
+		} finally {
+			process.off("unhandledRejection", noted);
+			console.error = log;
+			writeFileSync(done, "");
+			await e2e.close();
+		}
+	});
+
 	it("reads back what people said while Scout was down, and answers it, in a new thread and an old one", async () => {
 		const e2e = await startScout();
 		const { slack, faux } = e2e;

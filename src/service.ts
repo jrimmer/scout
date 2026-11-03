@@ -250,8 +250,8 @@ export async function startService(options: ServiceOptions) {
 		void work.finally(() => afterAnswers.delete(work));
 	};
 
-	// Declared before the bridge: a run resumed at start reports itself to `track` while the rest of this function is still
-	// being set up.
+	// Declared before the bridge: a run resumed at start reports itself and answers through these while the rest of this
+	// function is still being set up (test/e2e-resilience.test.ts, "still connecting to Slack").
 	// The list of Scout's work (worklist.ts): one row per thread, kept up to date as the work moves. Shared with the home
 	// channel. Only where the workspace allows Lists; otherwise nothing changes.
 	const workList = new WorkList({
@@ -261,6 +261,30 @@ export async function startService(options: ServiceOptions) {
 	});
 	const trackedOnce = new Set<number>();
 
+	// Threads that stalled waiting on people get one follow-up in the thread (recaps.ts).
+	const recaps = new Recaps(join(config.dataDir, "scout.sqlite"));
+	// Work asked on the code host: an issue assigned to Scout, @scout in an issue or a comment, and what people say on
+	// Scout's own pull requests (forge.ts). It goes to a thread like any request, and the answer back to the code host.
+	const forge = forgeFor(config.codeHost, doFetch);
+	// Package registries (registries.ts) come with a public repository unless it says otherwise; one the code host won't
+	// vouch for is treated as private. Decided at start.
+	// Not awaited: startup carries on, and a sandbox opened in these first moments starts without them.
+	for (const repo of config.repos) {
+		if (repo.registries !== undefined) continue;
+		void forge
+			.isPublic(repo.slug, false)
+			.catch(() => false)
+			.then((open) => (repo.registries ??= open ? ["all"] : []));
+	}
+	const inbox = new Inbox({
+		path: join(config.dataDir, "scout.sqlite"),
+		forge,
+		handlers: {
+			ownPull: (issue) => issue.pull && pulls.byNumber(issue.slug, issue.number) !== undefined,
+			ask: (ask) => takeAsk(ask),
+		},
+	});
+	scout.setCodeHostAskers((thread) => inbox.askers(thread.key));
 	const bridge = new Bridge({
 		harness,
 		threads,
@@ -859,28 +883,6 @@ export async function startService(options: ServiceOptions) {
 	const scheduleTick = () => health.watch("schedules", "running scheduled work failed", runSchedules);
 	every(MINUTE, () => void scheduleTick());
 
-	// Work asked on the code host: an issue assigned to Scout, @scout in an issue or a comment, and what people say on
-	// Scout's own pull requests (forge.ts). It goes to a thread like any request, and the answer back to the code host.
-	const forge = forgeFor(config.codeHost, doFetch);
-	// Package registries (registries.ts) come with a public repository unless it says otherwise; one the code host won't
-	// vouch for is treated as private. Decided at start.
-	// Not awaited: startup carries on, and a sandbox opened in these first moments starts without them.
-	for (const repo of config.repos) {
-		if (repo.registries !== undefined) continue;
-		void forge
-			.isPublic(repo.slug, false)
-			.catch(() => false)
-			.then((open) => (repo.registries ??= open ? ["all"] : []));
-	}
-	const inbox = new Inbox({
-		path: join(config.dataDir, "scout.sqlite"),
-		forge,
-		handlers: {
-			ownPull: (issue) => issue.pull && pulls.byNumber(issue.slug, issue.number) !== undefined,
-			ask: (ask) => takeAsk(ask),
-		},
-	});
-	scout.setCodeHostAskers((thread) => inbox.askers(thread.key));
 	const REVIEW_WORDS: Record<string, string> = { APPROVED: "approved", APPROVE: "approved", REQUEST_CHANGES: "asked for changes", CHANGES_REQUESTED: "asked for changes", COMMENT: "reviewed", COMMENTED: "reviewed" };
 	async function takeAsk(ask: Ask): Promise<void> {
 		const { issue } = ask;
@@ -1063,8 +1065,6 @@ export async function startService(options: ServiceOptions) {
 		}
 	}
 
-	// Threads that stalled waiting on people get one follow-up in the thread (recaps.ts).
-	const recaps = new Recaps(join(config.dataDir, "scout.sqlite"));
 	async function followUpStalledThreads(): Promise<void> {
 		const hasOpenPull = (id: number) => pulls.forConversation(id).some((p) => p.state === "open");
 		for (const id of recaps.due((c) => threads.byConversation(c), hasOpenPull, config.threadRecapDays * DAY, clock())) {

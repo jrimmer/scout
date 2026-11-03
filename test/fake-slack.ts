@@ -33,7 +33,11 @@ export class TestReceiver implements Receiver {
 	init(app: App): void {
 		this.#app = app;
 	}
-	async start(): Promise<void> {}
+	/** How long Socket Mode takes to connect (ms): a real one takes a second or so, while Scout goes on setting itself up. */
+	connectMs = 0;
+	async start(): Promise<void> {
+		if (this.connectMs > 0) await new Promise((resolve) => setTimeout(resolve, this.connectMs));
+	}
 	async stop(): Promise<void> {}
 	/** Deliver one envelope; returns what `ack` was called with (`null` for a bare ack, `undefined` if never). */
 	async deliver(envelope: { payload: Record<string, unknown> }): Promise<unknown> {
