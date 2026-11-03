@@ -57,17 +57,24 @@ from it.
 
 ## Run it
 
-Setting it up from scratch: [docs/setup.md](docs/setup.md). The security model: [docs/security.md](docs/security.md).
-
-
-The quick way, on a Linux machine (it installs what's missing, asks for each credential and tests it, then runs the doctor):
+On a Linux machine (Debian, Ubuntu, Fedora or Arch), as root or with sudo:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jrimmer/scout/main/install.sh | bash
 ```
 
-By hand: needs Node 24+, Docker, and git with access to your repositories. Give Scout its own code host account, token and SSH
-key, so its work is its own.
+That installs what's missing (git, ssh, Node 24 checked against its published checksum, Docker if you want it), makes
+a `scout` user, fetches the newest release into `/opt/scout`, and walks you through the rest: the Slack app, Scout's
+code host account and SSH key, the repository, sandboxes, the model, and who may ask. It tries each credential as you
+give it, ends with the doctor, and offers to run Scout as a service. To read the script first, download it and run
+`bash install.sh`; `SCOUT_REF=v1.1.0` pins a release.
+
+Run `npm run setup` in `/opt/scout` again any time: it only asks about what's missing or broken.
+`npm run setup -- --check` asks nothing and reports every step, and `npm run doctor` is the doctor alone.
+
+Setting it up by hand, and what each step is for: [docs/setup.md](docs/setup.md). The security model:
+[docs/security.md](docs/security.md). By hand, Scout needs Node 24+, Docker (or a spoond server), and git with access
+to your repositories, and its own code host account, token and SSH key, so its work is its own:
 
 ```bash
 npm ci
