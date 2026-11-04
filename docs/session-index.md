@@ -47,8 +47,9 @@ Tables (`history_*`) in `scout.sqlite`, like every other store of Scout's, so th
   recording the id and backfilling it from the threads table and the audit log.
 - **cursors**: `source`, `scope`, `value`, `updated`. Where each crawl stopped.
 
-**Outcomes** are derived, not stored: a thread's outcome is computed from its links (merged and held, merged then
-fixed or reverted, closed unmerged, still open, no pull request). Rework and reverts are the useful ones; merge rate
+**Outcomes** are derived, not stored: `history.outcome(thread)` computes a thread's from its links, one verdict per pull
+request and the worst of them overall: `reverted`, `fixed` (a later pull request says it fixes it), `closed` (unmerged),
+`open`, `merged` (too soon to say), `held` (merged 14 days ago with neither of those), or `none`. Rework and reverts are the useful ones; merge rate
 only says whether people accepted a change.
 
 ## Sources and the crawler
@@ -72,8 +73,15 @@ type Source = {
 - **Slack** also pushes live: `bridge.ts` calls the same `history.put` when a message arrives or a run ends, so threads are
   searchable at once. The crawler's Slack pass reconciles and backfills from Pi Durable's conversation entries (the
   path `reflect.ts` already uses), including `tool` documents. Those stay out of ordinary searches and come back only when a search asks for `kind: tool`, since a command's output is noise next to what people said.
-- **The code host** crawls pull requests, reviews, review comments and issues for the repositories Scout is configured
-  for, by `updated` time, and extracts links from descriptions and commit messages (`Fixes #12`, `Reverts #40`).
+- **The code host** (`src/source-forge.ts`) crawls the repositories Scout is configured for, one scope each, by
+  `updated` time: pull requests and issues (any state), and what was said on them (comments, review summaries, comments
+  on lines). A first crawl goes back 180 days, not to the beginning. Documents are `forge:item:<repo>#<n>` (kind `pull`
+  or `issue`, with `state`, `mergedAt` and `closedAt` as document facts) and `forge:remark:<repo>#<n>:<id>`
+  (kind `review` or `comment`, with the verdict, file and line). Links come from the title and description
+  (`Fixes #12` is `closes`, `Reverts #40` or `Revert "… (#40)"` is `reverts`, "builds on #8" is `builds_on`, any other
+  `#n` is `mentions`), and from a thread to each pull request Scout opened for it (`opened`).
+  Left for later: commit messages as a link source, and `touches` (a later pull request changing the files of an
+  earlier one soon after it merged), which needs the files of every merged pull request.
 - A future source supplies the same thing: an `id` scheme, documents, links to what they concern (a build to its
   commit and pull request), and a cursor. Credentials stay with the host process, as they do for the code host today;
   a source never runs in a workspace.
@@ -139,8 +147,10 @@ ingested a second, search at the 95th percentile 14 ms, with a person and a repo
 2. **Sources and the crawler** (done: `src/crawler.ts`, `src/source-slack.ts`). The `Source` type, the crawler loop with cursors and backoff, the Slack source (live and
    backfill, including `tool` documents), health through the service.
    *Done when:* stopping Scout mid-crawl and starting it again loses and duplicates nothing (test/crawler.test.ts), and a live answer and its crawled copy are one document (test/e2e-history.test.ts).
-3. **The code host source and links.** Pull requests, reviews, issues, and `outcome()`.
-   *Done when:* a thread whose pull request was later reverted reports that.
+3. **The code host source and links** (done: `src/source-forge.ts`, `History.outcome`). Pull requests, reviews, issues, and `outcome()`.
+   *Done when:* a thread whose pull request was later reverted reports that (test/e2e-history.test.ts does it through the service).
+   A code host login and a Slack user are one person once `linkLogins` has joined them (the lookup that already decides who
+   may ask for work), so a person's pull requests and their threads are found together.
 4. **Tools and the setting.** `search_history`, `read_history`, `repo_activity`, `SCOUT_HISTORY_ASK`, profile guidance,
    docs.
    *Done when:* "how does <person> work?" is answered from their threads on vm1, and `admin` mode refuses a non-admin.

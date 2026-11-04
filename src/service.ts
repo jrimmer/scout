@@ -21,6 +21,7 @@ import type { Config } from "./config.ts";
 import { Collector } from "./dash/collect.ts";
 import { startDashboard } from "./dash/server.ts";
 import { Crawler } from "./crawler.ts";
+import { forgeSource, linkLogins } from "./source-forge.ts";
 import { ThreadDoc } from "./docs.ts";
 import { countMcpTools, doctor, formatChecks, restartsOf, type Unit, unitOf } from "./doctor.ts";
 import type { SandboxDriver } from "./drivers/types.ts";
@@ -1344,6 +1345,7 @@ export async function startService(options: ServiceOptions) {
 	// The session index (history.ts) fills from its sources on the housekeeping tick: Slack's threads from their conversations.
 	const crawler = new Crawler({
 		history: scout.history,
+		now: clock,
 		sources: [
 			slackSource({
 				threads,
@@ -1359,6 +1361,14 @@ export async function startService(options: ServiceOptions) {
 						cursor = page.next;
 					} while (cursor !== undefined);
 					return { channel: (await harness.snapshot(ThreadDoc, id, context))?.channelName || thread.channel, entries };
+				},
+			}),
+			forgeSource({
+				forge,
+				repos: () => config.repos.map((r) => r.slug),
+				threadOf: (slug, number) => {
+					const conversationId = pulls.byNumber(slug, number)?.conversationId;
+					return conversationId === undefined ? undefined : threads.byConversation(conversationId)?.key;
 				},
 			}),
 		],
@@ -1451,7 +1461,16 @@ export async function startService(options: ServiceOptions) {
 				),
 			);
 		}
-		work.push(health.watch("history", "indexing threads for search failed", () => crawler.runOnce()));
+		work.push(
+			health.watch("history", "indexing for search failed", async () => {
+				await linkLogins(scout.history, scout.loginOf);
+				// The crawler keeps going past a source that fails and says so once; the dashboard shows it for as long as it lasts.
+				for (const status of await crawler.runOnce()) {
+					if (status.error === undefined) health.ok(`history:${status.source}`);
+					else health.problem(`history:${status.source}`, `indexing ${status.source} for search failed: ${status.error}`);
+				}
+			}),
+		);
 		await Promise.all(work);
 	};
 	every(5 * MINUTE, () => void housekeeping());

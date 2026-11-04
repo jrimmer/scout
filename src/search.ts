@@ -17,6 +17,7 @@ export function searchExtension(history: History, threads: Threads, link: (threa
 		execute: async (args, api) => {
 			const current = threads.byConversation(api.conversationId);
 			const hits = history.search(args.query, {
+				source: "slack",
 				limit: Math.min(args.limit ?? 5, 20),
 				...(current === undefined ? {} : { excludeThread: current.key }),
 			});

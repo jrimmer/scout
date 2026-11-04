@@ -38,6 +38,9 @@ export type PullStatus = { open: boolean; merged: boolean; mergeable?: boolean; 
 /** An open pull request, as a list of them shows it: who's been asked to review it and hasn't yet. */
 export type OpenPull = { number: number; title: string; url: string; author: string; draft: boolean; createdAt: number; reviewers: string[]; teams: string[] };
 
+/** An issue or pull request the host says changed, as a list of them shows it. */
+export type Change = Issue & { updatedAt: number; merged: boolean; mergedAt?: number; closedAt?: number };
+
 /** An unread notification: which issue or pull request something happened on. */
 export type Notice = { id: string; slug: string; number: number };
 
@@ -69,6 +72,8 @@ export interface Forge {
 	/** Ask people (logins) and teams (`org/team`, or the team's name) to review a pull request. */
 	requestReviewers(slug: string, number: number, who: { users: string[]; teams: string[] }): Promise<void>;
 	openPulls(slug: string): Promise<OpenPull[]>;
+	/** Issues and pull requests, any state, updated at or after `since`, oldest change first. All of them: the hosts don't promise an order. */
+	changed(slug: string, since: number): Promise<Change[]>;
 	deleteBranch(slug: string, branch: string): Promise<void>;
 }
 
@@ -146,6 +151,9 @@ type ApiIssue = {
 	pull_request?: unknown;
 	created_at: string;
 };
+type ApiListed = ApiIssue & { updated_at: string; closed_at?: string | null; pull_request?: { merged?: boolean; merged_at?: string | null } | null };
+/** Pages of issues read in one go, at 50 a page. */
+const MOST_PAGES = 200;
 type ApiComment = { id: number; body?: string | null; user?: User; created_at: string; html_url?: string };
 type ApiReview = { id: number; body?: string | null; user?: User; state: string; submitted_at?: string; html_url?: string; comments_count?: number };
 /** An entry in an issue's history: GitHub's events (`event`, `actor`) or Forgejo's timeline (`type`, `user`). */
@@ -342,6 +350,36 @@ class RestForge implements Forge {
 			reviewers: (p.requested_reviewers ?? []).flatMap((r) => (r.login === undefined ? [] : [r.login])),
 			teams: (p.requested_teams ?? []).flatMap((t) => (t.slug ?? t.name ?? "") || []),
 		}));
+	}
+
+	async changed(slug: string, since: number): Promise<Change[]> {
+		const size = 50;
+		const all: Change[] = [];
+		for (let page = 1; ; page++) {
+			if (page > MOST_PAGES) throw new Error(`${slug} has more than ${MOST_PAGES * size} issues and pull requests changed since ${new Date(since).toISOString()}`);
+			const items = (await this.#api("GET", `/repos/${slug}/issues?state=all&since=${encodeURIComponent(new Date(since).toISOString())}&limit=${size}&per_page=${size}&page=${page}`)) as ApiListed[];
+			for (const i of items) {
+				const mergedAt = i.pull_request?.merged_at == null ? undefined : Date.parse(i.pull_request.merged_at);
+				all.push({
+					slug,
+					number: i.number,
+					title: i.title,
+					body: i.body ?? "",
+					url: i.html_url,
+					author: i.user?.login ?? "",
+					pull: i.pull_request !== undefined && i.pull_request !== null,
+					state: i.state,
+					assignees: (i.assignees ?? []).flatMap((a) => (a.login === undefined ? [] : [a.login])),
+					createdAt: Date.parse(i.created_at),
+					updatedAt: Date.parse(i.updated_at),
+					merged: i.pull_request?.merged === true || mergedAt !== undefined,
+					...(mergedAt === undefined ? {} : { mergedAt }),
+					...(i.closed_at == null ? {} : { closedAt: Date.parse(i.closed_at) }),
+				});
+			}
+			if (items.length < size) break;
+		}
+		return all.filter((c) => c.updatedAt >= since).sort((a, b) => a.updatedAt - b.updatedAt || a.number - b.number);
 	}
 
 	async deleteBranch(slug: string, branch: string): Promise<void> {

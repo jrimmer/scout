@@ -31,9 +31,35 @@ export type Doc = {
 	title?: string;
 	url?: string;
 	parent?: string;
+	/** Facts about the document that aren't its words (a pull request's state, a review's verdict). Part of what makes it "changed". */
+	meta?: Record<string, string | number | boolean>;
 };
 
 export type Link = { from: string; to: string; rel: string; at?: number; source: string };
+
+/** What a thread's link to its pull requests is anchored on: threads aren't documents, so this stands for one. */
+export const threadRef = (key: string): string => `thread:${key}`;
+
+/** How long a merged change has to go without being fixed or reverted before it counts as having held. */
+export const HELD_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
+
+export type PullOutcome = {
+	id: string;
+	url: string;
+	title: string;
+	state: "open" | "merged" | "closed";
+	/** `merged` is merged too recently to say; `held` went `HELD_AFTER_MS` without a fix or a revert. */
+	verdict: "open" | "closed" | "merged" | "held" | "fixed" | "reverted";
+	/** The pull request that reverted or fixed it. */
+	by?: string;
+	/** Later pull requests that say they build on it. */
+	builtOn: number;
+};
+
+/** What became of the work a thread did, from its pull requests and what followed them. Worst first when there are several. */
+export type Outcome = { thread: string; verdict: "none" | PullOutcome["verdict"]; pulls: PullOutcome[] };
+
+const WORST: Outcome["verdict"][] = ["reverted", "fixed", "closed", "open", "merged", "held", "none"];
 
 export type Query = {
 	text: string;
@@ -116,7 +142,8 @@ export class History {
 				title TEXT NOT NULL DEFAULT '',
 				url TEXT NOT NULL DEFAULT '',
 				parent TEXT,
-				hash TEXT NOT NULL
+				hash TEXT NOT NULL,
+				meta TEXT NOT NULL DEFAULT '{}'
 			);
 			CREATE INDEX IF NOT EXISTS history_docs_thread ON history_docs (thread);
 			CREATE INDEX IF NOT EXISTS history_docs_conversation ON history_docs (conversation_id, at);
@@ -149,6 +176,12 @@ export class History {
 				name TEXT NOT NULL,
 				updated_at INTEGER NOT NULL
 			);
+			-- Ids that are one person under different names: a code host login is the Slack user with that login.
+			CREATE TABLE IF NOT EXISTS history_aliases (
+				alias TEXT PRIMARY KEY,
+				person TEXT NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS history_aliases_person ON history_aliases (person);
 			-- Where each source's crawl stopped (crawler.ts).
 			CREATE TABLE IF NOT EXISTS history_cursors (
 				source TEXT NOT NULL,
@@ -158,6 +191,9 @@ export class History {
 				PRIMARY KEY (source, scope)
 			);
 		`);
+		if (!(this.#db.prepare("PRAGMA table_info(history_docs)").all() as { name: string }[]).some((c) => c.name === "meta")) {
+			this.#db.exec("ALTER TABLE history_docs ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'");
+		}
 		this.#migrate();
 	}
 
@@ -225,15 +261,17 @@ export class History {
 	#store(doc: Doc, now = Date.now()): boolean {
 		const text = redact(doc.text);
 		const title = redact(doc.title ?? "");
-		const hash = createHash("sha256").update(title).update("\0").update(text).digest("hex");
+		const facts = doc.meta === undefined ? "{}" : JSON.stringify(doc.meta);
+		const hashed = createHash("sha256").update(title).update("\0").update(text);
+		const hash = (facts === "{}" ? hashed : hashed.update("\0").update(facts)).digest("hex");
 		const current = this.#db.prepare("SELECT hash FROM history_docs WHERE id = ?").get(doc.id) as { hash: string } | undefined;
 		if (current?.hash === hash) return false;
 		if (current !== undefined) this.#dropText(`doc = ?`, doc.id);
 		this.#db
 			.prepare(
 				`INSERT OR REPLACE INTO history_docs
-				 (id, source, kind, thread, conversation_id, channel, repo, author, author_name, at, title, url, parent, hash)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 (id, source, kind, thread, conversation_id, channel, repo, author, author_name, at, title, url, parent, hash, meta)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.run(
 				doc.id,
@@ -250,6 +288,7 @@ export class History {
 				doc.url ?? "",
 				doc.parent ?? null,
 				hash,
+				facts,
 			);
 		const addChunk = this.#db.prepare("INSERT INTO history_chunks (doc) VALUES (?)");
 		const addText = this.#db.prepare("INSERT INTO history_text (rowid, title, text, meta) VALUES (?, ?, ?, ?)");
@@ -288,7 +327,35 @@ export class History {
 	/** People whose name has these words in it, or whose id this is. */
 	people(name: string): Person[] {
 		const like = `%${name.trim().replace(/[\\%_]/g, "\\$&")}%`;
-		return (this.#db.prepare("SELECT id, name FROM history_people WHERE id = ? OR name LIKE ? ESCAPE '\\' ORDER BY name LIMIT 20").all(name.trim(), like) as Person[]).map((p) => ({ id: String(p.id), name: String(p.name) }));
+		// An id that is an alias of someone is that someone, so only the someone is listed, found by either.
+		return (
+			this.#db
+				.prepare(
+					`SELECT id, name FROM history_people p
+					 WHERE NOT EXISTS (SELECT 1 FROM history_aliases a WHERE a.alias = p.id)
+					   AND (id = ? OR name LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM history_aliases a WHERE a.person = p.id AND a.alias LIKE ? ESCAPE '\\'))
+					 ORDER BY name LIMIT 20`,
+				)
+				.all(name.trim(), like, like) as Person[]
+		).map((p) => ({ id: String(p.id), name: String(p.name) }));
+	}
+
+	/** Everyone the index knows, an alias counted once, as the person it stands for. */
+	everyone(): Person[] {
+		return (this.#db.prepare("SELECT id, name FROM history_people p WHERE NOT EXISTS (SELECT 1 FROM history_aliases a WHERE a.alias = p.id) ORDER BY name").all() as Person[]).map((p) => ({ id: String(p.id), name: String(p.name) }));
+	}
+
+	/** `alias` (an id from another source, like `forge:mjones`) is the same person as `person`: what either wrote is theirs. */
+	alias(alias: string, person: string): void {
+		if (alias === person) return;
+		this.#db.prepare("INSERT OR REPLACE INTO history_aliases (alias, person) VALUES (?, ?)").run(alias, person);
+	}
+
+	/** The ids a person has written under: their own and their aliases'. */
+	#ids(person: string): string[] {
+		const canonical = (this.#db.prepare("SELECT person FROM history_aliases WHERE alias = ?").get(person) as { person: string } | undefined)?.person ?? person;
+		const aliases = this.#db.prepare("SELECT alias FROM history_aliases WHERE person = ?").all(canonical) as { alias: string }[];
+		return [canonical, ...aliases.map((a) => a.alias)];
 	}
 
 	/** Best matches, one per thread; all words must match, or failing that, any. */
@@ -308,14 +375,16 @@ export class History {
 		filter("d.at <= ?", q.until);
 		filter("COALESCE(d.thread, '') <> ?", q.excludeThread);
 		const tags = [
-			["p", q.person],
-			["r", q.repo],
-			["s", q.source],
-			["k", q.kind],
-		].flatMap(([prefix, value]) => (value === undefined ? [] : [` AND meta : ${tag(prefix!, value)}`])).join("");
+			["p", q.person === undefined ? undefined : this.#ids(q.person)],
+			["r", q.repo === undefined ? undefined : [q.repo]],
+			["s", q.source === undefined ? undefined : [q.source]],
+			["k", q.kind === undefined ? undefined : [q.kind]],
+		]
+			.flatMap(([prefix, values]) => (values === undefined ? [] : [` AND meta : (${(values as string[]).map((v) => tag(prefix as string, v)).join(" OR ")})`]))
+			.join("");
 		// What the agent ran is there to ask about (kind "tool"), but it would drown ordinary results.
 		const without = q.kind === undefined ? ` NOT meta : ${tag("k", "tool")}` : "";
-		const sql = `SELECT d.id, d.thread, d.conversation_id, d.channel, d.author, d.author_name, d.source, d.kind, d.at, d.url,
+		const sql = `SELECT d.id, d.thread, d.parent, d.conversation_id, d.channel, d.author, d.author_name, d.source, d.kind, d.at, d.url,
 				snippet(history_text, 1, '*', '*', '…', 24) AS snippet
 			 FROM history_text JOIN history_chunks c ON c.id = history_text.rowid JOIN history_docs d ON d.id = c.doc
 			 WHERE history_text MATCH ? ${where.map((w) => `AND ${w}`).join(" ")}
@@ -326,7 +395,7 @@ export class History {
 			const seen = new Set<string>();
 			const hits: Hit[] = [];
 			for (const row of rows) {
-				const key = String(row.thread ?? row.id);
+				const key = String(row.thread ?? row.parent ?? row.id);
 				if (seen.has(key)) continue;
 				seen.add(key);
 				hits.push({
@@ -347,6 +416,38 @@ export class History {
 			if (hits.length > 0) return hits;
 		}
 		return [];
+	}
+
+	/** What became of a thread's pull requests, from the links the code host's crawl recorded. */
+	outcome(thread: string, now = Date.now()): Outcome {
+		const pulls = this.#db
+			.prepare(`SELECT d.id, d.url, d.title, d.meta FROM history_links l JOIN history_docs d ON d.id = l.to_id WHERE l.from_id = ? AND l.rel = 'opened' ORDER BY d.at, d.id`)
+			.all(threadRef(thread)) as { id: string; url: string; title: string; meta: string }[];
+		const by = this.#db.prepare(
+			`SELECT l.from_id FROM history_links l JOIN history_docs f ON f.id = l.from_id
+			 WHERE l.to_id = ? AND l.rel = ? AND f.kind = 'pull' AND f.id <> l.to_id ORDER BY f.at LIMIT 1`,
+		);
+		const builtOn = this.#db.prepare(`SELECT COUNT(DISTINCT from_id) AS n FROM history_links WHERE to_id = ? AND rel = 'builds_on'`);
+		const outcomes = pulls.map((row): PullOutcome => {
+			const facts = JSON.parse(row.meta) as { state?: string; mergedAt?: number };
+			const state = facts.state === "merged" || facts.state === "closed" ? facts.state : "open";
+			const reverted = (by.get(row.id, "reverts") as { from_id: string } | undefined)?.from_id;
+			const fixed = (by.get(row.id, "closes") as { from_id: string } | undefined)?.from_id;
+			const verdict: PullOutcome["verdict"] =
+				state !== "merged" ? state : reverted !== undefined ? "reverted" : fixed !== undefined ? "fixed" : now - (facts.mergedAt ?? now) >= HELD_AFTER_MS ? "held" : "merged";
+			const other = state === "merged" ? (reverted ?? fixed) : undefined;
+			return {
+				id: row.id,
+				url: row.url,
+				title: row.title,
+				state,
+				verdict,
+				...(other === undefined || verdict === "held" ? {} : { by: other }),
+				builtOn: Number((builtOn.get(row.id) as { n: number }).n),
+			};
+		});
+		const verdict = WORST.find((v) => v === "none" || outcomes.some((o) => o.verdict === v)) ?? "none";
+		return { thread, verdict, pulls: outcomes };
 	}
 
 	/** The first thing said in a conversation's thread (what it was started with), and where. */

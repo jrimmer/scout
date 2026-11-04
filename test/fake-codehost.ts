@@ -25,6 +25,8 @@ type Item = {
 	assignedBy?: string;
 	createdAt: string;
 	updatedAt: string;
+	closedAt?: string;
+	mergedAt?: string;
 	pull?: { head: string; base: string; sha?: string; fork?: string; merged: boolean; reviewers: string[]; teams: string[]; files?: string[]; mergeable?: boolean; draft?: boolean };
 	comments: Comment[];
 	reviews: Review[];
@@ -93,7 +95,8 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 		assignees: it.assignees.map((login) => ({ login })),
 		created_at: it.createdAt,
 		updated_at: it.updatedAt,
-		...(it.pull === undefined ? {} : { pull_request: { merged: it.pull.merged } }),
+		closed_at: it.closedAt ?? null,
+		...(it.pull === undefined ? {} : { pull_request: { merged: it.pull.merged, merged_at: it.mergedAt ?? null } }),
 	});
 	const pullJson = (r: Repo, it: Item) => {
 		const p = it.pull!;
@@ -167,8 +170,14 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 		}
 		if (rest === "/pulls" || rest === "/issues") {
 			const state = query.get("state") ?? "open";
-			const wanted = [...r.items.values()].filter((i) => (rest === "/pulls") === (i.pull !== undefined) && (state === "all" || i.state === state));
-			return ok(wanted.map((i) => (i.pull === undefined ? issueJson(r, i) : pullJson(r, i))));
+			// Both hosts' /issues lists pull requests too; `since` and paging work as theirs do. The order is whatever it is.
+			const since = query.get("since") === null ? 0 : Date.parse(query.get("since")!);
+			const wanted = [...r.items.values()]
+				.filter((i) => (rest === "/issues" || i.pull !== undefined) && (state === "all" || i.state === state) && Date.parse(i.updatedAt) >= since)
+				.sort((a, b) => b.number - a.number);
+			const size = Math.min(Number(query.get("limit") ?? query.get("per_page") ?? 30), 50);
+			const page = Number(query.get("page") ?? 1);
+			return ok(wanted.slice((page - 1) * size, page * size).map((i) => (i.pull === undefined ? issueJson(r, i) : pullJson(r, i))));
 		}
 
 		const reaction = /^\/issues\/(?:comments\/(\d+)|(\d+))\/reactions$/.exec(rest);
@@ -308,13 +317,15 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 			const it = item(slug, number)!;
 			it.state = "closed";
 			it.pull!.merged = true;
-			it.updatedAt = now();
+			it.updatedAt = it.closedAt = it.mergedAt = now();
 		},
 		closePull: (slug: string, number: number) => {
 			const it = item(slug, number)!;
 			it.state = "closed";
-			it.updatedAt = now();
+			it.updatedAt = it.closedAt = now();
 		},
+		/** When things happened, as ISO times (the host otherwise says now): to test what a crawl does with older ones. */
+		times: (slug: string, number: number, at: { createdAt?: string; updatedAt?: string; closedAt?: string; mergedAt?: string }) => void Object.assign(item(slug, number)!, at),
 		/** A commit's CI: each context's latest state. */
 		ci: (sha: string, state: Status["state"], context = "ci/test", extra: Omit<Status, "state" | "context"> = {}) => {
 			const all = (statuses.get(sha) ?? []).filter((s) => s.context !== context);

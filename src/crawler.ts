@@ -93,12 +93,20 @@ export class Crawler {
 
 	async #crawl(source: Source): Promise<number> {
 		let written = 0;
+		let failure: unknown;
 		for (const scope of (await source.scopes?.()) ?? [""]) {
-			for await (const page of source.crawl(scope, this.#history.cursor(source.name, scope), this.#abort.signal)) {
-				written += this.#history.commit(source.name, scope, page, this.#now());
+			// One scope failing (a repository the token lost, say) doesn't hold up the others; the failure is reported after.
+			try {
+				for await (const page of source.crawl(scope, this.#history.cursor(source.name, scope), this.#abort.signal)) {
+					written += this.#history.commit(source.name, scope, page, this.#now());
+					if (this.#abort.signal.aborted) return written;
+				}
+			} catch (error) {
 				if (this.#abort.signal.aborted) return written;
+				failure ??= scope !== "" && error instanceof Error ? new Error(`${scope}: ${error.message}`) : error;
 			}
 		}
+		if (failure !== undefined) throw failure;
 		return written;
 	}
 
