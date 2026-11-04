@@ -18,7 +18,7 @@ export function searchExtension(history: History, threads: Threads, link: (threa
 			const current = threads.byConversation(api.conversationId);
 			const hits = history.search(args.query, {
 				limit: Math.min(args.limit ?? 5, 20),
-				...(current === undefined ? {} : { excludeKey: current.key }),
+				...(current === undefined ? {} : { excludeThread: current.key }),
 			});
 			if (hits.length === 0) return { output: [{ type: "text", text: "No earlier threads match." }] };
 			const lines: string[] = [];
