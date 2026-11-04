@@ -58,18 +58,20 @@ type Page = { docs: Doc[]; links?: Link[]; cursor: string };
 
 type Source = {
   name: string;                                                    // "slack", "forge", later "buildkite"…
-  crawl(cursor: string | undefined, signal: AbortSignal): AsyncIterable<Page>;  // what changed since; undefined is a backfill
+  scopes?(): string[] | Promise<string[]>;                         // what to crawl separately: a repository, a project (default: one)
+  crawl(scope: string, cursor: string | undefined, signal: AbortSignal): AsyncIterable<Page>;  // what changed since; undefined is a backfill
+  everyMs?: number;                                                // its own interval, if not the crawler's
 };
 ```
 
-- The crawler runs each source on its own interval, pages through `crawl`, hands every page to `index.put`, and saves
-  the cursor only after the page is stored. Delivery is at-least-once; `put` is idempotent, so a crash repeats work and
+- The crawler runs on the service's housekeeping tick (every five minutes) and takes each source on its own interval. It pages through `crawl` and hands every page to the store, which writes the page, its links
+  and the cursor in one transaction. Delivery is at-least-once; `put` is idempotent, so a crash repeats work and
   nothing else.
-- Failures back off per source, are logged once, and show on the dashboard and in `npm run doctor`. One source being
+- Failures back off per source (the interval doubles, up to an hour), are logged once, and are reported through the service's health. One source being
   down never blocks another.
-- **Slack** also pushes live: `bridge.ts` calls the same `index.put` when a message arrives or a run ends, so threads are
+- **Slack** also pushes live: `bridge.ts` calls the same `history.put` when a message arrives or a run ends, so threads are
   searchable at once. The crawler's Slack pass reconciles and backfills from Pi Durable's conversation entries (the
-  path `reflect.ts` already uses), including `tool` documents.
+  path `reflect.ts` already uses), including `tool` documents. Those stay out of ordinary searches and come back only when a search asks for `kind: tool`, since a command's output is noise next to what people said.
 - **The code host** crawls pull requests, reviews, review comments and issues for the repositories Scout is configured
   for, by `updated` time, and extracts links from descriptions and commit messages (`Fixes #12`, `Reverts #40`).
 - A future source supplies the same thing: an `id` scheme, documents, links to what they concern (a build to its
@@ -81,10 +83,10 @@ type Source = {
 ## The query interface
 
 ```ts
-index.search({ text?, person?, repo?, source?, kind?, since?, until?, mode?, limit? }): Hit[]   // one hit per thread or document
-index.read({ thread } | { id }, { budget }): Transcript                                         // the whole thing, clipped to a budget
-index.outcome(thread): Outcome
-index.stats(): per-source counts, newest document, cursor lag
+history.search({ text?, person?, repo?, source?, kind?, since?, until?, mode?, limit? }): Hit[]   // one hit per thread or document
+history.read({ thread } | { id }, { budget }): Transcript                                         // the whole thing, clipped to a budget
+history.outcome(thread): Outcome
+history.stats(): per-source counts, newest document, cursor lag
 ```
 
 Filters narrow first (person, repo, date are indexed columns on `documents`); ranking runs on what is left. Scout's
@@ -131,12 +133,12 @@ channel that may use that repository, the same rule that already decides where S
 Step 1 is built: `src/history.ts`, with `npm run bench:history` for the targets above (100,000 chunks: about 8,000
 ingested a second, search at the 95th percentile 14 ms, with a person and a repository 3 ms).
 
-1. **People and the store** (done). Record the Slack user id; create `index.sqlite` with documents, chunks, links, people and
+1. **People and the store** (done). Record the Slack user id; create the `history_*` tables in `scout.sqlite` with documents, chunks, links, people and
    cursors; `put`, `search`, `read`, `forget`; backfill from `thread_text`. Tests, and the benchmark.
    *Done when:* `search_threads`' behaviour is reproduced by the new interface and the benchmark meets its targets.
-2. **Sources and the crawler.** The `Source` type, the crawler loop with cursors and backoff, the Slack source (live and
-   backfill, including `tool` documents), health in the dashboard and doctor.
-   *Done when:* killing Scout mid-crawl and starting it again loses and duplicates nothing.
+2. **Sources and the crawler** (done: `src/crawler.ts`, `src/source-slack.ts`). The `Source` type, the crawler loop with cursors and backoff, the Slack source (live and
+   backfill, including `tool` documents), health through the service.
+   *Done when:* stopping Scout mid-crawl and starting it again loses and duplicates nothing (test/crawler.test.ts), and a live answer and its crawled copy are one document (test/e2e-history.test.ts).
 3. **The code host source and links.** Pull requests, reviews, issues, and `outcome()`.
    *Done when:* a thread whose pull request was later reverted reports that.
 4. **Tools and the setting.** `search_history`, `read_history`, `repo_activity`, `SCOUT_HISTORY_ASK`, profile guidance,

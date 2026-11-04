@@ -123,6 +123,11 @@ export class Threads {
 		return this.#db.prepare("SELECT * FROM threads WHERE created_at >= ? AND created_at < ?").all(from, to).map(toThread);
 	}
 
+	/** Threads with activity at or after `since`, oldest first, leaving out the ones retention has cleared (history.ts's crawl). */
+	crawlable(since: number): ThreadRow[] {
+		return this.#db.prepare("SELECT * FROM threads WHERE last_activity >= ? AND purged_at IS NULL ORDER BY last_activity, key").all(since).map(toThread);
+	}
+
 	activeSince(since: number): ThreadRow[] {
 		return this.#db.prepare("SELECT * FROM threads WHERE last_activity >= ?").all(since).map(toThread);
 	}

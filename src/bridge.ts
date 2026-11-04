@@ -5,6 +5,7 @@ import { delivery } from "./etiquette.ts";
 import type { Admission } from "./limits.ts";
 import { ThreadDoc } from "./docs.ts";
 import type { History } from "./history.ts";
+import { answerId } from "./source-slack.ts";
 import { type ChatMessage, type ChatSurface, ProgressPacer, type RunOutcome, ThreadView } from "./render.ts";
 import { DEFAULT_EMOJI, type Ending, type Phase, StatusReactions } from "./reactions.ts";
 import { asksSomething } from "./recaps.ts";
@@ -694,7 +695,7 @@ export class Bridge {
 				const history = this.#options.history;
 				void harness.snapshot(ThreadDoc, thread.conversationId as ConversationId, context).then((doc) =>
 					history.put({
-						id: `slack:answer:${thread.key}:${Date.now()}`,
+						id: answerId(thread.key, answer),
 						source: "slack",
 						kind: "message",
 						thread: thread.key,

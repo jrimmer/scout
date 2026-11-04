@@ -20,6 +20,7 @@ import { type Check, CiWatcher, MAX_FIXES } from "./ci.ts";
 import type { Config } from "./config.ts";
 import { Collector } from "./dash/collect.ts";
 import { startDashboard } from "./dash/server.ts";
+import { Crawler } from "./crawler.ts";
 import { ThreadDoc } from "./docs.ts";
 import { countMcpTools, doctor, formatChecks, restartsOf, type Unit, unitOf } from "./doctor.ts";
 import type { SandboxDriver } from "./drivers/types.ts";
@@ -43,6 +44,7 @@ import { applyRetention } from "./retention.ts";
 import { openScout, sourceReader } from "./scout.ts";
 import { APPROVE_BUTTON, DECLINE_BUTTON, EGRESS_ALLOW, EGRESS_DECLINE, Slack } from "./slack.ts";
 import { refusedToken } from "./startup.ts";
+import { slackSource } from "./source-slack.ts";
 import { threadKey } from "./threads.ts";
 import { BranchCleanup, MAX_TRIES as UPKEEP_TRIES, PullUpkeep, ReviewNudges } from "./upkeep.ts";
 import { ChannelCanvases, channelCanvas, channelWeeks, WeeklySummaries } from "./weekly.ts";
@@ -1339,6 +1341,29 @@ export async function startService(options: ServiceOptions) {
 		});
 	};
 
+	// The session index (history.ts) fills from its sources on the housekeeping tick: Slack's threads from their conversations.
+	const crawler = new Crawler({
+		history: scout.history,
+		sources: [
+			slackSource({
+				threads,
+				read: async (thread) => {
+					const id = thread.conversationId as ConversationId;
+					const conversation = await harness.conversation(id, context);
+					if (conversation === undefined) return undefined;
+					const entries = [];
+					let cursor: Parameters<typeof conversation.entries>[2];
+					do {
+						const page = await conversation.entries({ order: "ascending" }, 500, cursor, context);
+						entries.push(...page.items);
+						cursor = page.next;
+					} while (cursor !== undefined);
+					return { channel: (await harness.snapshot(ThreadDoc, id, context))?.channelName || thread.channel, entries };
+				},
+			}),
+		],
+	});
+
 	/** Housekeeping every few minutes; also soon after a start, so a restart doesn't hold up reviews and retries. */
 	const housekeeping = async (): Promise<void> => {
 		// Draining for a restart: the next process does it, rather than this one starting what it can't finish.
@@ -1426,6 +1451,7 @@ export async function startService(options: ServiceOptions) {
 				),
 			);
 		}
+		work.push(health.watch("history", "indexing threads for search failed", () => crawler.runOnce()));
 		await Promise.all(work);
 	};
 	every(5 * MINUTE, () => void housekeeping());
@@ -1543,6 +1569,7 @@ export async function startService(options: ServiceOptions) {
 			await Promise.race([Promise.allSettled([...afterAnswers]), new Promise((resolve) => setTimeout(resolve, 30_000).unref())]);
 			for (const timer of timers) clearInterval(timer);
 			clearTimeout(firstTick);
+			await crawler.stop();
 			benchChild?.kill();
 			benchStore?.close();
 			inbox.close();

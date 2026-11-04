@@ -47,8 +47,8 @@ Scout's threads are already public, so the same thing is possible here. The rest
 ## What every answer owes people
 
 Reading someone's threads to learn from them is not the same as judging them. Answers describe patterns and show
-examples; they don't rank people or score their productivity. People can opt out of being the subject of a question,
-and Scout says what it read and how much of it, so an answer can be checked.
+examples; they don't rank people or score their productivity. This is all public work, so there is no opt-out;
+what an answer owes people is care. Scout says what it read and how much of it, so an answer can be checked.
 
 ## What each question needs
 

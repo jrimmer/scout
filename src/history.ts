@@ -206,6 +206,17 @@ export class History {
 		return this.#transaction(() => this.#store(doc, now));
 	}
 
+	/** A crawl's page: its documents, its links, and where the crawl got to, all or nothing. How many documents were written. */
+	commit(source: string, scope: string, page: { docs: Doc[]; links?: Link[]; cursor: string }, now = Date.now()): number {
+		return this.#transaction(() => {
+			let written = 0;
+			for (const doc of page.docs) if ((doc.text.trim() !== "" || (doc.title ?? "").trim() !== "") && this.#store(doc, now)) written++;
+			for (const link of page.links ?? []) this.link(link, now);
+			this.setCursor(source, page.cursor, scope, now);
+			return written;
+		});
+	}
+
 	/** A page of documents in one transaction (a crawl's page). How many were written. */
 	putAll(docs: Doc[], now = Date.now()): number {
 		return this.#transaction(() => docs.filter((d) => d.text.trim() !== "" || (d.title ?? "").trim() !== "").reduce((n, d) => n + (this.#store(d, now) ? 1 : 0), 0));
@@ -302,6 +313,8 @@ export class History {
 			["s", q.source],
 			["k", q.kind],
 		].flatMap(([prefix, value]) => (value === undefined ? [] : [` AND meta : ${tag(prefix!, value)}`])).join("");
+		// What the agent ran is there to ask about (kind "tool"), but it would drown ordinary results.
+		const without = q.kind === undefined ? ` NOT meta : ${tag("k", "tool")}` : "";
 		const sql = `SELECT d.id, d.thread, d.conversation_id, d.channel, d.author, d.author_name, d.source, d.kind, d.at, d.url,
 				snippet(history_text, 1, '*', '*', '…', 24) AS snippet
 			 FROM history_text JOIN history_chunks c ON c.id = history_text.rowid JOIN history_docs d ON d.id = c.doc
@@ -309,7 +322,7 @@ export class History {
 			 ORDER BY bm25(history_text, 2.0, 1.0, 0.0) LIMIT 200`;
 		const limit = q.limit ?? 5;
 		for (const words of [quoted.join(" "), quoted.join(" OR ")]) {
-			const rows = this.#db.prepare(sql).all(`{title text} : (${words})${tags}`, ...args) as Record<string, unknown>[];
+			const rows = this.#db.prepare(sql).all(`({title text} : (${words})${tags})${without}`, ...args) as Record<string, unknown>[];
 			const seen = new Set<string>();
 			const hits: Hit[] = [];
 			for (const row of rows) {

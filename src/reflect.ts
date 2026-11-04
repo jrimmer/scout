@@ -242,7 +242,7 @@ export function renderTranscript(entries: readonly EntryRecord[]): string {
 	return lines.join("\n");
 }
 
-function textOf(content: unknown): string {
+export function textOf(content: unknown): string {
 	if (typeof content === "string") return content.trim();
 	if (!Array.isArray(content)) return "";
 	return content
@@ -252,12 +252,12 @@ function textOf(content: unknown): string {
 		.trim();
 }
 
-function summarizeArgs(args: Record<string, unknown>): string {
+export function summarizeArgs(args: Record<string, unknown>): string {
 	const value = args.command ?? args.path ?? args.name ?? args.title;
 	return typeof value === "string" ? clip(value.split("\n")[0] ?? "", 160) : "";
 }
 
-function clip(text: string, max: number): string {
+export function clip(text: string, max: number): string {
 	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
