@@ -2,7 +2,7 @@
 
 Everything said in Scout's threads is public, so everything in them can be read by anyone, and so by Scout on
 someone's behalf. That turns the history into something to ask questions of: not only "has this come up before"
-(`search_threads` does that today) but "how does this person work" and "how is this repository doing".
+(`search_history` does that) but "how does this person work" and "how is this repository doing".
 
 This page records what we want to be able to ask, and what each question needs. It is a design note, not a feature
 list: [what exists today](#what-exists-today) says which parts are built.
@@ -54,34 +54,36 @@ what an answer owes people is care. Scout says what it read and how much of it, 
 
 | Needs | For | Today |
 |---|---|---|
-| Whole threads, by person, repository and date | every question above | Not built. `search_threads` returns five snippets, one per thread, and can't filter by person. |
-| Which repository a thread worked in | repository questions | Known (the thread's repository). |
-| What became of the work: merged, closed, reworked, abandoned | "first time" and "where is it slow" | Partly. Scout records each pull request it opens as open, merged or closed, with its CI result and the review comments it reads. |
-| What happened to the change afterwards | "did the architecture serve us" | Not built. See below. |
-| A longer memory | questions over months | `SCOUT_RETENTION_DAYS` removes quiet threads from the search index; a long-range question needs a longer window. |
+| Whole threads, by person, repository and date | every question above | `read_history`. |
+| Which repository a thread worked in | repository questions | Pull requests carry theirs; a thread is a repository's by its channel. |
+| What became of the work: merged, closed, reworked, abandoned | "first time" and "where is it slow" | Each pull request is merged, closed or open, with the reviews that asked for changes (`repo_activity`). |
+| What happened to the change afterwards | "did the architecture serve us" | Reverts, fixes and follow-ups are found in later pull requests' descriptions and joined to the thread (`outcome`). Which files later changes touched is not. |
+| A longer memory | questions over months | `SCOUT_RETENTION_DAYS` removes quiet threads' words from the index; pull requests stay. A long-range question needs a longer window. |
 
 ### Outcome signals from the code host
 
 The signals come from the code host Scout already talks to, and its token already reads them (`repo`, and
-`notifications` on GitHub), so none of this needs more access. What's missing is asking:
+`notifications` on GitHub), so none of this needs more access:
 
-- the pull request through to its end: reviews, review comments, CI runs, merge, or closing without a merge (partly
-  recorded already);
-- the issues it mentions or closes (`Fixes #12`), and the comments on them;
-- later pull requests that touch the same files soon after a merge, or say they fix or revert it: the sign that the
-  first change didn't hold;
+- the pull request through to its end: reviews, review comments, merge, or closing without a merge;
+- the issues it mentions or closes (`Fixes #12`);
+- later pull requests that say they fix or revert it: the sign that the first change didn't hold;
 - later pull requests that build on it, which is the sign that it did.
 
 Rework and reverts are a better measure of whether a change served the code than merge rate, which only says whether
-people accepted it.
+people accepted it. Still to come: later pull requests that touch the same files soon after a merge without saying so, and
+what commit messages say.
 
-Scout sees what people say in Slack and what it replies. It doesn't keep the agent's own tool calls and reasoning where
-a tool can read them (they stay in Pi Durable's storage), so an answer about how someone drives their agent is an
-answer about their conversation, not about every step the agent took.
+Scout sees what people say in Slack and what it replies, and, once crawled, a short line for each command it ran (kept out
+of ordinary searches). It doesn't keep the agent's reasoning where a tool can read it, so an answer about how someone
+drives their agent is an answer about their conversation, not about every step the agent took.
 
 ## What exists today
 
-- Every thread's text is searchable (`search_threads`), redacted for secrets, with the speaker and channel kept.
+- Every thread's text, and the code host's pull requests, issues and reviews, are searchable (`search_history`),
+  redacted for secrets, with the speaker and channel kept.
+- Whole threads and pull requests are readable (`read_history`), and a repository's recent work is countable
+  (`repo_activity`). [Operations](operations.md#asking-about-earlier-work-people-and-repositories) says who may ask.
 - Scout records its pull requests and what became of them, and reads reviews, review comments and CI.
 - Channel notes, thread recaps and the weekly summary.
 
@@ -89,8 +91,9 @@ answer about their conversation, not about every step the agent took.
 
 How it is built, stage by stage: [session-index.md](session-index.md).
 
-1. A tool that reads whole threads by person, repository and date, capped and redacted.
-2. An outcome kept per thread, from the pull request and what followed it.
-3. Profile guidance for "how does X work" questions: quote, describe, don't judge.
-4. A repository summary from what Scout already has: threads, pull requests merged, rounds of review, time to a first
-   answer.
+1. A tool that reads whole threads by person, repository and date, capped and redacted. *(done)*
+2. An outcome kept per thread, from the pull request and what followed it. *(done)*
+3. Profile guidance for "how does X work" questions: quote, describe, don't judge. *(done)*
+4. A repository summary from what Scout already has: threads, pull requests merged, rounds of review. *(done; time to a
+   first answer is not)*
+5. Search by meaning, only if it beats words on real questions (the embeddings gate in session-index.md).

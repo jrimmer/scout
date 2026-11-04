@@ -1,6 +1,6 @@
 # The session index: design
 
-Status: proposed, for Scout 2.0 (branch `v2/session-index`). [session-querying.md](session-querying.md) says what we
+Status: steps 1 to 4 built, step 5 (embeddings) open; for Scout 2.0 (branch `v2/session-index`). [session-querying.md](session-querying.md) says what we
 want to ask; this says how Scout will know enough to answer, and in what order it gets built.
 
 ## What it is
@@ -100,13 +100,15 @@ history.stats(): per-source counts, newest document, cursor lag
 Filters narrow first (person, repo, date are indexed columns on `documents`); ranking runs on what is left. Scout's
 tools, all through this:
 
-- `search_history`: replaces `search_threads`, with the filters above.
+- `search_history`: replaces `search_threads`, with the filters above. `repo` means the repository's pull requests and
+  issues and the threads in its channels (a Slack document doesn't know its repository, but its channel does).
 - `read_history`: whole threads by person, repo or date, redacted and capped; this is the one that lets Scout describe
   how someone works from examples rather than snippets.
-- `repo_activity`: threads, pull requests, review rounds and outcomes for a repository over a period.
+- `repo_activity`: threads, pull requests, review rounds and outcomes for a repository over a period. Counts, not scores.
 
 **Who may ask** is checked in the tool, from the asker's identity: `public` lets anyone, `admin` only members of the
-admins group in `roles.json`. Answers quote and describe; they don't rank or score people (profile guidance, not code).
+admins group in `roles.json` (those allowed to approve changes to everything). Plain search for earlier threads by topic
+is open in both: it always was. Answers quote and describe; they don't rank or score people (profile guidance, not code).
 
 ## Retrieval
 
@@ -133,8 +135,9 @@ under 50 ms at the 95th percentile; hybrid under 250 ms excluding the embedding 
 ## Visibility
 
 Scout only works in public channels, so Slack text is public. A private repository is different: a pull request there
-may not be visible to everyone in the workspace. Rule: a document from a repository comes back only to a thread in a
-channel that may use that repository, the same rule that already decides where Scout works on it. Open question below.
+may not be visible to everyone in the workspace. Rule: a document from a repository comes back only to a thread that may read
+that repository's code (`readableRepos` in scout.ts: the repositories the person asking may ask for work in), and a thread
+that may not is told so when it asks for that repository by name. Open question below.
 
 ## Order of work
 
@@ -151,15 +154,16 @@ ingested a second, search at the 95th percentile 14 ms, with a person and a repo
    *Done when:* a thread whose pull request was later reverted reports that (test/e2e-history.test.ts does it through the service).
    A code host login and a Slack user are one person once `linkLogins` has joined them (the lookup that already decides who
    may ask for work), so a person's pull requests and their threads are found together.
-4. **Tools and the setting.** `search_history`, `read_history`, `repo_activity`, `SCOUT_HISTORY_ASK`, profile guidance,
+4. **Tools and the setting** (done: `src/history-tools.ts`, `SCOUT_HISTORY_ASK`). `search_history`, `read_history`, `repo_activity`, `SCOUT_HISTORY_ASK`, profile guidance,
    docs.
-   *Done when:* "how does <person> work?" is answered from their threads on vm1, and `admin` mode refuses a non-admin.
+   *Done when:* "how does <person> work?" is answered from their threads on vm1 (not yet tried there: this branch isn't
+   deployed), and `admin` mode refuses a non-admin (test/history-tools.test.ts).
 5. **The embeddings gate.** The eval set, the embedding client, hybrid retrieval behind a setting; ship it or don't, by
    the gate.
 
 ## Open questions
 
 - Which embedding model on LunaRoute, and does the gateway serve `/embeddings` the standard way (unverified).
-- The private repository rule above: is "channel may use the repository" the right test?
+- The private repository rule: built as "the repositories this thread may read code from" (the code search rule). Is that right?
 - How much of a `tool` document to keep: names and clipped arguments and results, or only the names.
 - The crawl interval per source (start at five minutes for the code host).

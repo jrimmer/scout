@@ -59,13 +59,43 @@ export type PullOutcome = {
 /** What became of the work a thread did, from its pull requests and what followed them. Worst first when there are several. */
 export type Outcome = { thread: string; verdict: "none" | PullOutcome["verdict"]; pulls: PullOutcome[] };
 
+/** A whole thread, or pull request with what was said on it, in order and clipped to a budget. */
+export type Transcript = {
+	key: string;
+	title: string;
+	channel: string;
+	repo: string;
+	url: string;
+	at: number;
+	entries: { at: number; speaker: string; kind: string; url: string; text: string }[];
+	/** Entries left out of the middle to stay in the budget. */
+	omitted: number;
+};
+
+/** What a repository's recent work looks like. Counts only: it doesn't judge. */
+export type Activity = {
+	threads: number;
+	people: number;
+	pulls: { opened: number; merged: number; closed: number; open: number; byScout: number };
+	/** Merged pull requests nobody asked changes of, and those somebody did. */
+	mergedFirstTime: number;
+	mergedAfterChanges: number;
+	/** Reviews asking for changes, on the pull requests opened in the period. */
+	changeRequests: number;
+	issues: { opened: number; closed: number };
+	/** What became of the threads' pull requests (`History.outcome`), by verdict. */
+	outcomes: Record<string, number>;
+};
+
 const WORST: Outcome["verdict"][] = ["reverted", "fixed", "closed", "open", "merged", "held", "none"];
 
 export type Query = {
 	text: string;
 	/** A person id (see `people`). */
 	person?: string;
+	/** A repository's pull requests and issues; with `channels`, those and what was said in them, as one set. */
 	repo?: string;
+	channels?: string[];
 	source?: string;
 	kind?: string;
 	since?: number;
@@ -86,6 +116,8 @@ export type Hit = {
 	author: string;
 	source: string;
 	kind: string;
+	/** The repository of a code host document. */
+	repo: string;
 	at: number;
 	url: string;
 	snippet: string;
@@ -292,7 +324,7 @@ export class History {
 			);
 		const addChunk = this.#db.prepare("INSERT INTO history_chunks (doc) VALUES (?)");
 		const addText = this.#db.prepare("INSERT INTO history_text (rowid, title, text, meta) VALUES (?, ?, ?, ?)");
-		const meta = [doc.author === undefined ? "" : tag("p", doc.author), doc.repo === undefined ? "" : tag("r", doc.repo), tag("s", doc.source), tag("k", doc.kind)].join(" ");
+		const meta = [doc.author === undefined ? "" : tag("p", doc.author), doc.repo === undefined ? "" : tag("r", doc.repo), doc.channel === undefined || doc.channel === "" ? "" : tag("c", doc.channel), tag("s", doc.source), tag("k", doc.kind)].join(" ");
 		chunks(text).forEach((chunk, seq) => addText.run(addChunk.run(doc.id).lastInsertRowid, seq === 0 ? title : "", chunk, meta));
 		if (doc.author !== undefined && doc.author !== "scout" && doc.authorName !== undefined && doc.authorName !== "") this.#person(doc.author, doc.authorName, now);
 		return true;
@@ -374,17 +406,18 @@ export class History {
 		filter("d.at >= ?", q.since);
 		filter("d.at <= ?", q.until);
 		filter("COALESCE(d.thread, '') <> ?", q.excludeThread);
+		// Each filter is a group of tags of which one must be there.
 		const tags = [
-			["p", q.person === undefined ? undefined : this.#ids(q.person)],
-			["r", q.repo === undefined ? undefined : [q.repo]],
-			["s", q.source === undefined ? undefined : [q.source]],
-			["k", q.kind === undefined ? undefined : [q.kind]],
+			(q.person === undefined ? [] : this.#ids(q.person)).map((v) => tag("p", v)),
+			[...(q.repo === undefined ? [] : [tag("r", q.repo)]), ...(q.channels ?? []).map((c) => tag("c", c))],
+			q.source === undefined ? [] : [tag("s", q.source)],
+			q.kind === undefined ? [] : [tag("k", q.kind)],
 		]
-			.flatMap(([prefix, values]) => (values === undefined ? [] : [` AND meta : (${(values as string[]).map((v) => tag(prefix as string, v)).join(" OR ")})`]))
+			.flatMap((group) => (group.length === 0 ? [] : [` AND meta : (${group.join(" OR ")})`]))
 			.join("");
 		// What the agent ran is there to ask about (kind "tool"), but it would drown ordinary results.
 		const without = q.kind === undefined ? ` NOT meta : ${tag("k", "tool")}` : "";
-		const sql = `SELECT d.id, d.thread, d.parent, d.conversation_id, d.channel, d.author, d.author_name, d.source, d.kind, d.at, d.url,
+		const sql = `SELECT d.id, d.thread, d.parent, d.conversation_id, d.channel, d.repo, d.author, d.author_name, d.source, d.kind, d.at, d.url,
 				snippet(history_text, 1, '*', '*', '…', 24) AS snippet
 			 FROM history_text JOIN history_chunks c ON c.id = history_text.rowid JOIN history_docs d ON d.id = c.doc
 			 WHERE history_text MATCH ? ${where.map((w) => `AND ${w}`).join(" ")}
@@ -407,6 +440,7 @@ export class History {
 					author: String(row.author ?? ""),
 					source: String(row.source),
 					kind: String(row.kind),
+					repo: String(row.repo ?? ""),
 					at: Number(row.at),
 					url: String(row.url),
 					snippet: String(row.snippet),
@@ -448,6 +482,130 @@ export class History {
 		});
 		const verdict = WORST.find((v) => v === "none" || outcomes.some((o) => o.verdict === v)) ?? "none";
 		return { thread, verdict, pulls: outcomes };
+	}
+
+	/** A thread, or a pull request or issue, as it unfolded: what each person said, oldest first, within `budget` characters. */
+	read(key: string, options: { budget: number; tools?: boolean }): Transcript | undefined {
+		const rows = this.#db
+			.prepare(
+				`SELECT d.id, d.kind, d.at, d.author_name, d.channel, d.repo, d.url, d.title, d.thread,
+				   (SELECT t.text FROM history_chunks c JOIN history_text t ON t.rowid = c.id WHERE c.doc = d.id ORDER BY c.id LIMIT 1) AS text
+				 FROM history_docs d WHERE (d.thread = ? OR d.id = ? OR d.parent = ?) ${options.tools === true ? "" : "AND d.kind <> 'tool'"}
+				 ORDER BY d.at, d.rowid`,
+			)
+			.all(key, key, key) as Record<string, unknown>[];
+		if (rows.length === 0) return undefined;
+		const PER_ENTRY = 1200;
+		const all = rows.map((r) => ({
+			at: Number(r.at),
+			speaker: String(r.author_name),
+			kind: String(r.kind),
+			url: String(r.url),
+			text: (r.title ? `${String(r.title)}\n` : "") + clip(String(r.text ?? ""), PER_ENTRY),
+		}));
+		// Over budget: keep the start and the end, which are the request and what came of it, and drop the middle.
+		let entries = all;
+		let omitted = 0;
+		const size = (list: typeof all) => list.reduce((n, e) => n + e.text.length + e.speaker.length + 20, 0);
+		if (size(all) > options.budget) {
+			const head: typeof all = [];
+			const tail: typeof all = [];
+			let used = 0;
+			for (let lo = 0, hi = all.length - 1; lo <= hi; ) {
+				const next = head.length <= tail.length ? all[lo]! : all[hi]!;
+				used += next.text.length + next.speaker.length + 20;
+				if (used > options.budget && head.length + tail.length > 0) break;
+				if (head.length <= tail.length) (head.push(next), lo++);
+				else (tail.unshift(next), hi--);
+			}
+			entries = [...head, ...tail];
+			omitted = all.length - entries.length;
+		}
+		const first = rows[0]!;
+		const pull = rows.find((r) => r.id === key) ?? first;
+		return {
+			key,
+			title: String(pull.title || String(first.text ?? "").slice(0, 80)),
+			channel: String(first.channel),
+			repo: String(pull.repo ?? ""),
+			url: String(pull.url),
+			at: Number(first.at),
+			entries,
+			omitted,
+		};
+	}
+
+	/** The threads, pull requests and issues someone took part in, most recently active first. */
+	threads(query: { person?: string; repo?: string; channels?: string[]; since?: number; until?: number; limit?: number }): { key: string; at: number; channel: string; repo: string }[] {
+		const where: string[] = ["d.kind <> 'tool'"];
+		const args: (string | number)[] = [];
+		if (query.person !== undefined) {
+			const ids = this.#ids(query.person);
+			where.push(`d.author IN (${ids.map(() => "?").join(", ")})`);
+			args.push(...ids);
+		}
+		if (query.repo !== undefined || (query.channels ?? []).length > 0) {
+			const channels = query.channels ?? [];
+			where.push(`(${[...(query.repo === undefined ? [] : ["d.repo = ?"]), ...(channels.length === 0 ? [] : [`d.channel IN (${channels.map(() => "?").join(", ")})`])].join(" OR ")})`);
+			if (query.repo !== undefined) args.push(query.repo);
+			args.push(...channels);
+		}
+		if (query.since !== undefined) (where.push("d.at >= ?"), args.push(query.since));
+		if (query.until !== undefined) (where.push("d.at <= ?"), args.push(query.until));
+		const rows = this.#db
+			.prepare(
+				`SELECT COALESCE(d.thread, d.parent, d.id) AS key, MAX(d.at) AS at, MAX(d.channel) AS channel, COALESCE(MAX(d.repo), '') AS repo
+				 FROM history_docs d WHERE ${where.join(" AND ")} GROUP BY key ORDER BY at DESC LIMIT ?`,
+			)
+			.all(...args, query.limit ?? 10) as Record<string, unknown>[];
+		return rows.map((r) => ({ key: String(r.key), at: Number(r.at), channel: String(r.channel), repo: String(r.repo) }));
+	}
+
+	/** Counts of what happened around a repository (its slug) and the channels it works in, between two times. */
+	activity(query: { repo: string; channels: string[]; since: number; until: number }): Activity {
+		const { repo, since, until } = query;
+		const channels = query.channels.length === 0 ? ["\0"] : query.channels;
+		const marks = channels.map(() => "?").join(", ");
+		const one = (sql: string, ...args: (string | number)[]) => Number((this.#db.prepare(sql).get(...args) as { n: number }).n);
+		const threadsSql = `FROM history_docs WHERE source = 'slack' AND thread IS NOT NULL AND channel IN (${marks}) AND at BETWEEN ? AND ?`;
+		const pulls = this.#db
+			.prepare(`SELECT COALESCE(json_extract(meta, '$.state'), 'open') AS state, author = 'scout' AS scout, COUNT(*) AS n FROM history_docs WHERE kind = 'pull' AND repo = ? AND at BETWEEN ? AND ? GROUP BY state, scout`)
+			.all(repo, since, until) as { state: string; scout: number; n: number }[];
+		const count = (state: string) => pulls.filter((p) => p.state === state).reduce((n, p) => n + p.n, 0);
+		const changed = `EXISTS (SELECT 1 FROM history_docs r WHERE r.parent = p.id AND r.kind = 'review' AND json_extract(r.meta, '$.review') = 'changes')`;
+		const merged = (extra: string) => one(`SELECT COUNT(*) AS n FROM history_docs p WHERE p.kind = 'pull' AND p.repo = ? AND p.at BETWEEN ? AND ? AND json_extract(p.meta, '$.state') = 'merged' AND ${extra}`, repo, since, until);
+		const outcomes: Record<string, number> = {};
+		const threadKeys = this.#db
+			.prepare(`SELECT DISTINCT l.from_id AS key FROM history_links l JOIN history_docs p ON p.id = l.to_id WHERE l.rel = 'opened' AND p.repo = ? AND p.at BETWEEN ? AND ? LIMIT 300`)
+			.all(repo, since, until) as { key: string }[];
+		for (const { key } of threadKeys) {
+			const verdict = this.outcome(key.replace(/^thread:/, ""), until).verdict;
+			outcomes[verdict] = (outcomes[verdict] ?? 0) + 1;
+		}
+		return {
+			threads: one(`SELECT COUNT(DISTINCT thread) AS n ${threadsSql}`, ...channels, since, until),
+			people: one(
+				`SELECT COUNT(DISTINCT COALESCE((SELECT person FROM history_aliases WHERE alias = author), author)) AS n FROM history_docs WHERE author IS NOT NULL AND author <> 'scout' AND at BETWEEN ? AND ? AND (repo = ? OR channel IN (${marks}))`,
+				since,
+				until,
+				repo,
+				...channels,
+			),
+			pulls: { opened: pulls.reduce((n, p) => n + p.n, 0), merged: count("merged"), closed: count("closed"), open: count("open"), byScout: pulls.filter((p) => p.scout === 1).reduce((n, p) => n + p.n, 0) },
+			mergedFirstTime: merged(`NOT ${changed}`),
+			mergedAfterChanges: merged(changed),
+			changeRequests: one(
+				`SELECT COUNT(*) AS n FROM history_docs r JOIN history_docs p ON p.id = r.parent WHERE r.kind = 'review' AND json_extract(r.meta, '$.review') = 'changes' AND p.repo = ? AND p.at BETWEEN ? AND ?`,
+				repo,
+				since,
+				until,
+			),
+			issues: {
+				opened: one(`SELECT COUNT(*) AS n FROM history_docs WHERE kind = 'issue' AND repo = ? AND at BETWEEN ? AND ?`, repo, since, until),
+				closed: one(`SELECT COUNT(*) AS n FROM history_docs WHERE kind = 'issue' AND repo = ? AND json_extract(meta, '$.state') = 'closed' AND at BETWEEN ? AND ?`, repo, since, until),
+			},
+			outcomes,
+		};
 	}
 
 	/** The first thing said in a conversation's thread (what it was started with), and where. */
@@ -494,4 +652,8 @@ export class History {
 	close(): void {
 		this.#db.close();
 	}
+}
+
+function clip(text: string, max: number): string {
+	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }

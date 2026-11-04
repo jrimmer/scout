@@ -55,7 +55,7 @@ export const DEFAULT_EMOJI: Record<Phase | Ending, string> = {
 
 const TESTS = /\b(npm (run )?test|pnpm (run )?test|yarn test|npx (jest|vitest|mocha|playwright)|pytest|python3? -m (unittest|pytest)|go test|cargo test|mix test|rspec|phpunit|dotnet test|make (test|check)|node --test|deno test|bun test)\b/;
 const BUILDS = /\b(npm (ci|install|i|run build)|pnpm (i|install|build)|yarn (install|build)|pip3? install|uv (pip|sync)|go (build|mod download)|cargo (build|fetch)|mix (compile|deps\.get)|tsc\b|make\b|gradle|mvn|docker build|bundle install)/;
-const READS = new Set(["read", "grep", "find", "ls", "search_threads", "search_code", "read_code"]);
+const READS = new Set(["read", "grep", "find", "ls", "search_history", "read_history", "repo_activity", "search_code", "read_code"]);
 const EDITS = new Set(["edit", "write"]);
 
 /** What a tool call is, as a phase: from its name, and for commands from what they run. */

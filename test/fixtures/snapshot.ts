@@ -12,7 +12,7 @@ export const busy: Snapshot = {
 	alerts: [{ message: "profile pull failed: could not read from remote repository", since: now - 40 * min }],
 	working: [
 		{ channel: "checkout", startedAt: now - 134_000, steps: 12, lastStep: "bash npm test -- cart" },
-		{ channel: "tobi_scout", startedAt: now - 20_000, steps: 2, lastStep: "search_threads flaky deploy" },
+		{ channel: "tobi_scout", startedAt: now - 20_000, steps: 2, lastStep: "search_history flaky deploy" },
 	],
 	threadsToday: 17,
 	threads: [

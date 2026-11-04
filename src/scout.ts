@@ -34,7 +34,7 @@ import { Reflector, reflectionExtensions } from "./reflect.ts";
 import { type Alert, type AlertPolicy, alertMatches, DEFAULT_RESPONDER_INSTRUCTIONS } from "./alerts.ts";
 import { DEFAULT_PULL_REVIEW_INSTRUCTIONS, reviewAsSubtask, reviewEnv, reviewExtension, wholeDiff } from "./review.ts";
 import { History } from "./history.ts";
-import { searchExtension } from "./search.ts";
+import { historyExtension } from "./history-tools.ts";
 import { rememberSecrets } from "./scan.ts";
 import { secretValues } from "./secrets.ts";
 import { DockerDriver } from "./drivers/docker.ts";
@@ -363,7 +363,6 @@ export async function openScout(options: ScoutOptions) {
 			}
 		},
 	});
-	const searchTools = searchExtension(history, threads, options.threadLink ?? (async () => undefined));
 	const memoryTools = memoryExtension(memory, audit);
 	// "What are you working on?": Scout's live state, which only the service running it knows (service.ts sets this).
 	let describeNow: (channel: string) => Promise<string> = async () => "I can't see my other threads from here.";
@@ -414,6 +413,21 @@ export async function openScout(options: ScoutOptions) {
 		return config.repos.filter((_, i) => readable[i]).map(searchable);
 	};
 	const codeSearchTools = codeSearchExtension(readableRepos);
+	// Earlier threads and the code host's pull requests (history-tools.ts): the repositories a thread may read are the ones
+	// it may read code from, and who asked is its thread's (an approach's parent's).
+	const historyTools = historyExtension({
+		history,
+		threads,
+		link: options.threadLink ?? (async () => undefined),
+		readable: async (conversationId) => (await readableRepos(conversationId)).flatMap((r) => config.repos.filter((c) => c.name === r.name).map((c) => ({ name: c.name, slug: c.slug }))),
+		repos: () => config.repos.map((r) => ({ name: r.name, slug: r.slug, channels: [...profile.channels].filter(([, c]) => c.repos.includes(r.name)).map(([name]) => name) })),
+		askerOf: (conversationId) => {
+			const id = threads.byConversation(conversationId) === undefined ? (approaches.parentOf(conversationId) ?? conversationId) : conversationId;
+			return threads.byConversation(id)?.lastAsker;
+		},
+		ask: config.historyAsk,
+		isAdmin,
+	});
 	// Experimental: several approaches at once, compared in the thread (approaches.ts). Where the comparison goes is the
 	// service's to say (service.ts sets it); each approach works without this tool, and without opening pull requests.
 	const approaches = new Approaches(db);
@@ -474,7 +488,7 @@ export async function openScout(options: ScoutOptions) {
 		profileTools,
 		codingTools,
 		workCodeHost,
-		searchTools,
+		historyTools,
 		memoryTools,
 		scheduleTools,
 		statusTools,
@@ -722,7 +736,7 @@ export async function openScout(options: ScoutOptions) {
 				profileTools,
 				codingTools,
 				workCodeHost,
-				searchTools,
+				historyTools,
 				memoryTools,
 				scheduleTools,
 				statusTools,

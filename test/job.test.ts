@@ -36,13 +36,13 @@ describe("job mode", () => {
 		const scout = await openScout({ config, storage: new MemoryStorage(), dataDir: config.dataDir, instance: "j", context, models, watchProfile: false });
 
 		faux.setResponses([
-			fauxAssistantMessage([fauxToolCall("search_threads", { query: "lint" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxToolCall("search_history", { query: "lint" })], { stopReason: "toolUse" }),
 			fauxAssistantMessage("Nothing to fix: lint is clean."),
 		]);
 		const progress: string[] = [];
 		const result = await runJob(scout, "fix lint everywhere", { progress: (line) => progress.push(line) });
 		assert.deepEqual(result, { ok: true, answer: "Nothing to fix: lint is clean.", pullRequests: [] });
-		assert.deepEqual(progress, ["search_threads lint"]);
+		assert.deepEqual(progress, ["search_history lint"]);
 		await scout.close();
 	});
 

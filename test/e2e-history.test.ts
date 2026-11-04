@@ -50,11 +50,11 @@ describe("end to end: the session index", () => {
 		}
 	});
 
-	it("leaves the asking thread out of what search_threads finds", async () => {
+	it("leaves the asking thread out of what search_history finds", async () => {
 		const e2e = await startScout();
 		let seen = "";
 		e2e.faux.setResponses([
-			fauxAssistantMessage([fauxToolCall("search_threads", { query: "zebra stripes" })], toolUse),
+			fauxAssistantMessage([fauxToolCall("search_history", { query: "zebra stripes" })], toolUse),
 			(transcript) => {
 				seen = JSON.stringify(transcript);
 				return fauxAssistantMessage("Nothing earlier on that.");
@@ -65,7 +65,7 @@ describe("end to end: the session index", () => {
 			await until(() => e2e.said().some((t) => t.includes("Nothing earlier on that.")), 20_000, "the answer");
 			await e2e.service.scout.harness.waitForIdle(context);
 			assert.ok(e2e.service.scout.history.search("zebra stripes").length === 1, "the request is in the index");
-			assert.match(seen, /No earlier threads match\./, "but not found by its own thread");
+			assert.match(seen, /Nothing earlier matches\./, "but not found by its own thread");
 		} finally {
 			await e2e.close();
 		}

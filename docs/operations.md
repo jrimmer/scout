@@ -401,6 +401,33 @@ than five minutes old: exact, current, read-only, and nothing new to run. `SCOUT
 This isn't a code index. One becomes worth it with very large repositories (where `git grep` slows down), questions
 by meaning rather than text, or cross-repository go-to-definition (#59); it would sit behind the same two tools.
 
+## Asking about earlier work, people and repositories
+
+Scout can search what has been said in its threads and what happened on the code host, read whole threads, and say what a
+repository's recent work looks like. It's the learning from each other that public threads are for; the design is
+[session-index.md](session-index.md) and what to ask is [session-querying.md](session-querying.md).
+
+- `search_history`: earlier threads, and pull requests, reviews and issues, by words, narrowed by person, repository,
+  source (`slack` or `forge`), kind or how many days back. A pull request in a repository the thread may not read
+  (the same rule as code search, above) never comes back.
+- `read_history`: a thread, pull request or issue whole, or a person's most recent threads, clipped to a budget in
+  the middle (the request and what came of it stay). It says what it read and how many.
+- `repo_activity`: threads in the repository's channels, pull requests opened, merged and closed, how many merged
+  without a request for changes, and what became of Scout's own pull requests (held, fixed, reverted…). Counts only.
+
+Nobody can opt out of being the subject of a question: this is public work. Scout's profile tells it to quote people and
+describe patterns rather than rank anyone. `SCOUT_HISTORY_ASK` says who may ask:
+
+- `public` (the default): anyone who can talk to Scout.
+- `admin`: only the admins group in the roles file (the groups allowed to approve changes to everything) may ask about a
+  person's threads, read threads whole, or get a repository report. Plain search for earlier threads by topic stays open,
+  as it always was. A thread Scout started itself has no one asking, so it gets the refusal too.
+
+Pull requests and issues come from the repositories in the repos file, crawled every five minutes (180 days back on the first
+pass), and a code host login is joined to its Slack user by the same lookup that decides who may ask for work. If the
+crawl fails, the dashboard says so, and the other sources carry on. Retention removes a quiet thread's words from the index,
+as before; pull requests and issues are public records of the code host and stay.
+
 ## Trying several approaches (experimental)
 
 When someone asks Scout to try or compare a few ways of doing something ("try a cache, or fixing the query"), it

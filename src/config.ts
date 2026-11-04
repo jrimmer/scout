@@ -141,6 +141,8 @@ export type Config = {
 	statusReactions: boolean;
 	/** How much Scout does on its own initiative (initiative.ts): asked, own or team. */
 	initiative: Initiative;
+	/** Who may ask about particular people's threads and for reports on a repository (history-tools.ts): anyone, or admins. */
+	historyAsk: "public" | "admin";
 	/** The repos file (SCOUT_REPOS_FILE), where an egress host people allow is saved (egress.ts). */
 	reposFile?: string;
 	/** Searching and reading every configured repository's code from any thread (codesearch.ts). */
@@ -360,6 +362,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		},
 		weeklySummary: env.SCOUT_WEEKLY_SUMMARY !== "off",
 		initiative: parseInitiative(env.SCOUT_INITIATIVE),
+		historyAsk: parseHistoryAsk(env.SCOUT_HISTORY_ASK),
 		statusReactions: env.SCOUT_STATUS_REACTIONS !== "off",
 		capacity: {
 			maxRuns: count(env, "SCOUT_MAX_RUNS", 8, 1),
@@ -454,4 +457,10 @@ function count(env: NodeJS.ProcessEnv, name: string, fallback: number, min: numb
 	const value = Number(raw);
 	if (!Number.isInteger(value) || value < min) throw new ConfigError(`${name} must be a whole number of at least ${min} (it's "${raw}").`);
 	return value;
+}
+
+function parseHistoryAsk(value: string | undefined): "public" | "admin" {
+	const v = (value ?? "public").trim().toLowerCase();
+	if (v === "public" || v === "admin") return v;
+	throw new Error(`SCOUT_HISTORY_ASK must be public or admin (it's "${value}"). See docs/operations.md, "Asking about people's threads".`);
 }
