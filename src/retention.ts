@@ -1,7 +1,7 @@
 import type { Approaches } from "./approaches.ts";
 import type { Audit } from "./audit.ts";
 import type { Memory } from "./memory.ts";
-import type { ThreadSearch } from "./search.ts";
+import type { History } from "./history.ts";
 import type { Threads } from "./threads.ts";
 import type { Workspaces } from "./workspaces.ts";
 
@@ -18,7 +18,7 @@ export async function applyRetention(options: {
 	threads: Threads;
 	workspaces: Pick<Workspaces, "remove">;
 	approaches?: Pick<Approaches, "forThread">;
-	search: Pick<ThreadSearch, "forget">;
+	history: Pick<History, "forget">;
 	memory: Pick<Memory, "purge">;
 	audit?: Audit;
 	now?: number;
@@ -30,7 +30,7 @@ export async function applyRetention(options: {
 		try {
 			await options.workspaces.remove(thread.conversationId);
 			for (const a of options.approaches?.forThread(thread.conversationId) ?? []) await options.workspaces.remove(a.childId);
-			options.search.forget(thread.key);
+			options.history.forget(thread.key);
 			options.threads.purged(thread.key);
 		} catch (error) {
 			console.error(`retention: couldn't clear thread ${thread.key}:`, error);

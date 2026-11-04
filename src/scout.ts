@@ -33,7 +33,8 @@ import { Pulls } from "./pulls.ts";
 import { Reflector, reflectionExtensions } from "./reflect.ts";
 import { type Alert, type AlertPolicy, alertMatches, DEFAULT_RESPONDER_INSTRUCTIONS } from "./alerts.ts";
 import { DEFAULT_PULL_REVIEW_INSTRUCTIONS, reviewAsSubtask, reviewEnv, reviewExtension, wholeDiff } from "./review.ts";
-import { searchExtension, ThreadSearch } from "./search.ts";
+import { History } from "./history.ts";
+import { searchExtension } from "./search.ts";
 import { rememberSecrets } from "./scan.ts";
 import { secretValues } from "./secrets.ts";
 import { DockerDriver } from "./drivers/docker.ts";
@@ -121,7 +122,7 @@ export async function openScout(options: ScoutOptions) {
 	const db = join(dataDir, "scout.sqlite");
 	const threads = new Threads(db);
 	const pulls = new Pulls(db);
-	const search = new ThreadSearch(db);
+	const history = new History(db);
 	const memory = new Memory(db);
 	// Capacity (capacity.ts): what waits, for how long, and what to tell people about it.
 	const capacity = new Capacity(db);
@@ -362,7 +363,7 @@ export async function openScout(options: ScoutOptions) {
 			}
 		},
 	});
-	const searchTools = searchExtension(search, threads, options.threadLink ?? (async () => undefined));
+	const searchTools = searchExtension(history, threads, options.threadLink ?? (async () => undefined));
 	const memoryTools = memoryExtension(memory, audit);
 	// "What are you working on?": Scout's live state, which only the service running it knows (service.ts sets this).
 	let describeNow: (channel: string) => Promise<string> = async () => "I can't see my other threads from here.";
@@ -526,7 +527,7 @@ export async function openScout(options: ScoutOptions) {
 	workspaces.repoOf = async (id) => (await opened.snapshot(ThreadDoc, id as ConversationId, context))?.repo;
 	workspaces.baseOf = async (id) => (await opened.snapshot(ThreadDoc, id as ConversationId, context))?.base;
 	workspaces.describe = async (id) => {
-		const first = search.first(id);
+		const first = history.first(id);
 		const thread = threads.byConversation(id);
 		const link = thread === undefined ? undefined : await options.threadLink?.(thread);
 		return {
@@ -710,7 +711,7 @@ export async function openScout(options: ScoutOptions) {
 		modelFor,
 		threads,
 		pulls,
-		search,
+		history,
 		memory,
 		workspaces,
 		reflector,
@@ -740,7 +741,7 @@ export async function openScout(options: ScoutOptions) {
 			await workspaces.close();
 			threads.close();
 			pulls.close();
-			search.close();
+			history.close();
 			memory.close();
 			approvals.close();
 			schedules.close();

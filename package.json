@@ -10,6 +10,7 @@
     "eval": "node --env-file-if-exists=.env src/eval-cli.ts",
     "bench": "node --env-file-if-exists=.env src/bench-cli.ts",
     "bench:mine": "node --env-file-if-exists=.env src/bench-mine.ts",
+    "bench:history": "node test/history-bench.ts",
     "doctor": "node --env-file-if-exists=.env src/doctor-cli.ts",
     "setup": "node src/setup-cli.ts",
     "dash-password": "node src/dash/server.ts",

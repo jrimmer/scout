@@ -4,7 +4,7 @@ import type { Audit } from "./audit.ts";
 import { delivery } from "./etiquette.ts";
 import type { Admission } from "./limits.ts";
 import { ThreadDoc } from "./docs.ts";
-import type { ThreadSearch } from "./search.ts";
+import type { History } from "./history.ts";
 import { type ChatMessage, type ChatSurface, ProgressPacer, type RunOutcome, ThreadView } from "./render.ts";
 import { DEFAULT_EMOJI, type Ending, type Phase, StatusReactions } from "./reactions.ts";
 import { asksSomething } from "./recaps.ts";
@@ -44,8 +44,8 @@ export type BridgeOptions = {
 	context: Context;
 	/** Offered on a direct message: a public channel for the two of you. */
 	channelOffer?: (user: string) => ChatMessage;
-	/** Where what's said in threads is indexed, for `search_threads`. */
-	search?: ThreadSearch;
+	/** Where what is said in threads is kept for search (history.ts). */
+	history?: History;
 	/** The repository a channel's threads work in. */
 	/** A person replied "approve" in a thread: let the change waiting there go ahead (mcp.ts); false if none is waiting. */
 	approve?: (conversationId: number, user: string) => boolean;
@@ -495,11 +495,15 @@ export class Bridge {
 			channel: message.channelName,
 			detail: { as: how, ts: message.ts, text: text.slice(0, 200), ...(attached.notes.length > 0 ? { files: attached.notes.length } : {}) },
 		});
-		this.#options.search?.add({
-			key,
+		this.#options.history?.put({
+			id: `slack:message:${key}:${message.ts}`,
+			source: "slack",
+			kind: "message",
+			thread: key,
 			conversationId: thread.conversationId,
-			channelName: message.channelName,
-			speaker: name,
+			channel: message.channelName,
+			author: message.user,
+			authorName: name,
 			text,
 		});
 		return "done";
@@ -558,7 +562,7 @@ export class Bridge {
 		);
 		threads.spoke(key, "scout");
 		// So a later "fix what you flagged" outside this thread can still find it.
-		this.#options.search?.add({ key, conversationId: row.conversationId, channelName: thread.channelName, speaker: "Scout", text: thread.about ?? thread.context });
+		this.#options.history?.put({ id: `slack:about:${key}`, source: "slack", kind: "message", thread: key, conversationId: row.conversationId, channel: thread.channelName, author: "scout", authorName: "Scout", text: thread.about ?? thread.context });
 	}
 
 	/** Something said elsewhere (a comment on the code host) that a thread should know, without asking it for work. */
@@ -581,7 +585,7 @@ export class Bridge {
 		if (threads.get(key) !== undefined || threads.byConversation(conversationId) !== undefined) return;
 		threads.insert({ key, conversationId, channel: thread.channel, threadTs: thread.threadTs, startedBy: "scout" });
 		threads.spoke(key, "scout");
-		this.#options.search?.add({ key, conversationId, channelName: thread.channelName, speaker: "Scout", text: thread.about });
+		this.#options.history?.put({ id: `slack:about:${key}`, source: "slack", kind: "message", thread: key, conversationId, channel: thread.channelName, author: "scout", authorName: "Scout", text: thread.about });
 		await this.#view(threads.get(key)!);
 	}
 
@@ -686,14 +690,18 @@ export class Bridge {
 				threads.spoke(thread.key, "scout");
 				threads.ranOnce(thread.conversationId);
 				void this.drain().catch((error: unknown) => console.error("starting queued requests failed:", error));
-				if (answer === undefined || this.#options.search === undefined) return;
-				const search = this.#options.search;
+				if (answer === undefined || this.#options.history === undefined) return;
+				const history = this.#options.history;
 				void harness.snapshot(ThreadDoc, thread.conversationId as ConversationId, context).then((doc) =>
-					search.add({
-						key: thread.key,
+					history.put({
+						id: `slack:answer:${thread.key}:${Date.now()}`,
+						source: "slack",
+						kind: "message",
+						thread: thread.key,
 						conversationId: thread.conversationId,
-						channelName: doc?.channelName ?? "",
-						speaker: "Scout",
+						channel: doc?.channelName ?? "",
+						author: "scout",
+						authorName: "Scout",
 						text: answer,
 					}),
 				);

@@ -1,90 +1,9 @@
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { redact } from "./scan.ts";
+import type { History } from "./history.ts";
 import type { ThreadRow, Threads } from "./threads.ts";
 
-/**
- * "The next person who has the same question does not have to ask it." Everything said in Scout's threads is public,
- * so Scout can search it and point people at the thread where something was worked out before.
- */
-export type SearchHit = { key: string; conversationId: number; channelName: string; speaker: string; snippet: string };
-
-export class ThreadSearch {
-	readonly #db: DatabaseSync;
-
-	constructor(path: string) {
-		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-		this.#db = new DatabaseSync(path, { timeout: 5000 });
-		this.#db.exec(`
-			CREATE VIRTUAL TABLE IF NOT EXISTS thread_text USING fts5(
-				key UNINDEXED, conversation_id UNINDEXED, channel_name UNINDEXED, speaker UNINDEXED, at UNINDEXED, text,
-				tokenize = 'porter unicode61'
-			);
-		`);
-	}
-
-	add(entry: { key: string; conversationId: number; channelName: string; speaker: string; text: string }, at = Date.now()): void {
-		if (entry.text.trim() === "") return;
-		this.#db
-			.prepare("INSERT INTO thread_text (key, conversation_id, channel_name, speaker, at, text) VALUES (?, ?, ?, ?, ?, ?)")
-			.run(entry.key, entry.conversationId, entry.channelName, entry.speaker, at, redact(entry.text));
-	}
-
-	/** Best matches, one per thread; all words must match, or failing that, any. */
-	search(query: string, options: { limit?: number; excludeKey?: string } = {}): SearchHit[] {
-		const words = query.match(/[\p{L}\p{N}_]+/gu) ?? [];
-		if (words.length === 0) return [];
-		const quoted = words.map((w) => `"${w}"`);
-		for (const match of [quoted.join(" "), quoted.join(" OR ")]) {
-			const rows = this.#db
-				.prepare(
-					`SELECT key, conversation_id, channel_name, speaker,
-						snippet(thread_text, 5, '*', '*', '…', 24) AS snippet
-					 FROM thread_text WHERE thread_text MATCH ? ORDER BY rank LIMIT 50`,
-				)
-				.all(match) as Record<string, unknown>[];
-			const seen = new Set<string>();
-			const hits: SearchHit[] = [];
-			for (const row of rows) {
-				const key = String(row.key);
-				if (key === options.excludeKey || seen.has(key)) continue;
-				seen.add(key);
-				hits.push({
-					key,
-					conversationId: Number(row.conversation_id),
-					channelName: String(row.channel_name),
-					speaker: String(row.speaker),
-					snippet: String(row.snippet),
-				});
-				if (hits.length >= (options.limit ?? 5)) break;
-			}
-			if (hits.length > 0) return hits;
-		}
-		return [];
-	}
-
-	/** The first thing said in a conversation's thread (what it was started with), and where. */
-	first(conversationId: number): { channelName: string; text: string } | undefined {
-		const row = this.#db
-			.prepare("SELECT channel_name, text FROM thread_text WHERE conversation_id = ? ORDER BY CAST(at AS INTEGER), rowid LIMIT 1")
-			.get(conversationId) as Record<string, unknown> | undefined;
-		return row === undefined ? undefined : { channelName: String(row.channel_name), text: String(row.text) };
-	}
-
-	/** Drop a thread from the index (retention). */
-	forget(key: string): void {
-		this.#db.prepare("DELETE FROM thread_text WHERE key = ?").run(key);
-	}
-
-	close(): void {
-		this.#db.close();
-	}
-}
-
-export function searchExtension(search: ThreadSearch, threads: Threads, link: (thread: ThreadRow) => Promise<string | undefined>) {
+export function searchExtension(history: History, threads: Threads, link: (thread: ThreadRow) => Promise<string | undefined>) {
 	const searchThreads = defineTool({
 		name: "search_threads",
 		description:
@@ -97,7 +16,7 @@ export function searchExtension(search: ThreadSearch, threads: Threads, link: (t
 		replay: "safe",
 		execute: async (args, api) => {
 			const current = threads.byConversation(api.conversationId);
-			const hits = search.search(args.query, {
+			const hits = history.search(args.query, {
 				limit: Math.min(args.limit ?? 5, 20),
 				...(current === undefined ? {} : { excludeKey: current.key }),
 			});

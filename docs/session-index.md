@@ -28,15 +28,17 @@ product. Scout 1's `search_threads` is replaced by this, not kept beside it.
 
 ## The data
 
-One SQLite file (`index.sqlite`, next to `pi.sqlite`, in the backups).
+Tables (`history_*`) in `scout.sqlite`, like every other store of Scout's, so the backups already cover them. If vectors make the file too large to back up with the rest, they move to a file of their own.
 
 - **documents**: `id` (`source:kind:ref`), `source`, `kind`, `repo`, `thread` (Scout's conversation, if any), `author`
   (a stable person id), `at`, `title`, `url`, `parent`, `hash`, `meta` (JSON). Kinds so far: `message`, `pull`,
   `review`, `comment`, `issue`, `tool` (a summary of a tool call). A document's identity is what makes re-crawling safe:
   the same `id` with the same `hash` is skipped; a changed `hash` replaces it.
-- **chunks**: `doc`, `seq`, `text`; an FTS5 table over `text` (Porter stemming as now). Chunking is by message for
-  chat (short consecutive ones merge), and about 800 tokens with overlap for long text. Each chunk has a nullable
-  `embedding` (Float32 blob), the `model` that made it, and its dimension.
+- **chunks**: `doc`, `seq`, `text`; an FTS5 table over `text` (Porter stemming as now). A chunk is a whole message
+  or description, or about 800 tokens with overlap for long text. A chunk's id is its row in the full-text table.
+  Embeddings (stage 2) go in a table of their own keyed by chunk id, with the model's name and dimension.
+  Who, where and what (person, repository, source, kind) are tags in the full-text row, so a search for one person's
+  threads is part of the full-text query, not a filter applied to its results; that is what keeps filtered search fast.
 - **links**: `from`, `to`, `rel`, `at`, `source`. Relations: `opened` (thread to pull), `closes` (pull to issue),
   `mentions`, `fixes`, `reverts`, `builds_on`, `touches` (a later pull changes files of an earlier one soon after it
   merged). This is where outcomes come from.
@@ -126,7 +128,10 @@ channel that may use that repository, the same rule that already decides where S
 
 ## Order of work
 
-1. **People and the store.** Record the Slack user id; create `index.sqlite` with documents, chunks, links, people and
+Step 1 is built: `src/history.ts`, with `npm run bench:history` for the targets above (100,000 chunks: about 8,000
+ingested a second, search at the 95th percentile 14 ms, with a person and a repository 3 ms).
+
+1. **People and the store** (done). Record the Slack user id; create `index.sqlite` with documents, chunks, links, people and
    cursors; `put`, `search`, `read`, `forget`; backfill from `thread_text`. Tests, and the benchmark.
    *Done when:* `search_threads`' behaviour is reproduced by the new interface and the benchmark meets its targets.
 2. **Sources and the crawler.** The `Source` type, the crawler loop with cursors and backoff, the Slack source (live and

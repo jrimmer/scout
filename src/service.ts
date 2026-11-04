@@ -296,7 +296,7 @@ export async function startService(options: ServiceOptions) {
 		agent: scout.workAgent,
 		context,
 		channelOffer: (user) => slack.channelOffer(user),
-		search: scout.search,
+		history: scout.history,
 		repoFor: scout.repoFor,
 		approve: (conversationId, user) => scout.approvals.grant(conversationId, user),
 		reactionsOn: () => capabilities.on("reactions"),
@@ -1185,7 +1185,7 @@ export async function startService(options: ServiceOptions) {
 				return {
 					...(link === undefined ? {} : { link }),
 					channel: await channelOf(t.conversationId),
-					about: scout.search.first(t.conversationId)?.text ?? "",
+					about: scout.history.first(t.conversationId)?.text ?? "",
 					state,
 					approval: scout.approvals.waiting(t.conversationId),
 				};
@@ -1214,7 +1214,7 @@ export async function startService(options: ServiceOptions) {
 		trackedOnce.add(conversationId);
 		const full: WorkRow = first
 			? {
-					request: scout.search.first(conversationId)?.text ?? "",
+					request: scout.history.first(conversationId)?.text ?? "",
 					channel: thread.channel,
 					...(thread.startedBy.startsWith("U") ? { askedBy: thread.startedBy } : {}),
 					...(await linkOf(conversationId).then((link) => (link === undefined ? {} : { thread: link }))),
@@ -1422,7 +1422,7 @@ export async function startService(options: ServiceOptions) {
 		if (retentionDays !== undefined) {
 			work.push(
 				health.watch("retention", "deleting old thread files failed", () =>
-					applyRetention({ days: retentionDays, threads, workspaces, approaches: scout.approaches, search: scout.search, memory, audit }),
+					applyRetention({ days: retentionDays, threads, workspaces, approaches: scout.approaches, history: scout.history, memory, audit }),
 				),
 			);
 		}

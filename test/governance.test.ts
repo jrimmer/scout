@@ -411,7 +411,7 @@ describe("retention", () => {
 			threads,
 			workspaces: { remove: async (id: number) => void removed.push(id) },
 			approaches: { forThread: (id: number) => (id === 1 ? [{ childId: 7 }, { childId: 8 }] as Approach[] : []) },
-			search: { forget: (key: string) => void forgotten.push(key) },
+			history: { forget: (key: string) => void forgotten.push(key) },
 			memory: { purge: () => 3 },
 			audit,
 			now,
@@ -435,7 +435,7 @@ describe("retention", () => {
 			days: 30,
 			threads,
 			workspaces: { remove: async () => {} },
-			search: { forget: () => {} },
+			history: { forget: () => {} },
 			memory: { purge: () => 0 },
 		};
 		assert.equal((await applyRetention({ ...options, now })).threads, 1);
@@ -461,7 +461,7 @@ describe("retention", () => {
 					removed.push(id);
 				},
 			},
-			search: { forget: () => {} },
+			history: { forget: () => {} },
 			memory: { purge: () => 0 },
 			now,
 		};

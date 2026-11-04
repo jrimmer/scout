@@ -11,7 +11,7 @@ import { ThreadDoc } from "../src/docs.ts";
 import { Bridge, DECLINE_PRIVATE, type IncomingMessage } from "../src/bridge.ts";
 import { loadProfile, profileExtension } from "../src/profile.ts";
 import { Approvals } from "../src/mcp.ts";
-import { ThreadSearch } from "../src/search.ts";
+import { History } from "../src/history.ts";
 import type { ChatMessage, ChatSurface } from "../src/render.ts";
 import { threadKey, Threads } from "../src/threads.ts";
 import { tempDir, until } from "./helpers.ts";
@@ -42,7 +42,7 @@ describe("bridge", () => {
 	let surface: FakeSurface;
 	let bridge: Bridge;
 	let faux: ReturnType<typeof fauxProvider>;
-	let search: ThreadSearch;
+	let search: History;
 	let approved: string[];
 	/** Whether the next run's answer asks for approval, as mcp.ts would say. */
 	let asking: boolean;
@@ -90,7 +90,7 @@ describe("bridge", () => {
 		harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
 		threads = new Threads(":memory:");
 		surface = new FakeSurface();
-		search = new ThreadSearch(":memory:");
+		search = new History(":memory:");
 		bridge = new Bridge({
 			harness,
 			threads,
@@ -99,7 +99,7 @@ describe("bridge", () => {
 			nameOf: async (user) => (user === "UANN" ? "ann" : "bob"),
 			agent: { model: { provider: "faux", modelId: "faux-model" } },
 			context,
-			search,
+			history: search,
 			// As if a change were waiting: Approvals.grant says whether one is (mcp.test.ts).
 			approve: (conversationId, user) => approved.push(`${conversationId} ${user}`) > 0,
 			// As mcp.ts would record it: the run that's ending asked for approval.
