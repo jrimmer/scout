@@ -87,6 +87,8 @@ answer about their conversation, not about every step the agent took.
 
 ## Suggested order
 
+How it is built, stage by stage: [session-index.md](session-index.md).
+
 1. A tool that reads whole threads by person, repository and date, capped and redacted.
 2. An outcome kept per thread, from the pull request and what followed it.
 3. Profile guidance for "how does X work" questions: quote, describe, don't judge.
