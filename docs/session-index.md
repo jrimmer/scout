@@ -158,12 +158,16 @@ ingested a second, search at the 95th percentile 14 ms, with a person and a repo
    docs.
    *Done when:* "how does <person> work?" is answered from their threads on vm1 (not yet tried there: this branch isn't
    deployed), and `admin` mode refuses a non-admin (test/history-tools.test.ts).
-5. **The embeddings gate.** The eval set, the embedding client, hybrid retrieval behind a setting; ship it or don't, by
+5. **The embeddings gate** (harness built: `npm run eval:retrieval`, `test/retrieval-eval.ts`; nothing in `src/`). The eval set, the embedding client, hybrid retrieval behind a setting; ship it or don't, by
    the gate.
 
 ## Open questions
 
-- Which embedding model on LunaRoute, and does the gateway serve `/embeddings` the standard way (unverified).
-- The private repository rule: built as "the repositories this thread may read code from" (the code search rule). Is that right?
+- Embeddings, checked 2026-11-04 against the gateway (llm.lacy.casa/v1, from CT164, no key): it serves `/v1/embeddings` the OpenAI way, and of its 20 models one is an embedding model, `local-embed//opt/llama-embed/nomic-embed-text.Q8.gguf`, 768 dimensions. It embeds about 3 chunks a second (137 chunks took 39 s), so a 100,000-chunk backfill would take most of a day: embedding has to be a slow background job, newest first, and a query can only use the chunks done so far. A question takes about 70 ms to embed and scan.
+- ~~The private repository rule~~ Settled (Jason, 2026-11-04): private repository content only appears where the repository may be used. Built as "the repositories this thread may read code from" (the code search rule), which is the person asking, not just the channel.
 - How much of a `tool` document to keep: names and clipped arguments and results, or only the names.
 - The crawl interval per source (start at five minutes for the code host).
+
+## The gate, as it stands
+
+`npm run eval:retrieval -- --db <copy of scout.sqlite> --questions questions.json` embeds a copy's chunks, and for each question compares recall at 5 for words, meaning and the two fused. `--mine` lists each thread's first words, to write questions from. It runs, and on four invented questions over the vm1 copy words found all four and fusion changed nothing: that is a check of the harness and no evidence either way. The real gate needs at least 50 questions with the threads that answer them, written by people who asked or would ask them. Scout's own threads so far are mostly tests and alerts, so there are not yet enough real ones to write from; the set grows as people use it. Until then hybrid search stays unbuilt.
