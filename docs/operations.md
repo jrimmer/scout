@@ -409,7 +409,8 @@ repository's recent work looks like. It's the learning from each other that publ
 
 - `search_history`: earlier threads, and pull requests, reviews and issues, by words, narrowed by person, repository,
   source (`slack` or `forge`), kind or how many days back. A pull request in a repository the thread may not read
-  (the same rule as code search, above) never comes back.
+  (the same rule as code search, above) never comes back, nor does a thread in a channel bound to a repository the
+  thread may not read, nor what Scout ran in it: they look the same as nothing there.
 - `read_history`: a thread, pull request or issue whole, or a person's most recent threads, clipped to a budget in
   the middle (the request and what came of it stay). It says what it read and how many.
 - `repo_activity`: threads in the repository's channels, pull requests opened, merged and closed, how many merged
@@ -421,10 +422,12 @@ describe patterns rather than rank anyone. `SCOUT_HISTORY_ASK` says who may ask:
 - `public` (the default): anyone who can talk to Scout.
 - `admin`: only the admins group in the roles file (the groups allowed to approve changes to everything) may ask about a
   person's threads, read threads whole, or get a repository report. Plain search for earlier threads by topic stays open,
-  as it always was. A thread Scout started itself has no one asking, so it gets the refusal too.
+  as it always was. A thread Scout started itself has no one asking, so it gets the refusal too. Who is asking is the
+  person Scout last took work from in that thread, so an admin speaking in the same thread while a run is going changes
+  the answer for that run.
 
 Pull requests and issues come from the repositories in the repos file, crawled every five minutes (180 days back on the first
-pass), and a code host login is joined to its Slack user by the same lookup that decides who may ask for work. If the
+pass, or nearer when a repository has more changes than one pass can read), and a code host login is joined to its Slack user by the same lookup that decides who may ask for work. If the
 crawl fails, the dashboard says so, and the other sources carry on. Retention removes a quiet thread's words from the index,
 as before; pull requests and issues are public records of the code host and stay.
 

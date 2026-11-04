@@ -1374,6 +1374,9 @@ export async function startService(options: ServiceOptions) {
 		],
 	});
 
+	let linkedPeople = -1;
+	let linkedAt = 0;
+
 	/** Housekeeping every few minutes; also soon after a start, so a restart doesn't hold up reviews and retries. */
 	const housekeeping = async (): Promise<void> => {
 		// Draining for a restart: the next process does it, rather than this one starting what it can't finish.
@@ -1463,7 +1466,13 @@ export async function startService(options: ServiceOptions) {
 		}
 		work.push(
 			health.watch("history", "indexing for search failed", async () => {
-				await linkLogins(scout.history, scout.loginOf);
+				// Looking each person's login up can reach the directory: when someone new has appeared, or hourly.
+				const people = scout.history.everyone().length;
+				if (people !== linkedPeople || clock() - linkedAt > 60 * MINUTE) {
+					await linkLogins(scout.history, scout.loginOf);
+					linkedPeople = people;
+					linkedAt = clock();
+				}
 				// The crawler keeps going past a source that fails and says so once; the dashboard shows it for as long as it lasts.
 				for (const status of await crawler.runOnce()) {
 					if (status.error === undefined) health.ok(`history:${status.source}`);

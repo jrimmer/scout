@@ -257,7 +257,7 @@ export class History {
 	}
 
 	#transaction<T>(work: () => T): T {
-		this.#db.exec("BEGIN");
+		this.#db.exec("BEGIN IMMEDIATE");
 		try {
 			const result = work();
 			this.#db.exec("COMMIT");
@@ -278,6 +278,11 @@ export class History {
 	commit(source: string, scope: string, page: { docs: Doc[]; links?: Link[]; cursor: string }, now = Date.now()): number {
 		return this.#transaction(() => {
 			let written = 0;
+			// A crawl reads whole conversations, so what the migration kept of the same threads is now there properly.
+			for (const thread of new Set(page.docs.flatMap((d) => (d.source === "slack" && d.thread !== undefined && !d.id.includes(":earlier-") ? [d.thread] : [])))) {
+				this.#dropText(`doc IN (SELECT id FROM history_docs WHERE thread = ? AND id LIKE 'slack:message:%:earlier-%')`, thread);
+				this.#db.prepare("DELETE FROM history_docs WHERE thread = ? AND id LIKE 'slack:message:%:earlier-%'").run(thread);
+			}
 			for (const doc of page.docs) if ((doc.text.trim() !== "" || (doc.title ?? "").trim() !== "") && this.#store(doc, now)) written++;
 			for (const link of page.links ?? []) this.link(link, now);
 			this.setCursor(source, page.cursor, scope, now);
@@ -294,8 +299,10 @@ export class History {
 		const text = redact(doc.text);
 		const title = redact(doc.title ?? "");
 		const facts = doc.meta === undefined ? "{}" : JSON.stringify(doc.meta);
-		const hashed = createHash("sha256").update(title).update("\0").update(text);
-		const hash = (facts === "{}" ? hashed : hashed.update("\0").update(facts)).digest("hex");
+		// Everything a document says about itself, so a write that knew more (a channel, an author) replaces one that knew less.
+		const hash = createHash("sha256")
+			.update([title, text, facts, doc.channel ?? "", doc.author ?? "", doc.authorName ?? "", doc.repo ?? "", doc.parent ?? "", doc.url ?? "", String(doc.at ?? "")].join("\0"))
+			.digest("hex");
 		const current = this.#db.prepare("SELECT hash FROM history_docs WHERE id = ?").get(doc.id) as { hash: string } | undefined;
 		if (current?.hash === hash) return false;
 		if (current !== undefined) this.#dropText(`doc = ?`, doc.id);
@@ -459,7 +466,7 @@ export class History {
 			.all(threadRef(thread)) as { id: string; url: string; title: string; meta: string }[];
 		const by = this.#db.prepare(
 			`SELECT l.from_id FROM history_links l JOIN history_docs f ON f.id = l.from_id
-			 WHERE l.to_id = ? AND l.rel = ? AND f.kind = 'pull' AND f.id <> l.to_id ORDER BY f.at LIMIT 1`,
+			 WHERE l.to_id = ? AND l.rel = ? AND f.kind = 'pull' AND f.id <> l.to_id AND json_extract(f.meta, '$.state') = 'merged' ORDER BY f.at LIMIT 1`,
 		);
 		const builtOn = this.#db.prepare(`SELECT COUNT(DISTINCT from_id) AS n FROM history_links WHERE to_id = ? AND rel = 'builds_on'`);
 		const outcomes = pulls.map((row): PullOutcome => {
@@ -495,7 +502,7 @@ export class History {
 			)
 			.all(key, key, key) as Record<string, unknown>[];
 		if (rows.length === 0) return undefined;
-		const PER_ENTRY = 1200;
+		const PER_ENTRY = Math.max(200, Math.min(1200, Math.floor(options.budget / 4)));
 		const all = rows.map((r) => ({
 			at: Number(r.at),
 			speaker: String(r.author_name),
@@ -627,6 +634,7 @@ export class History {
 			const ids = "(SELECT id FROM history_docs WHERE thread = ?)";
 			this.#dropText(`doc IN ${ids}`, thread);
 			this.#db.prepare(`DELETE FROM history_links WHERE from_id IN ${ids} OR to_id IN ${ids}`).run(thread, thread);
+			this.#db.prepare("DELETE FROM history_links WHERE from_id = ?").run(threadRef(thread));
 			this.#db.prepare("DELETE FROM history_docs WHERE thread = ?").run(thread);
 		});
 	}

@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chunks, History } from "../src/history.ts";
+import { chunks, History, threadRef } from "../src/history.ts";
 
 let n = 0;
 const put = (h: History, thread: string, who: string, text: string, extra: Partial<Parameters<History["put"]>[0]> = {}) =>
@@ -125,5 +125,34 @@ describe("history migration", () => {
 		assert.equal(again.stats()[0]?.documents, 2);
 		assert.equal(new DatabaseSync(path).prepare("SELECT 1 FROM sqlite_master WHERE name = 'thread_text'").get(), undefined, "the old table is gone");
 		again.close();
+	});
+
+	it("replaces what the migration kept of a thread when a crawl reads it, instead of doubling it", () => {
+		const path = ":memory:";
+		const h = new History(path);
+		// What the migration leaves: a message under an "earlier" id.
+		h.put({ id: "slack:message:C1:1:earlier-7", source: "slack", kind: "message", thread: "C1:1", conversationId: 1, channel: "dev", authorName: "Mary", text: "deploy the widget" });
+		h.commit("slack", "", { docs: [{ id: "slack:message:C1:1:1.1", source: "slack", kind: "message", thread: "C1:1", conversationId: 1, channel: "dev", author: "U0MARY001", authorName: "Mary", text: "deploy the widget" }], cursor: "1" });
+		assert.equal(h.read("C1:1", { budget: 5000 })?.entries.length, 1);
+		assert.equal(h.search("widget").length, 1);
+		assert.equal(h.stats()[0]?.documents, 1);
+	});
+
+	it("takes a thread's links with it when retention clears it", () => {
+		const h = new History(":memory:");
+		h.put({ id: "slack:message:C1:1:1", source: "slack", kind: "message", thread: "C1:1", conversationId: 1, channel: "dev", authorName: "Mary", text: "make a change" });
+		h.put({ id: "forge:item:acme/app#1", source: "forge", kind: "pull", repo: "acme/app", title: "A change", text: "", meta: { state: "open" } });
+		h.link({ from: threadRef("C1:1"), to: "forge:item:acme/app#1", rel: "opened", source: "forge" });
+		assert.equal(h.outcome("C1:1").pulls.length, 1);
+		h.forget("C1:1");
+		assert.equal(h.outcome("C1:1").verdict, "none");
+	});
+
+	it("fills in a channel or author a first write didn't know", () => {
+		const h = new History(":memory:");
+		const doc = { id: "slack:message:C1:1:1", source: "slack", kind: "message", thread: "C1:1", conversationId: 1, authorName: "Scout", author: "scout", text: "an answer" };
+		h.put({ ...doc, channel: "" });
+		h.put({ ...doc, channel: "dev" });
+		assert.equal(h.search({ text: "answer", channels: ["dev"] }).length, 1);
 	});
 });

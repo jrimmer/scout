@@ -174,6 +174,11 @@ export class Threads {
 		this.#db.prepare("UPDATE threads SET purged_at = ? WHERE key = ?").run(now, key);
 	}
 
+	/** Whether retention has cleared this thread (and nothing has been said in it since). */
+	isPurged(key: string): boolean {
+		return (this.#db.prepare("SELECT purged_at FROM threads WHERE key = ?").get(key) as { purged_at: number | null } | undefined)?.purged_at != null;
+	}
+
 	asked(key: string, user: string): void {
 		this.#db.prepare("UPDATE threads SET last_asker = ? WHERE key = ?").run(user, key);
 	}

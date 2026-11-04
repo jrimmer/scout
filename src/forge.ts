@@ -39,6 +39,9 @@ export type PullStatus = { open: boolean; merged: boolean; mergeable?: boolean; 
 export type OpenPull = { number: number; title: string; url: string; author: string; draft: boolean; createdAt: number; reviewers: string[]; teams: string[] };
 
 /** An issue or pull request the host says changed, as a list of them shows it. */
+/** More changes than can be read in one go; a narrower window reads them. */
+export class TooManyChanges extends Error {}
+
 export type Change = Issue & { updatedAt: number; merged: boolean; mergedAt?: number; closedAt?: number };
 
 /** An unread notification: which issue or pull request something happened on. */
@@ -356,7 +359,7 @@ class RestForge implements Forge {
 		const size = 50;
 		const all: Change[] = [];
 		for (let page = 1; ; page++) {
-			if (page > MOST_PAGES) throw new Error(`${slug} has more than ${MOST_PAGES * size} issues and pull requests changed since ${new Date(since).toISOString()}`);
+			if (page > MOST_PAGES) throw new TooManyChanges(`${slug} has more than ${MOST_PAGES * size} issues and pull requests changed since ${new Date(since).toISOString()}`);
 			const items = (await this.#api("GET", `/repos/${slug}/issues?state=all&since=${encodeURIComponent(new Date(since).toISOString())}&limit=${size}&per_page=${size}&page=${page}`)) as ApiListed[];
 			for (const i of items) {
 				const mergedAt = i.pull_request?.merged_at == null ? undefined : Date.parse(i.pull_request.merged_at);

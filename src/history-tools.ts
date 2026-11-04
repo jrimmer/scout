@@ -58,11 +58,19 @@ export function historyExtension(access: HistoryAccess) {
 		return mayRead ? known : { say: say(`I can't read ${known.name} from this thread.`) };
 	};
 	const since = (days: number | undefined, fallback?: number) => (days === undefined ? fallback : now() - Math.min(Math.max(days, 0), 3650) * DAY);
-	/** Hits from a repository this conversation may not read are left out. */
-	const visible = async (hits: Hit[], conversationId: number): Promise<Hit[]> => {
-		if (!hits.some((h) => h.repo !== "")) return hits;
+	/**
+	 * What this conversation may read: a code host document if it may read its repository, and a Slack thread if it may
+	 * read every repository its channel is bound to (what Scout ran there, and the words around it, can quote private code).
+	 */
+	const reader = async (conversationId: number) => {
 		const slugs = new Set((await access.readable(conversationId)).map((r) => r.slug.toLowerCase()));
-		return hits.filter((h) => h.repo === "" || slugs.has(h.repo.toLowerCase()));
+		const bound = access.repos();
+		return (repo: string, channel: string): boolean =>
+			repo !== "" ? slugs.has(repo.toLowerCase()) : bound.filter((r) => channel !== "" && r.channels.includes(channel)).every((r) => slugs.has(r.slug.toLowerCase()));
+	};
+	const visible = async (hits: Hit[], conversationId: number): Promise<Hit[]> => {
+		const may = await reader(conversationId);
+		return hits.filter((h) => may(h.repo, h.channelName));
 	};
 	const where = async (key: string, url: string): Promise<string> => {
 		const thread = threads.get(key);
@@ -160,7 +168,11 @@ export function historyExtension(access: HistoryAccess) {
 					repo = named;
 				}
 				const sinceAt = since(args.since_days);
-				const all = history.threads({ person: who.id, ...(repo === undefined ? {} : { repo: repo.slug, channels: repo.channels }), ...(sinceAt === undefined ? {} : { since: sinceAt }), limit: 50 });
+				const may = await reader(api.conversationId);
+				const all = history
+					.threads({ person: who.id, ...(repo === undefined ? {} : { repo: repo.slug, channels: repo.channels }), ...(sinceAt === undefined ? {} : { since: sinceAt }), limit: 200 })
+					.filter((t) => may(t.repo, t.channel))
+					.slice(0, 50);
 				const wanted = Math.min(Math.max(args.limit ?? 3, 1), 8);
 				keys = all.slice(0, wanted).map((t) => t.key);
 				heading = `Read the ${keys.length} most recent of ${all.length}${all.length === 50 ? "+" : ""} threads ${who.name} took part in${sinceAt === undefined ? "" : ` since ${day(sinceAt)}`}${repo === undefined ? "" : ` in ${args.repo}`}.\n\n`;
@@ -168,19 +180,13 @@ export function historyExtension(access: HistoryAccess) {
 				return say("Give me an id from search_history, or a person's name.");
 			}
 			if (keys.length === 0) return say("Nothing earlier matches.");
-			const slugs = new Set((await access.readable(api.conversationId)).map((r) => r.slug.toLowerCase()));
+			const may = await reader(api.conversationId);
 			const out: string[] = [];
 			const each = Math.floor(budget / keys.length);
 			for (const key of keys) {
 				const t = history.read(key, { budget: each });
-				if (t === undefined) {
-					out.push(`(${key}: nothing there)`);
-					continue;
-				}
-				if (t.repo !== "" && !slugs.has(t.repo.toLowerCase())) {
-					out.push(`(${key}: I can't read ${t.repo} from this thread)`);
-					continue;
-				}
+				// Not there and not readable look the same, so a guessed id tells nothing.
+				if (t === undefined || !may(t.repo, t.channel)) continue;
 				const url = await where(key, t.url);
 				out.push(
 					`## ${t.repo === "" ? `#${t.channel}` : t.repo} · ${day(t.at)}${url === "" ? "" : ` · ${url}`}\n` +
@@ -188,7 +194,7 @@ export function historyExtension(access: HistoryAccess) {
 						(t.omitted > 0 ? `\n(… ${t.omitted} entries in the middle left out to fit)` : ""),
 				);
 			}
-			return say(heading + out.join("\n\n"));
+			return say(out.length === 0 ? "Nothing earlier matches." : heading + out.join("\n\n"));
 		},
 	});
 

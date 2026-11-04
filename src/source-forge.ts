@@ -1,5 +1,5 @@
 import type { Page, Source } from "./crawler.ts";
-import type { Change, Forge, Remark } from "./forge.ts";
+import { type Change, type Forge, type Remark, TooManyChanges } from "./forge.ts";
 import { type Doc, type History, type Link, threadRef } from "./history.ts";
 
 /**
@@ -40,14 +40,29 @@ export function forgeSource(options: ForgeSourceOptions): Source {
 		async *crawl(slug, cursor, signal): AsyncGenerator<Page> {
 			const since = cursor === undefined ? now() - (options.backfillMs ?? BACKFILL) : Number(cursor);
 			const me = await options.forge.me();
-			const changes = await options.forge.changed(slug, since);
+			// More than the host lets one pass read (a big repository's first look): start nearer, and the older end goes unread.
+			let from = since;
+			let changes: Change[] | undefined;
+			for (let attempt = 0; changes === undefined; attempt++) {
+				try {
+					changes = await options.forge.changed(slug, from);
+				} catch (error) {
+					if (!(error instanceof TooManyChanges) || attempt >= 6) throw error;
+					from = from + (now() - from) / 2;
+					console.error(`${slug}: ${error.message}; reading from ${new Date(from).toISOString()} instead`);
+				}
+			}
 			for (let i = 0; i < changes.length; i += pageSize) {
 				if (signal.aborted) return;
 				const docs: Doc[] = [];
 				const links: Link[] = [];
 				const batch = changes.slice(i, i + pageSize);
 				for (const change of batch) {
-					const remarks = await options.forge.remarks(change);
+					// An item that has gone (deleted, or no longer ours to read) is kept without its comments, not retried for ever.
+					const remarks = await options.forge.remarks(change).catch((error: unknown) => {
+						if (error instanceof Error && /answered (404|410)\b/.test(error.message)) return [];
+						throw error;
+					});
 					const thread = change.pull ? options.threadOf(slug, change.number) : undefined;
 					const made = itemDocs(slug, change, remarks, me);
 					docs.push(...made.docs);
@@ -116,7 +131,11 @@ export function linksIn(slug: string, change: Pick<Change, "number" | "title" | 
 		for (const m of text.matchAll(pattern)) add(rel, m[1], m[2]!);
 	};
 	each(new RegExp(String.raw`\b(?:fix(?:es|ed)?|close[sd]?|resolve[sd]?)\s*:?\s+${REF}`, "gi"), "closes");
-	if (change.pull) each(new RegExp(String.raw`\brevert(?:s|ed|ing)?\b[^\n#]{0,120}?${REF}`, "gi"), "reverts");
+	if (change.pull) {
+		// "Revert "Add the cache (#40)"" in the title, or a line of the description that begins "Reverts #40".
+		if (/^revert\b/i.test(change.title)) for (const m of change.title.matchAll(new RegExp(REF, "g"))) add("reverts", m[1], m[2]!);
+		for (const m of change.body.matchAll(new RegExp(String.raw`(?:^|\n)[ \t>*-]*(?:this\s+)?reverts?\s+(?:(?:pull\s+request|pr)\s+)?${REF}`, "gi"))) add("reverts", m[1], m[2]!);
+	}
 	each(new RegExp(String.raw`\b(?:builds?\s+on|follow(?:s|ing)?[ -]?ups?\s+(?:to|of|on|for)|follows|stacked\s+on|depends\s+on|based\s+on)\s+${REF}`, "gi"), "builds_on");
 	const specific = new Set([...links.values()].map((l) => l.to));
 	let mentions = 0;

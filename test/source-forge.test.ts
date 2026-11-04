@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, describe, it } from "node:test";
 import { Crawler } from "../src/crawler.ts";
-import { forgeFor } from "../src/forge.ts";
+import { forgeFor, TooManyChanges } from "../src/forge.ts";
 import { History, threadRef } from "../src/history.ts";
 import { forgeSource, itemId, linkLogins, linksIn } from "../src/source-forge.ts";
 import { fakeCodeHost } from "./fake-codehost.ts";
@@ -23,6 +23,11 @@ describe("links in a description", () => {
 		assert.deepEqual(links("Fix", "Fixes #12, see also #12 and #13").sort(), ["closes acme/app#12", "mentions acme/app#13"]);
 	});
 
+	it("doesn't take other talk of reverting for a revert", () => {
+		assert.deepEqual(links("Fix revert flow (#40)", "Adds a revert button. Related to #40."), ["mentions acme/app#40"]);
+		assert.deepEqual(links("Undo button", "Reverts #12\nSee also #13").sort(), ["mentions acme/app#13", "reverts acme/app#12"]);
+	});
+
 	it("doesn't call an issue a revert", () => {
 		assert.deepEqual(links("Revert the redesign", "Reverts #4", false), ["mentions acme/app#4"]);
 	});
@@ -42,7 +47,7 @@ describe("the code host source", () => {
 		const history = new History(":memory:");
 		const opened = new Map<string, string>();
 		const source = forgeSource({ forge, repos: () => [SLUG], threadOf: (slug, n) => opened.get(`${slug}#${n}`), pageSize: 2, now: () => clock.time });
-		return { host, history, source, opened, clock, crawler: new Crawler({ history, sources: [source], now: () => clock.time }) };
+		return { host, forge, history, source, opened, clock, crawler: new Crawler({ history, sources: [source], now: () => clock.time }) };
 	}
 
 	it("indexes pull requests, issues, and what was said on them, as the people who said it", async () => {
@@ -123,6 +128,43 @@ describe("the code host source", () => {
 		assert.equal(verdict("C1:closed").verdict, "closed");
 		assert.equal(verdict("C1:nothing").verdict, "none");
 		assert.equal(history.search({ text: "cache", kind: "pull", limit: 5 }).length, 2, "the change and its revert");
+	});
+
+	it("doesn't count a revert or a fix that was never merged", async () => {
+		const { host, history, crawler, opened, clock } = await setup();
+		const done = host.pull(SLUG, { title: "Add the cache", head: "cache", author: "scout" });
+		host.merge(SLUG, done);
+		host.times(SLUG, done, { updatedAt: new Date(clock.time - 20 * DAY).toISOString(), mergedAt: new Date(clock.time - 20 * DAY).toISOString() });
+		host.pull(SLUG, { title: "Revert it", head: "revert", body: `Reverts #${done}`, author: "ann" });
+		opened.set(`${SLUG}#${done}`, "C1:cache");
+		await crawler.runOnce();
+		assert.equal(history.outcome("C1:cache", clock.time).verdict, "held", "an open pull request that says it reverts hasn't");
+	});
+
+	it("keeps an item whose comments have gone, and reads the rest", async () => {
+		const { host, history, crawler } = await setup();
+		host.issue(SLUG, { title: "Gone but kept", author: "ann" });
+		host.issue(SLUG, { title: "Fine", author: "ann" });
+		host.fail("GET", /\/issues\/1\/comments/, 404, 5);
+		const [status] = await crawler.runOnce();
+		assert.equal(status?.error, undefined);
+		assert.equal(history.search({ text: "fine" }).length, 1);
+		assert.equal(history.search({ text: "gone" }).length, 1);
+	});
+
+	it("starts nearer when a repository has more changes than one pass can read", async () => {
+		const { forge, history, clock } = await setup();
+		const asked: number[] = [];
+		const wrapped = { ...forge, me: async () => "scout", remarks: async () => [], changed: async (_slug: string, since: number) => {
+			asked.push(since);
+			if (asked.length < 3) throw new TooManyChanges("too many");
+			return [];
+		} } as unknown as typeof forge;
+		const source = forgeSource({ forge: wrapped, repos: () => [SLUG], threadOf: () => undefined, now: () => clock.time });
+		const crawler = new Crawler({ history, sources: [source], now: () => clock.time, log: () => {} });
+		const [status] = await crawler.runOnce();
+		assert.equal(status?.error, undefined);
+		assert.ok(asked[2]! > asked[1]! && asked[1]! > asked[0]!, "each try was nearer than the last");
 	});
 
 	it("keeps going with the other repositories when one can't be read", async () => {

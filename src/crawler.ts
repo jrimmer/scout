@@ -86,7 +86,7 @@ export class Crawler {
 				status.failures++;
 			}
 			const every = source.everyMs ?? this.#everyMs;
-			status.nextAt = this.#now() + Math.min(every * 2 ** Math.min(status.failures, 10), Math.max(every, LONGEST_WAIT));
+			status.nextAt = status.lastRun + Math.min(every * 2 ** Math.min(status.failures, 10), Math.max(every, LONGEST_WAIT));
 		}
 		return this.status();
 	}

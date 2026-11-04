@@ -75,7 +75,7 @@ export function threadDocs(thread: Pick<ThreadRow, "key" | "conversationId">, ch
 }
 
 export function slackSource(options: {
-	threads: Pick<Threads, "crawlable">;
+	threads: Pick<Threads, "crawlable" | "isPurged">;
 	/** A thread's channel and entries; undefined when its conversation is gone. */
 	read: (thread: ThreadRow) => Promise<{ channel: string; entries: readonly EntryRecord[] } | undefined>;
 	/** Threads per page (default 20). */
@@ -90,8 +90,13 @@ export function slackSource(options: {
 				const batch = rows.slice(i, i + size);
 				const docs: Doc[] = [];
 				for (const thread of batch) {
-					const read = await options.read(thread);
-					if (read !== undefined) docs.push(...threadDocs(thread, read.channel, read.entries));
+					// One conversation that won't read (a damaged one) mustn't hold up every thread after it.
+					const read = await options.read(thread).catch((error: unknown) => {
+						console.error(`indexing ${thread.key} for search: couldn't read its conversation:`, error);
+						return undefined;
+					});
+					// Retention may have cleared the thread while it was being read: leave it cleared.
+					if (read !== undefined && !options.threads.isPurged(thread.key)) docs.push(...threadDocs(thread, read.channel, read.entries));
 				}
 				yield { docs, cursor: String(batch[batch.length - 1]!.lastActivity) };
 			}

@@ -125,8 +125,32 @@ describe("read_history", () => {
 		assert.ok(t.entries.reduce((n, e) => n + e.text.length, 0) <= 2000 + 1200);
 	});
 
-	it("won't read a pull request in a repository the thread can't read", async () => {
-		assert.match(await setup().read({ id: "forge:item:acme/secret#3" }), /I can't read acme\/secret from this thread/);
+	it("answers the same for a pull request it can't show as for one that isn't there", async () => {
+		const t = setup();
+		assert.equal(await t.read({ id: "forge:item:acme/secret#3" }), await t.read({ id: "forge:item:acme/nothing#1" }));
+		assert.doesNotMatch(await t.read({ id: "forge:item:acme/secret#3" }), /secret/);
+	});
+
+	it("doesn't count or list what it can't show when reading a person's threads", async () => {
+		const t = setup();
+		t.history.put({ id: itemId("acme/secret", 4), source: "forge", kind: "pull", repo: "acme/secret", author: "forge:mjones", authorName: "mjones", at: NOW, title: "Private work", text: "A private change.", meta: { state: "open" } });
+		const text = await t.read({ person: "Mary Jones", limit: 3 });
+		assert.match(text, /Read the 3 most recent of 3 threads/, "the newest, private one neither counted nor used up a place");
+		assert.doesNotMatch(text, /secret|Private work/);
+	});
+});
+
+describe("threads in a channel bound to a repository", () => {
+	it("stay with those who may read the repository, including what Scout ran in them", async () => {
+		const t = setup();
+		t.history.put({ id: "slack:tool:C9:1:t1", source: "slack", kind: "tool", thread: "C9:1", conversationId: 9, channel: "secret-ops", author: "scout", authorName: "Scout", text: "cat keys.txt\n→ the rotation key is walnut" });
+		t.history.put({ id: "slack:message:C9:1:1", source: "slack", kind: "message", thread: "C9:1", conversationId: 9, channel: "secret-ops", author: BO, authorName: "Bo Smith", text: "Rotate the walnut key" });
+		assert.match(await t.search({ query: "walnut", kind: "tool" }), /Nothing earlier matches/);
+		assert.match(await t.search({ query: "walnut" }), /Nothing earlier matches/);
+		assert.equal(await t.read({ id: "C9:1" }), "Nothing earlier matches.");
+		const may = setup({ readable: ["app", "secret"] });
+		may.history.put({ id: "slack:message:C9:1:1", source: "slack", kind: "message", thread: "C9:1", conversationId: 9, channel: "secret-ops", author: BO, authorName: "Bo Smith", text: "Rotate the walnut key" });
+		assert.match(await may.search({ query: "walnut" }), /secret-ops/);
 	});
 });
 
