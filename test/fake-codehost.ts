@@ -123,6 +123,13 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 		return { state, total_count: all.length, sha, statuses: all.map((s) => ({ ...s, status: s.state })) };
 	};
 
+	/** A list as the hosts page it: `page` of `limit` (or `per_page`) items, 30 by default and 50 at most. */
+	const paged = <T>(list: T[], query: URLSearchParams): T[] => {
+		const size = Math.min(Number(query.get("limit") ?? query.get("per_page") ?? 30), 50);
+		const page = Number(query.get("page") ?? 1);
+		return list.slice((page - 1) * size, page * size);
+	};
+
 	type Answer = { status: number; body?: unknown };
 	const route = (method: string, path: string, query: URLSearchParams, body: Record<string, unknown>): Answer => {
 		const ok = (json: unknown, status = 200): Answer => ({ status, body: json });
@@ -205,7 +212,7 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 				it.updatedAt = now();
 				return ok(comment, 201);
 			}
-			return ok(it.comments);
+			return ok(paged(it.comments, query));
 		}
 		if (sub === "/comments" && m[1] === "pulls") return ok(it.lines.map(({ review, ...c }) => ({ ...c, pull_request_review_id: review })));
 		if (sub === "/reviews" && m[4] !== undefined) return ok(it.lines.filter((c) => c.review === Number(m[4])).map(({ review: _, ...c }) => c));
@@ -218,7 +225,7 @@ export async function fakeCodeHost(options: { kind?: Kind; me?: string } = {}) {
 			it.reviews.push(review);
 			return ok(review, 200);
 		}
-		if (sub === "/reviews") return ok(it.reviews);
+		if (sub === "/reviews") return ok(paged(it.reviews, query));
 		if (sub === "/requested_reviewers" && method === "POST" && it.pull !== undefined) {
 			it.pull.reviewers.push(...((body.reviewers ?? []) as string[]));
 			it.pull.teams.push(...((body.team_reviewers ?? []) as string[]));

@@ -11,6 +11,33 @@ A change to any of these that needs people to act is a major version. Everything
 
 ## Unreleased
 
+### Upgrading
+- **Take a copy of `scout.sqlite` first.** The first start moves Scout 1's thread search into the new index and drops
+  the old table, which can't be undone. (Litestream, if you run it, has the earlier state.)
+- **`search_threads` is now `search_history`.** Anything of yours that names the tool (a profile, a channel's
+  instructions) should say so. The shipped profile does.
+- **Who may ask about people and repositories** is `SCOUT_HISTORY_ASK`: `public` (the default; anyone) or `admin`. See
+  [operations](docs/operations.md#asking-about-earlier-work-people-and-repositories).
+- **Threads in a channel bound to a repository** now come back in search only for people who may use that repository,
+  with what Scout ran in them.
+
+### Added
+- **A session index.** What is said in Scout's threads and what happens on the code host (pull requests, issues, reviews
+  and their comments) go into one searchable store, kept current by a crawler every five minutes. A first crawl goes back
+  180 days. Retention still clears a quiet thread's words.
+- **`search_history`, `read_history` and `repo_activity`.** Scout can find earlier threads and pull requests, narrowed by
+  person, repository, source, kind and age; read whole threads and pull requests, or a person's recent threads, clipped
+  from the middle; and count what a repository's recent work looks like (threads, pull requests opened, merged and closed,
+  merged with or without a request for changes, and what became of Scout's own). It quotes and describes, and does not
+  rank people.
+- **What became of a change.** A thread's pull request is held, fixed (a later pull request says it fixes it), reverted,
+  closed or still open, from the links in later pull requests' descriptions (`Fixes #12`, `Reverts #40`, "builds on #8").
+- **A code host login is joined to its Slack user** by the lookup that already decides who may ask for work, so a
+  person's pull requests and their threads are found together.
+- **`npm run eval:retrieval`** measures whether search by meaning would find the right threads more often than words
+  alone. It ships nothing; embeddings are not part of Scout until they win on real questions.
+
+
 ## 1.1.0 (2026-11-04)
 
 Scout installs from one command, its workspaces can install packages from the usual registries, a stopped request says

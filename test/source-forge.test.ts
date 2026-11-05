@@ -141,6 +141,15 @@ describe("the code host source", () => {
 		assert.equal(history.outcome("C1:cache", clock.time).verdict, "held", "an open pull request that says it reverts hasn't");
 	});
 
+	it("reads every page of a busy pull request's comments", async () => {
+		const { host, history, crawler } = await setup();
+		const pr = host.pull(SLUG, { title: "A busy one", head: "busy", author: "ann" });
+		for (let i = 1; i <= 120; i++) host.comment(SLUG, pr, "bo", `remark number ${i} on the busy one`, false);
+		await crawler.runOnce();
+		assert.equal(history.stats().find((s) => s.source === "forge")?.documents, 121);
+		assert.equal(history.search({ text: "remark number 120", kind: "comment" }).length, 1, "the newest, past the first two pages");
+	});
+
 	it("keeps an item whose comments have gone, and reads the rest", async () => {
 		const { host, history, crawler } = await setup();
 		host.issue(SLUG, { title: "Gone but kept", author: "ann" });

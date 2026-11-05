@@ -58,7 +58,7 @@ export interface Forge {
 	/** Who last assigned the issue or pull request to `login`, from its history; undefined when it doesn't say. */
 	assigner(slug: string, number: number, login: string): Promise<string | undefined>;
 	/** Comments, and for a pull request its reviews and comments on lines, oldest first. */
-	remarks(issue: Issue): Promise<Remark[]>;
+	remarks(issue: Issue, options?: { allPages?: boolean }): Promise<Remark[]>;
 	/** React 👀 to a comment (`comment:<id>`), or to the issue itself, to say Scout has picked it up. */
 	acknowledge(slug: string, number: number, remarkId?: string): Promise<void>;
 	comment(slug: string, number: number, body: string): Promise<void>;
@@ -229,8 +229,22 @@ class RestForge implements Forge {
 		};
 	}
 
-	async remarks(issue: Issue): Promise<Remark[]> {
-		const comments = (await this.#api("GET", `/repos/${issue.slug}/issues/${issue.number}/comments?limit=50&per_page=50`)) as ApiComment[];
+	/** A list that may run to several pages, all of them (up to a limit that a runaway thread won't pass). */
+	async #paged<T>(path: string): Promise<T[]> {
+		const size = 50;
+		const all: T[] = [];
+		for (let page = 1; page <= 20; page++) {
+			const items = (await this.#api("GET", `${path}${path.includes("?") ? "&" : "?"}limit=${size}&per_page=${size}&page=${page}`)) as T[];
+			all.push(...items);
+			if (items.length < size) break;
+		}
+		return all;
+	}
+
+	async remarks(issue: Issue, options: { allPages?: boolean } = {}): Promise<Remark[]> {
+		const comments = (options.allPages === true
+			? await this.#paged<ApiComment>(`/repos/${issue.slug}/issues/${issue.number}/comments`)
+			: await this.#api("GET", `/repos/${issue.slug}/issues/${issue.number}/comments?limit=50&per_page=50`)) as ApiComment[];
 		const remarks: Remark[] = comments.map((c) => ({
 			id: `comment:${c.id}`,
 			author: c.user?.login ?? "",
@@ -239,7 +253,7 @@ class RestForge implements Forge {
 			...(c.html_url ? { url: c.html_url } : {}),
 		}));
 		if (issue.pull) {
-			const reviews = (await this.#api("GET", `/repos/${issue.slug}/pulls/${issue.number}/reviews`)) as ApiReview[];
+			const reviews = (options.allPages === true ? await this.#paged<ApiReview>(`/repos/${issue.slug}/pulls/${issue.number}/reviews`) : await this.#api("GET", `/repos/${issue.slug}/pulls/${issue.number}/reviews`)) as ApiReview[];
 			const verdicts = new Map<number, string>();
 			for (const r of reviews) {
 				if (r.submitted_at === undefined || r.state === "PENDING") continue;

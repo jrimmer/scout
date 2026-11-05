@@ -59,7 +59,7 @@ export function forgeSource(options: ForgeSourceOptions): Source {
 				const batch = changes.slice(i, i + pageSize);
 				for (const change of batch) {
 					// An item that has gone (deleted, or no longer ours to read) is kept without its comments, not retried for ever.
-					const remarks = await options.forge.remarks(change).catch((error: unknown) => {
+					const remarks = await options.forge.remarks(change, { allPages: true }).catch((error: unknown) => {
 						if (error instanceof Error && /answered (404|410)\b/.test(error.message)) return [];
 						throw error;
 					});
