@@ -11,7 +11,48 @@ A change to any of these that needs people to act is a major version. Everything
 
 ## Unreleased
 
+## 1.1.0 (2026-11-04)
+
+Scout installs from one command, its workspaces can install packages from the usual registries, a stopped request says
+so, and a review of the whole codebase is fixed: security first, then correctness and speed.
+
+### Upgrading from 1.0.1
+
+Nothing to paste into Slack and no new required settings (the Slack manifest is unchanged). Check these before or as you deploy:
+- **Public repositories' sandboxes can now reach package registries** (below). Set `registries` to `[]` on a repository
+  to keep it closed.
+- **The shipped profile's `system.md` says "workspace" where it said "sandbox".** If your profile is a copy, change the
+  wording if you want Scout to match.
+- **Settings are checked when Scout starts.** A typo now stops Scout with a plain message instead of quietly turning a
+  feature off. Whole numbers only: `SCOUT_RETENTION_DAYS` (at least 1; 0 used to purge threads that were working),
+  `SCOUT_PR_MAX_LINES` (1), `SCOUT_PR_CLOSE_DAYS` (1), `SCOUT_CLOSED_BRANCH_DAYS` (1), `SCOUT_PR_STALE_DAYS`,
+  `SCOUT_REVIEW_NUDGE_DAYS` and `SCOUT_THREAD_RECAP_DAYS` (0, which means off). A fractional value, or
+  `SCOUT_PR_CLOSE_DAYS=0`, used to be accepted and is now refused. Unset still means the default.
+- **`SCOUT_DASH_PASSWORD_HASH` has to look like `scrypt$<salt>$<hash>`.** Quote it in `.env`, since a bare `$` is eaten
+  by the shell; `npm run dash-password` prints a valid one.
+- **Scout won't push CI configuration.** A branch that adds or changes a pipeline file (`.github/workflows`,
+  `.forgejo/workflows`, `.gitea/workflows`, `.gitlab-ci.yml`, `.circleci`, `Jenkinsfile` and the like) is refused, with a
+  message that a person has to make that change. A pipeline runs on push, with the repository's secrets, before anyone
+  has looked at it.
+- **The benchmark's scores are compared over shared tasks,** so numbers on the Benchmark page will move once. Models
+  without a price in `SCOUT_PRICES_FILE` now say "no price set" where they used to read as free.
+
+### Security
+
+- **Scout can't push a pipeline that runs before review** (above). This was the one way work done in a sandbox with no
+  credentials could have reached the repository's secrets.
+- **File tools can't write outside a workspace through a dangling symlink.** A link committed to a repository that
+  pointed at a path that didn't exist yet was followed by the write.
+- **`<!channel>`, `<!here>`, `<!everyone>` and `<!subteam>` in what Scout posts are written as plain names.** Text from
+  a thread, a pull request comment or an alert could make Scout ping a whole channel.
+- **The credential scan knows more shapes:** npm, PyPI, Hugging Face, SendGrid, DigitalOcean, Twilio and Mailgun keys,
+  Slack and Discord webhook URLs and Azure storage keys. The loose "bearer token" pattern no longer matches prose.
+- **Bundles fetched from a sandbox are checked** (`transfer.fsckObjects`) before they reach the host's mirror.
+- **Alerts and model errors shown on the dashboard are redacted** like the monitor view's, and a wrong user name or a
+  flood of bad logins no longer takes the dashboard's one login slot. Failed logins are logged.
+
 ### Added
+
 - **`install.sh` and `npm run setup` walk through installing Scout.** `curl … | bash` installs what's missing (git, ssh,
   Node 24 checked against its published checksum, Docker if wanted), makes the `scout` user, fetches the newest release
   and starts the wizard. It tests each step as it goes: Slack's tokens, the code host token and SSH key, a real
@@ -32,8 +73,12 @@ A change to any of these that needs people to act is a major version. Everything
   (`SCOUT_BENCH_REPOS`), keeping each fix whose tests fail without it and pass with it, in a sandbox. A task's request
   is the problem as it might have been reported before the fix, written by Scout's model, never the commit message
   that says how it was fixed. Each night tries three new ones before the runs, so the pool grows as fixes merge.
+- **GitHub Actions results.** On GitHub, CI watching and link previews read check runs as well as commit statuses, so a
+  red build is seen and a passing one isn't "none" after 15 minutes. Forgejo is unchanged.
+- **Pull request polling reads every page,** and feedback for reflection keeps the newest comments, not the oldest.
 
 ### Changed
+
 - **A quiet thread's sandbox goes after an hour, and its work comes back with the next one.** Scout saves the thread's
   branch, unfinished edits and attachments on its host, deletes the sandbox, and starts a new one with them when the
   thread is next used. Before, sandboxes stayed suspended until the retention period, so a busy alert channel left
@@ -44,6 +89,7 @@ A change to any of these that needs people to act is a major version. Everything
   the Benchmark page says so. The page's note says where the tasks come from and now spans the page's full width.
 
 ### Fixed
+
 - **A run that was in flight when Scout restarted no longer stops it starting.** Resumed while Scout was still connecting
   to Slack, it reported itself to parts of Scout not set up yet and Scout died on start, again and again. The work list,
   the stalled-thread recaps and the code host inbox are now ready before the first run can reach them.
@@ -56,6 +102,61 @@ A change to any of these that needs people to act is a major version. Everything
   When the model takes many seconds to start answering, a run is long thinking with quick reads and edits between, so
   the reaction sat on 🧠 the whole run. Steps now show even when they were over in a moment, each for at least 3 s;
   thinking still waits 1.5 s, so quick turns between steps don't flicker.
+- **One bad request no longer blocks the queue.** A queued request that failed to start stayed first in line and stopped
+  everything behind it. It is dropped with a log line; a channel at its limit no longer holds up other channels; the
+  queue starts again after a restart and from housekeeping, not only when a run ends; and stopping a thread drops its
+  queued request.
+- **An answer Slack refuses still ends its run.** The thread no longer sits on "Working…" with its reactions left on and
+  the queue stuck: Scout sends the answer once more as plain text, and the "Noted for this channel" list is cut to fit
+  Slack's limit.
+- **The self-review no longer approves by default.** An empty or off-format review used to pass the gate; only APPROVE
+  does. A review of someone else's pull request no longer says "looks good" about a diff it cut short.
+- **Reflection only marks the threads it read.** Threads left out of a day's digest by its size limit used to count as
+  learned from, and never were.
+- **`forget` retires only the thread's own channel's notes.**
+- **A revived thread is purged again.** A thread that came back after retention deleted its files was never cleaned up
+  a second time. One sandbox that won't delete no longer stops the rest.
+- **Access checks that fail aren't remembered.** A code host blip locked someone out for 10 minutes while saying "try again
+  in a minute". A directory file that fails to re-read keeps its last good copy.
+- **An audit export survives a private key in a tool's arguments,** and `npm run audit` refuses a date it can't read
+  instead of printing nothing.
+- **Another thread's mirror refresh can't break a pull request being opened.** Scout pushes the reviewed commit itself,
+  not a ref the refresh could prune.
+- **The dashboard's sparklines no longer skew when something polls `/status.json`,** and a telemetry endpoint that
+  never answers no longer piles up requests.
+- **A sandbox that fails to open no longer leaks its connection,** and a file bigger than 512 MB in a sandbox is
+  refused instead of read into memory.
+- **Benchmark:**
+  - a manual or partial run no longer cancels the night;
+  - a model that errors on a context overflow or a bad request is scored on it, and only 5xx, 429 and timeouts are
+    blamed on the provider;
+  - a run stopped at its time limit isn't also counted as breaking the repository's tests;
+  - the rubric judge is always the configured model, and eval runs have time limits and report unscored runs apart.
+- **Alerts that fail to raise are tried again,** and a storm of them becomes one summary message after five threads.
+- **Stopping a request that is still waiting says so.** "@Scout stop" on a request in the queue clears its hourglass and
+  edits the waiting message to say who stopped it, instead of leaving it waiting until it was answered. A bare "stop"
+  without the mention is still only a comment to the thread, since people say it to each other; stopping takes
+  "@Scout stop" or a stop-sign reaction.
+- **Idle sandboxes no longer hold the sandbox host's capacity.** A finished run's sandbox sleeps within a minute, and
+  sandboxes no thread owns (left by a crash or a deleted thread) are parked after an hour, so a busy hour of requests
+  doesn't leave the next one waiting behind sandboxes nobody is using.
+
+### Performance
+
+- Concurrent posts share one Slack directory listing, and a failure isn't retried for five minutes.
+- Mirror fetches are shared and skipped right after another, instead of one per caller.
+- A quiet thread's live view and event stream are released after three hours and come back on demand.
+- Benchmark scores show how many tasks they rest on.
+
+### Not yet verified
+
+Tested with the suite and the Docker tests in CI and by use on one team's Slack,
+code host and sandbox host. These have not been run for real:
+- the setup wizard's happy path from a bare machine, and its Docker, Fedora and Arch branches (Debian and Ubuntu were
+  run in a clean container);
+- a live network update on a running spoond microVM (the egress list change is tested against a fake spoond);
+- the evals on this exact build: they passed 3 of 3 on the production model on 2026-11-02, before the installer and
+  the start-up fix, and haven't been run again since.
 
 ## 1.0.1 (2026-10-22)
 
