@@ -1,4 +1,4 @@
-import { Type } from "@earendil-works/pi-ai";
+import { num, obj, opt, str } from "@earendil-works/pi-schema";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Hit, History } from "./history.ts";
 import type { ThreadRow, Threads } from "./threads.ts";
@@ -84,15 +84,15 @@ export function historyExtension(access: HistoryAccess) {
 			"asked, what was found or decided, and what came of it. Use it when something may have come up before, and " +
 			"link what you find. Narrow it by person, repository, source (slack or forge), kind (message, pull, issue, " +
 			"review, comment; tool is what Scout ran) or how many days back. Each result gives an id for read_history.",
-		parameters: Type.Object({
-			query: Type.String({ description: "Words to look for" }),
-			person: Type.Optional(Type.String({ description: "Only what this person said or wrote (a name)" })),
-			repo: Type.Optional(Type.String({ description: "Only this repository's pull requests and issues, and the threads in its channels" })),
-			source: Type.Optional(Type.String({ description: "slack or forge" })),
-			kind: Type.Optional(Type.String({ description: "message, pull, issue, review, comment or tool" })),
-			since_days: Type.Optional(Type.Number({ description: "Only the last this many days" })),
-			limit: Type.Optional(Type.Number({ description: "At most this many results (default 5, at most 20)" })),
-		}),
+		parameters: obj({
+			query: str({ description: "Words to look for" }),
+			person: opt(str({ description: "Only what this person said or wrote (a name)" })),
+			repo: opt(str({ description: "Only this repository's pull requests and issues, and the threads in its channels" })),
+			source: opt(str({ description: "slack or forge" })),
+			kind: opt(str({ description: "message, pull, issue, review, comment or tool" })),
+			since_days: opt(num({ description: "Only the last this many days" })),
+			limit: opt(num({ description: "At most this many results (default 5, at most 20)" })),
+		}, { open: true }),
 		replay: "safe",
 		execute: async (args, api) => {
 			const current = threads.byConversation(api.conversationId);
@@ -141,14 +141,14 @@ export function historyExtension(access: HistoryAccess) {
 			"For questions like how someone works or how a feature was built. It is clipped to a budget and says what it " +
 			"left out. When you describe a person's way of working: quote them, say which threads you read and how " +
 			"many, and describe patterns; never rank or score people.",
-		parameters: Type.Object({
-			id: Type.Optional(Type.String({ description: "A result's id" })),
-			person: Type.Optional(Type.String({ description: "A name; reads their most recent threads" })),
-			repo: Type.Optional(Type.String({ description: "With person: only in this repository" })),
-			since_days: Type.Optional(Type.Number({ description: "With person: only the last this many days" })),
-			limit: Type.Optional(Type.Number({ description: "With person: how many threads (default 3, at most 8)" })),
-			budget: Type.Optional(Type.Number({ description: "Characters to read in all (default 12000, at most 30000)" })),
-		}),
+		parameters: obj({
+			id: opt(str({ description: "A result's id" })),
+			person: opt(str({ description: "A name; reads their most recent threads" })),
+			repo: opt(str({ description: "With person: only in this repository" })),
+			since_days: opt(num({ description: "With person: only the last this many days" })),
+			limit: opt(num({ description: "With person: how many threads (default 3, at most 8)" })),
+			budget: opt(num({ description: "Characters to read in all (default 12000, at most 30000)" })),
+		}, { open: true }),
 		replay: "safe",
 		execute: async (args, api) => {
 			if (!(await mayAnalyze(api.conversationId))) return refusal;
@@ -205,10 +205,10 @@ export function historyExtension(access: HistoryAccess) {
 			"how many merged without a request for changes and how many after, reviews asking for changes, and what came " +
 			"of the pull requests Scout opened (held, fixed, reverted…). Counts, to describe and to ask the next question " +
 			"from; they don't say who is good or bad. Pull requests are counted by when they were opened.",
-		parameters: Type.Object({
-			repo: Type.String({ description: "The repository's name" }),
-			since_days: Type.Optional(Type.Number({ description: "How many days back (default 30, at most 365)" })),
-		}),
+		parameters: obj({
+			repo: str({ description: "The repository's name" }),
+			since_days: opt(num({ description: "How many days back (default 30, at most 365)" })),
+		}, { open: true }),
 		replay: "safe",
 		execute: async (args, api) => {
 			if (!(await mayAnalyze(api.conversationId))) return refusal;

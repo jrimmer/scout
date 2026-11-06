@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Type } from "@earendil-works/pi-ai";
+import { bool, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { type ConversationId, defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Audit } from "./audit.ts";
 import { ThreadDoc } from "./docs.ts";
@@ -210,11 +210,11 @@ export function schedulesExtension(schedules: Schedules, askerOf: (conversationI
 			"Set up recurring work in this channel, when someone asks for it ('every Monday at 9, check for dependency " +
 			"updates'). Each run starts a new thread here with the task as its request. Schedules are public: anyone in the " +
 			"channel can list, change or remove them. Say back when it will run, in words, so people can check you read it right.",
-		parameters: Type.Object({
-			cron: Type.String({ description: "Five-field cron in the host's local time: minute hour day-of-month month day-of-week, e.g. '0 9 * * 1'" }),
-			when: Type.String({ description: "The same time in words, e.g. 'every Monday at 9:00'" }),
-			task: Type.String({ description: "What to do each time, written as a request to yourself, complete enough to act on alone" }),
-		}),
+		parameters: obj({
+			cron: str({ description: "Five-field cron in the host's local time: minute hour day-of-month month day-of-week, e.g. '0 9 * * 1'" }),
+			when: str({ description: "The same time in words, e.g. 'every Monday at 9:00'" }),
+			task: str({ description: "What to do each time, written as a request to yourself, complete enough to act on alone" }),
+		}, { open: true }),
 		execute: async (args, api, context) => {
 			const channel = await channelOf(api as never, api.conversationId, context);
 			if (channel === "") throw new Error("Schedules belong to a channel; this conversation isn't in one.");
@@ -228,7 +228,7 @@ export function schedulesExtension(schedules: Schedules, askerOf: (conversationI
 	const list = defineTool({
 		name: "schedules",
 		description: "List this channel's schedules: when each runs, what it does, who set it up, and when it runs next.",
-		parameters: Type.Object({}),
+		parameters: obj({}, { open: true }),
 		execute: async (_args, api, context) => {
 			const here = schedules.forChannel(await channelOf(api as never, api.conversationId, context));
 			return { output: [{ type: "text", text: here.length === 0 ? "No schedules in this channel." : here.map(describe).join("\n") }] };
@@ -238,13 +238,13 @@ export function schedulesExtension(schedules: Schedules, askerOf: (conversationI
 	const change = defineTool({
 		name: "change_schedule",
 		description: "Change, pause or resume one of this channel's schedules, when someone asks. Leave out what stays the same.",
-		parameters: Type.Object({
-			id: Type.Number(),
-			cron: Type.Optional(Type.String()),
-			when: Type.Optional(Type.String({ description: "The new time in words; required with cron" })),
-			task: Type.Optional(Type.String()),
-			paused: Type.Optional(Type.Boolean()),
-		}),
+		parameters: obj({
+			id: num(),
+			cron: opt(str()),
+			when: opt(str({ description: "The new time in words; required with cron" })),
+			task: opt(str()),
+			paused: opt(bool()),
+		}, { open: true }),
 		execute: async (args, api, context) => {
 			const channel = await channelOf(api as never, api.conversationId, context);
 			const current = schedules.get(args.id);
@@ -260,7 +260,7 @@ export function schedulesExtension(schedules: Schedules, askerOf: (conversationI
 	const remove = defineTool({
 		name: "unschedule",
 		description: "Remove one of this channel's schedules, when someone asks.",
-		parameters: Type.Object({ id: Type.Number() }),
+		parameters: obj({ id: num() }, { open: true }),
 		execute: async (args, api, context) => {
 			const channel = await channelOf(api as never, api.conversationId, context);
 			const current = schedules.get(args.id);

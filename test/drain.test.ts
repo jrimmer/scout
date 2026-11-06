@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
+import { obj } from "@earendil-works/pi-schema";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, defineTool, Harness, type Storage, type ToolExecutionApi } from "@earendil-works/pi-durable";
@@ -74,7 +74,7 @@ describe("draining for a restart", () => {
 		const slow = defineTool({
 			name: "slow",
 			description: "Takes a while",
-			parameters: Type.Object({}),
+			parameters: obj({}, { open: true }),
 			execute: async () => {
 				ran++;
 				started.open();
@@ -176,7 +176,7 @@ describe("draining for a restart", () => {
 		const review = defineTool({
 			name: "review",
 			description: "Has the change reviewed",
-			parameters: Type.Object({}),
+			parameters: obj({}, { open: true }),
 			execute: async (_args, api: ToolExecutionApi, ctx) => {
 				await go.opened;
 				const verdict = await reviewAsSubtask(api, { agent: { model: MODEL }, workspace: { root: dir, cwd: dir }, prompt: "review this", requestId: "review:1" }, ctx);
@@ -211,7 +211,7 @@ describe("draining for a restart", () => {
 		const forever = defineTool({
 			name: "forever",
 			description: "Never ends",
-			parameters: Type.Object({}),
+			parameters: obj({}, { open: true }),
 			execute: (_args, _api, ctx) => {
 				started.open();
 				return new Promise((_resolve, reject) => ctx.abortSignal?.addEventListener("abort", () => reject(new Error("stopped"))));

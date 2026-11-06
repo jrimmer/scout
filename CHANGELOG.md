@@ -12,6 +12,10 @@ A change to any of these that needs people to act is a major version. Everything
 ## Unreleased
 
 ### Upgrading
+- **Pi Durable and its packages move from 1.4.0 to 1.5.0.** Opening an existing `pi.sqlite` converts it in place (the
+  `pi.live` document becomes version 3), and 1.4.0 can't read it afterwards. Take a copy first
+  (`sqlite3 pi.sqlite ".backup pi-before.sqlite"`) and pass `--pi-backed-up` to the deploy script, which refuses
+  without it. Rolling back means restoring that copy.
 - **Take a copy of `scout.sqlite` first.** The first start moves Scout 1's thread search into the new index and drops
   the old table, which can't be undone. (Litestream, if you run it, has the earlier state.)
 - **`search_threads` is now `search_history`.** Anything of yours that names the tool (a profile, a channel's
@@ -20,6 +24,14 @@ A change to any of these that needs people to act is a major version. Everything
   [operations](docs/operations.md#asking-about-earlier-work-people-and-repositories).
 - **Threads in a channel bound to a repository** now come back in search only for people who may use that repository,
   with what Scout ran in them.
+
+### Changed
+- **Pi 1.5.0.** A run that was cut off by restarts too many times now ends and says so, instead of lingering; a run that
+  ends without an answer records why; and the harness reads and writes less storage. Tool schemas are built with
+  `@earendil-works/pi-schema`, and Slack replies are drawn from the conversation's view instead of an event stream.
+  Dependencies also moved to `@modelcontextprotocol/sdk` 1.32.2, with the lockfile's `body-parser` and `fast-uri`
+  brought up to releases that fix their reported advisories (they came in through the MCP library; Scout uses only its
+  client).
 
 ### Added
 - **A session index.** What is said in Scout's threads and what happens on the code host (pull requests, issues, reviews

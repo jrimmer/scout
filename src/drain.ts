@@ -36,7 +36,9 @@ export async function drain(options: {
 	const started = Date.now();
 	let goAhead = new Set<string>();
 	limiter.drain((session) => goAhead.has(session));
-	const graph = await harness.taskGraph(context);
+	// The watch keeps `value` current once it is started; nothing here needs its changes one by one.
+	const graph = await harness.watchTaskGraph(context);
+	graph.start(async () => {});
 	try {
 		let quietSince: number | undefined;
 		for (;;) {
@@ -60,6 +62,6 @@ export async function drain(options: {
 			await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 250));
 		}
 	} finally {
-		graph.dispose();
+		await graph.stop();
 	}
 }

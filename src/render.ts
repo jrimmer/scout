@@ -1,4 +1,5 @@
-import type { AgentEvent } from "@earendil-works/pi-durable";
+import type { ConversationView, LiveState } from "@earendil-works/pi-durable";
+import type { Message } from "@earendil-works/pi-ai";
 import { type Phase, toolPhase } from "./reactions.ts";
 import { redact } from "./scan.ts";
 
@@ -87,6 +88,130 @@ type Run = {
 	/** Notes Scout kept during the run, shown with its answer so people can object. */
 	notes?: string[];
 };
+
+/**
+ * What happens in a run, as the renderer needs it. Pi 1.5 shows a conversation as state, not events (its view and
+ * `pi.live`), so `ViewEvents` below turns each new view into these; nothing else here depends on that shape.
+ */
+export type RunEvent =
+	| { type: "snapshot"; run?: object; entries: readonly { model?: readonly Message[] }[] }
+	| { type: "run_start" | "run_end" | "message_start" | "auto_retry_start" | "auto_retry_end" | "compaction_start" }
+	| { type: "message_end"; entry: { model?: readonly Message[] } }
+	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: Record<string, unknown>; parentToolCallId?: string }
+	| { type: "tool_execution_end"; toolCallId: string; toolName: string; entry?: { data?: unknown }; parentToolCallId?: string }
+	| { type: "task_failed"; message: string };
+
+const RUN_FAILURES: Record<string, string> = {
+	model_error: "the model didn't answer",
+	no_model: "no model is set up for this",
+	reset: "the conversation was reset",
+	faulted: "something broke while I was working",
+	orphaned: "I lost track of the work",
+	interrupted: "I was interrupted and couldn't pick it back up",
+	restart_limit: "I was interrupted too many times",
+	nothing_to_answer: "there was nothing to answer",
+	turn_limit: "I ran out of steps for one request",
+};
+
+type Block = { type?: string; id?: string; arguments?: unknown };
+
+/** The arguments a model gave a tool call, found in the answer that made it (committed, or still arriving). */
+function callArguments(view: ConversationView, live: LiveState, callId: string): Record<string, unknown> {
+	const blocks = (messages: readonly unknown[] | undefined): Block[] =>
+		(messages ?? []).flatMap((m) => {
+			const content = (m as { content?: unknown }).content;
+			return Array.isArray(content) ? (content as Block[]) : [];
+		});
+	const streaming = live.generation?.message === undefined ? [] : blocks([live.generation.message]);
+	for (const block of [...streaming, ...view.entries.toReversed().flatMap((e) => blocks(e.model))]) {
+		if (block.type === "toolCall" && block.id === callId && typeof block.arguments === "object" && block.arguments !== null) return block.arguments as Record<string, unknown>;
+	}
+	return {};
+}
+
+/**
+ * Turns the values of a conversation's view (`Conversation.watch()`) into run events: the first value is a snapshot,
+ * each later one says what changed since the last. Keep one per watch; `next` takes every value, in order.
+ */
+export class ViewEvents {
+	#started = false;
+	#last: number | undefined;
+	#running = false;
+	#generating = false;
+	#retry: number | undefined;
+	#compacting = false;
+	#failure: unknown;
+	readonly #tools = new Map<string, { name: string; done: boolean }>();
+
+	next(view: ConversationView): RunEvent[] {
+		const live = (view.docs["pi.live"] ?? {}) as LiveState;
+		const entries = view.entries;
+		if (!this.#started) {
+			this.#started = true;
+			this.#running = live.run !== undefined;
+			this.#last = entries.at(-1)?.id;
+			this.#generating = live.generation?.message !== undefined;
+			this.#retry = live.generation?.retry?.at;
+			this.#compacting = (live.compactions?.length ?? 0) > 0;
+			this.#failure = live.runFailure;
+			for (const slot of live.tools ?? []) this.#tools.set(slot.callId, { name: slot.name, done: slot.status === "done" });
+			return [{ type: "snapshot", ...(live.run === undefined ? {} : { run: live.run }), entries }];
+		}
+		const out: RunEvent[] = [];
+		if (live.run !== undefined && !this.#running) {
+			this.#running = true;
+			out.push({ type: "run_start" });
+		}
+		const generating = live.generation?.message !== undefined;
+		if (generating && !this.#generating) out.push({ type: "message_start" });
+		this.#generating = generating;
+		const retry = live.generation?.retry?.at;
+		if (retry !== this.#retry) {
+			if (this.#retry !== undefined) out.push({ type: "auto_retry_end" });
+			if (retry !== undefined) out.push({ type: "auto_retry_start" });
+			this.#retry = retry;
+		}
+		const compacting = (live.compactions?.length ?? 0) > 0;
+		if (compacting && !this.#compacting) out.push({ type: "compaction_start" });
+		this.#compacting = compacting;
+		// What the model said arrives as entries before the tools it asked for run, so a step reads its arguments there.
+		const last = this.#last;
+		for (const entry of entries) if (last === undefined || entry.id > last) out.push({ type: "message_end", entry });
+		this.#last = entries.at(-1)?.id ?? last;
+		const seen = new Set<string>();
+		for (const slot of live.tools ?? []) {
+			seen.add(slot.callId);
+			let tool = this.#tools.get(slot.callId);
+			if (tool === undefined) {
+				tool = { name: slot.name, done: false };
+				this.#tools.set(slot.callId, tool);
+				out.push({ type: "tool_execution_start", toolCallId: slot.callId, toolName: slot.name, args: callArguments(view, live, slot.callId) });
+			}
+			if (slot.status === "done" && !tool.done) {
+				tool.done = true;
+				// What went wrong with the call (bad arguments, no such tool) is on the result entry the call left.
+				const entry = slot.entry === undefined ? undefined : entries.find((e) => e.id === slot.entry);
+				out.push({ type: "tool_execution_end", toolCallId: slot.callId, toolName: slot.name, entry: { data: entry?.data ?? { diagnostics: slot.diagnostics ?? [] } } });
+			}
+		}
+		// A slot that is gone without having finished (the run ended around it) is over too.
+		for (const [id, tool] of this.#tools) {
+			if (seen.has(id)) continue;
+			if (!tool.done) out.push({ type: "tool_execution_end", toolCallId: id, toolName: tool.name });
+			this.#tools.delete(id);
+		}
+		const failure = live.runFailure;
+		if (failure !== undefined && failure !== this.#failure && failure.reason !== "aborted") {
+			out.push({ type: "task_failed", message: failure.detail ?? RUN_FAILURES[failure.reason] ?? failure.reason });
+		}
+		this.#failure = failure;
+		if (live.run === undefined && this.#running) {
+			this.#running = false;
+			out.push({ type: "run_end" });
+		}
+		return out;
+	}
+}
 
 /**
  * Renders one thread's runs into Slack: one message per run, posted when the run starts, edited as it works, and
@@ -191,11 +316,11 @@ export class ThreadView {
 		return this.#queue;
 	}
 
-	handle(events: readonly AgentEvent[]): void {
+	handle(events: readonly RunEvent[]): void {
 		for (const event of events) this.#handle(event);
 	}
 
-	#handle(event: AgentEvent): void {
+	#handle(event: RunEvent): void {
 		switch (event.type) {
 			case "snapshot":
 				// Attached mid-run, for example after a restart: pick the run up without its earlier steps.

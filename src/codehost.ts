@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord";
-import { Type } from "@earendil-works/pi-ai";
+import { obj, str } from "@earendil-works/pi-schema";
 import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { CodeHostKind } from "./config.ts";
 import { ReviewsDoc } from "./docs.ts";
@@ -84,10 +84,10 @@ export function createCodeHostExtension(options: CodeHostOptions) {
 			? "Commit your file changes, push them, and open a pull request (or update the open one). Returns its URL."
 			: "Push this thread's branch and open a pull request (or update the open one). Commit your work with git " +
 				"first; the working tree must be clean. Returns the pull request URL.",
-		parameters: Type.Object({
-			title: Type.String({ description: "Short, imperative title" }),
-			body: Type.String({ description: "What changed and why, and how it was tested. Markdown." }),
-		}),
+		parameters: obj({
+			title: str({ description: "Short, imperative title" }),
+			body: str({ description: "What changed and why, and how it was tested. Markdown." }),
+		}, { open: true }),
 		execute: async (args, api, context) => {
 			const conversationId: number = api.conversationId;
 			const target = await options.target(conversationId, context);

@@ -6,7 +6,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { Type } from "@earendil-works/pi-ai";
 import { type ConversationId, defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { ThreadDoc } from "./docs.ts";
 import { redact } from "./scan.ts";
@@ -294,7 +293,7 @@ export async function mcpExtension(
 				defineTool({
 					name: `mcp__${connection.name}__${tool.name}`,
 					description: `${tool.description ?? tool.name} (from ${connection.name}${gated ? "; it changes things, so a person in the thread has to approve first" : ""})`,
-					parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
+					parameters: tool.inputSchema,
 					execute: async (args, api, context) => {
 						if (gated) {
 							// An approval covers exactly the call it was asked for: this server, this tool, these arguments.
@@ -322,7 +321,7 @@ export async function mcpExtension(
 							}
 						}
 						const result = await connection.client.callTool(
-							{ name: tool.name, arguments: args },
+							{ name: tool.name, arguments: args as Record<string, unknown> },
 							undefined,
 							context.abortSignal === undefined ? {} : { signal: context.abortSignal },
 						);

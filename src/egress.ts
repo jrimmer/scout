@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFil
 import { isIP } from "node:net";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Type } from "@earendil-works/pi-ai";
+import { obj, str } from "@earendil-works/pi-schema";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 
 /**
@@ -208,10 +208,10 @@ export function egressExtension(propose: (conversationId: number, host: string, 
 			"around the network. When the tool you need isn't installed (a JDK, an image library, a Terraform provider) and " +
 			"the install can't reach its registry, ask for that ecosystem as one instead of host by host" +
 			(ecosystems.length === 0 ? "." : `: ${ecosystems.map((e) => `@${e}`).join(", ")}, or @all.`),
-		parameters: Type.Object({
-			host: Type.String({ description: "The host name, e.g. registry.npmjs.org (no scheme or path); or @ and an ecosystem (the ones named in the tool's description) for its package registries" }),
-			why: Type.String({ description: "What needed it, in a sentence: the command and what it was fetching" }),
-		}),
+		parameters: obj({
+			host: str({ description: "The host name, e.g. registry.npmjs.org (no scheme or path); or @ and an ecosystem (the ones named in the tool's description) for its package registries" }),
+			why: str({ description: "What needed it, in a sentence: the command and what it was fetching" }),
+		}, { open: true }),
 		execute: async (args, api) => {
 			const checked = checkHost(args.host);
 			if ("reason" in checked) throw new Error(`"${args.host}" isn't something I can ask to allow: ${checked.reason}`);

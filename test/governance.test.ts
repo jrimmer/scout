@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { Type } from "@earendil-works/pi-ai";
+import { obj, str } from "@earendil-works/pi-schema";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
@@ -310,7 +310,7 @@ describe("observers in a real run", () => {
 				return new Response("{}");
 			},
 		});
-		const echo = defineTool({ name: "echo", description: "Echo", parameters: Type.Object({ text: Type.String() }), execute: async (args) => ({ output: [{ type: "text", text: args.text }] }) });
+		const echo = defineTool({ name: "echo", description: "Echo", parameters: obj({ text: str() }, { open: true }), execute: async (args) => ({ output: [{ type: "text", text: args.text }] }) });
 		const registry = createRegistry();
 		registry.install(defineExtension({ name: "echo", tools: [echo] }));
 		registry.install(observeExtension([audit, limits, ledger, counters, tracer], (e, reason) => audit.record("blocked", { actor: "scout", conversationId: e.conversationId, detail: { tool: e.name, reason } })));

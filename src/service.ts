@@ -188,7 +188,7 @@ export async function startService(options: ServiceOptions) {
 		return name;
 	}
 	harness.closed.then((end) => {
-		if (end.reason === "failed") {
+		if (end.kind === "failed") {
 			console.error("harness failed; exiting so the supervisor restarts us:", end.error);
 			exit(1);
 		}

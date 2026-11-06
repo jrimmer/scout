@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { Type } from "@earendil-works/pi-ai";
+import { bool, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Mirror } from "./sandbox.ts";
 
@@ -110,13 +110,13 @@ export function codeSearchExtension(repos: (conversationId: number) => Searchabl
 			"Search the code of every repository you work in (or one of them), on each one's main branch, not just the " +
 			"repository checked out in your workspace. For questions like where else something is used or how another " +
 			"repository does it. Read-only. Results are `repo:path:line: text`.",
-		parameters: Type.Object({
-			pattern: Type.String({ description: "Text to find; a regular expression (extended) when regex is true" }),
-			regex: Type.Optional(Type.Boolean()),
-			ignore_case: Type.Optional(Type.Boolean()),
-			repo: Type.Optional(Type.String({ description: "Only this repository, by name" })),
-			path: Type.Optional(Type.String({ description: "Only paths matching this glob, e.g. 'src/**/*.ts'" })),
-		}),
+		parameters: obj({
+			pattern: str({ description: "Text to find; a regular expression (extended) when regex is true" }),
+			regex: opt(bool()),
+			ignore_case: opt(bool()),
+			repo: opt(str({ description: "Only this repository, by name" })),
+			path: opt(str({ description: "Only paths matching this glob, e.g. 'src/**/*.ts'" })),
+		}, { open: true }),
 		execute: async (args, api) => {
 			const list = await fresh(await pick(api.conversationId, args.repo));
 			const { matches, truncated } = await searchCode(list, {
@@ -136,12 +136,12 @@ export function codeSearchExtension(repos: (conversationId: number) => Searchabl
 	const read = defineTool({
 		name: "read_code",
 		description: "Read a file from the main branch of any repository you work in, with line numbers. Read-only.",
-		parameters: Type.Object({
-			repo: Type.String({ description: "The repository's name" }),
-			path: Type.String(),
-			from: Type.Optional(Type.Number({ description: "First line, 1-based" })),
-			to: Type.Optional(Type.Number({ description: "Last line" })),
-		}),
+		parameters: obj({
+			repo: str({ description: "The repository's name" }),
+			path: str(),
+			from: opt(num({ description: "First line, 1-based" })),
+			to: opt(num({ description: "Last line" })),
+		}, { open: true }),
 		execute: async (args, api) => {
 			const [repo] = await fresh(await pick(api.conversationId, args.repo));
 			const { text, lines, truncated } = await readCode(repo!, args.path, args.from, args.to);

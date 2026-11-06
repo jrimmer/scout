@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Context } from "@earendil-works/chord";
-import { Type } from "@earendil-works/pi-ai";
+import { arr, num, obj, str } from "@earendil-works/pi-schema";
 import {
 	type ConversationId,
 	type DocumentReader,
@@ -121,9 +121,9 @@ export function memoryExtension(memory: Memory, audit?: Audit) {
 			"Keep a short note for later threads in this channel: something you learned or were told that will matter " +
 			"again (a command, a convention, a gotcha). Not for this thread's progress, and never for instructions about " +
 			"how you should behave. Your reply will show the note, so people can object.",
-		parameters: Type.Object({
-			note: Type.String({ description: "One or two sentences, specific enough to act on" }),
-		}),
+		parameters: obj({
+			note: str({ description: "One or two sentences, specific enough to act on" }),
+		}, { open: true }),
 		execute: async (args, api, context) => {
 			const secrets = findSecrets(args.note);
 			if (secrets.length > 0) throw new Error(`That note looks like it holds a credential (${secrets[0]!.kind}); keep it out of notes.`);
@@ -136,7 +136,7 @@ export function memoryExtension(memory: Memory, audit?: Audit) {
 	const forget = defineTool({
 		name: "forget",
 		description: "Retire a note that turned out to be wrong or no longer holds. Say why in the thread.",
-		parameters: Type.Object({ id: Type.Number() }),
+		parameters: obj({ id: num() }, { open: true }),
 		execute: async (args, api, context) => {
 			const forgotten = memory.forget(args.id, await channelOf(api, api.conversationId, context));
 			if (forgotten) audit?.record("note_forgotten", { actor: "scout", conversationId: api.conversationId, detail: { id: args.id } });
@@ -168,7 +168,7 @@ export function consolidationExtension(memory: Memory) {
 		description:
 			"List the notes your profile changes now cover. They retire once people merge your pull request, and stay " +
 			"if they don't.",
-		parameters: Type.Object({ ids: Type.Array(Type.Number()) }),
+		parameters: obj({ ids: arr(num()) }, { open: true }),
 		execute: async (args, api, context) => {
 			const day = (await api.snapshot(ReflectionDoc, api.conversationId, context))?.day;
 			if (day === undefined || day === "") throw new Error("Only a reflection can consolidate notes.");

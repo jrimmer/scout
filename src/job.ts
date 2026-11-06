@@ -2,10 +2,10 @@ import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type ConversationId, MemoryStorage, watchEvents } from "@earendil-works/pi-durable";
+import { type ConversationId, MemoryStorage } from "@earendil-works/pi-durable";
 import { loadConfig, useScoutsKey } from "./config.ts";
 import { ThreadDoc } from "./docs.ts";
-import { describeStep } from "./render.ts";
+import { describeStep, ViewEvents } from "./render.ts";
 import { redact } from "./scan.ts";
 import { openScout, type Scout } from "./scout.ts";
 import { resolveSecrets } from "./secrets.ts";
@@ -38,11 +38,14 @@ export async function runJob(
 		},
 		context,
 	);
-	const events = await watchEvents(scout.harness, conversation.id as ConversationId, context);
+	const watch = await conversation.watch(context);
+	const views = new ViewEvents();
+	views.next(watch.value);
 	let answer = "";
 	let failedCall: string | undefined;
-	events.start(async (batch) => {
-		for (const event of batch) {
+	watch.start(async (call) => {
+		if (call.kind !== "value") return;
+		for (const event of views.next(call.value)) {
 			if (event.type === "tool_execution_start" && event.parentToolCallId === undefined) {
 				io.progress(describeStep(event.toolName, event.args).replaceAll("`", ""));
 			}
@@ -69,7 +72,7 @@ export async function runJob(
 			...(problem === undefined ? {} : { problem }),
 		};
 	} finally {
-		await events.stop();
+		await watch.stop();
 		await scout.workspaces.remove(conversation.id);
 	}
 }
@@ -116,8 +119,8 @@ if (import.meta.main) {
 		instance,
 		context: BACKGROUND_CONTEXT,
 		watchProfile: false,
-		onReport: (error) => {
-			reported = reportLine(error);
+		onReport: (report) => {
+			reported = reportLine(report.error);
 		},
 	});
 	const result = await runJob(scout, prompt, { progress: (line) => console.error(`• ${line}`) }, repo === undefined ? {} : { repo });

@@ -214,10 +214,10 @@ describe("fallback models", () => {
 			fallback: async () => (asked++, onFallback ? "deepseek-4.1-flash isn't answering, so I'm using glm-5.3 for now." : undefined),
 		});
 		const said = (text: string) => ({ type: "message_end", entry: { model: [{ role: "assistant", content: [{ type: "text", text }], stopReason: "stop" }] } }) as never;
-		view.handle([{ type: "run_start", inputs: [] }]);
+		view.handle([{ type: "run_start" }]);
 		view.handle([said("Looking."), said("Found it.")]);
 		view.handle([{ type: "message_end", entry: { model: [{ role: "user", content: "more" }] } } as never]);
-		view.handle([{ type: "run_end", inputs: [] }]);
+		view.handle([{ type: "run_end" }]);
 		await view.settled();
 		const final = JSON.stringify(posted.at(-1)!.blocks);
 		assert.match(final, /"text":"deepseek-4\.1-flash isn't answering, so I'm using glm-5\.3 for now\."/);
@@ -225,8 +225,8 @@ describe("fallback models", () => {
 		assert.equal(asked, 1, "asked once a run, after a model's answer");
 
 		onFallback = false;
-		view.handle([{ type: "run_start", inputs: [] }, said("Back to normal.")]);
-		view.handle([{ type: "run_end", inputs: [] }]);
+		view.handle([{ type: "run_start" }, said("Back to normal.")]);
+		view.handle([{ type: "run_end" }]);
 		await view.settled();
 		assert.doesNotMatch(JSON.stringify(posted.at(-1)!.blocks), /isn't answering/, "a new run asks again");
 	});

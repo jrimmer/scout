@@ -10,7 +10,7 @@ import {
 	type Result,
 	type ShellExecOptions,
 	type ShellExecResult,
-	type WatchChange,
+	type FileChange,
 	type WatchTarget,
 	err,
 	ok,
@@ -211,7 +211,7 @@ export class ConfinedEnv extends NodeExecutionEnv {
 		const p = await this.#confine(path);
 		return p.ok ? super.remove(p.value, options, context) : p;
 	}
-	override async watch(targets: readonly WatchTarget[], onChange: (change: WatchChange) => void, context: Context) {
+	override async watch(targets: readonly WatchTarget[], onChange: (change: FileChange) => void, context: Context) {
 		const confined: WatchTarget[] = [];
 		for (const target of targets) {
 			const p = await this.#confine(target.path);

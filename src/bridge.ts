@@ -1,12 +1,12 @@
 import type { Context } from "@earendil-works/chord";
-import { type AgentChange, type AgentEventStream, type ConversationId, type Harness, watchEvents } from "@earendil-works/pi-durable";
+import { type AgentChange, type ConversationId, type ConversationView, type Harness, type WatchHandle } from "@earendil-works/pi-durable";
 import type { Audit } from "./audit.ts";
 import { delivery } from "./etiquette.ts";
 import type { Admission } from "./limits.ts";
 import { ThreadDoc } from "./docs.ts";
 import type { History } from "./history.ts";
 import { answerId } from "./source-slack.ts";
-import { type ChatMessage, type ChatSurface, ProgressPacer, type RunOutcome, ThreadView } from "./render.ts";
+import { type ChatMessage, type ChatSurface, ProgressPacer, type RunOutcome, ThreadView, ViewEvents } from "./render.ts";
 import { DEFAULT_EMOJI, type Ending, type Phase, StatusReactions } from "./reactions.ts";
 import { asksSomething } from "./recaps.ts";
 import { threadKey, type ThreadRow, type Threads } from "./threads.ts";
@@ -130,7 +130,7 @@ export class Bridge {
 	readonly #options: BridgeOptions;
 	readonly #views = new Map<number, ThreadView>();
 	/** Each view's event stream, and when its thread last had a request, a run or a view made (for releasing idle ones). */
-	readonly #streams = new Map<number, AgentEventStream>();
+	readonly #streams = new Map<number, WatchHandle<ConversationView>>();
 	readonly #usedAt = new Map<number, number>();
 	/** The messages each conversation's current run took as requests, whose reaction follows the run. */
 	readonly #requests = new Map<number, { channel: string; ts: string }[]>();
@@ -709,10 +709,15 @@ export class Bridge {
 			},
 		});
 		this.#views.set(thread.conversationId, view);
-		const stream = await watchEvents(harness, thread.conversationId as ConversationId, context);
-		this.#streams.set(thread.conversationId, stream);
-		view.handle([stream.snapshot]);
-		stream.start(async (events) => view.handle(events));
+		const conversation = await harness.conversation(thread.conversationId as ConversationId, context);
+		if (conversation === undefined) throw new Error(`thread ${thread.key} has no conversation`);
+		const watch = await conversation.watch(context);
+		this.#streams.set(thread.conversationId, watch);
+		const events = new ViewEvents();
+		view.handle(events.next(watch.value));
+		watch.start(async (call) => {
+			if (call.kind === "value") view.handle(events.next(call.value));
+		});
 		return view;
 	}
 

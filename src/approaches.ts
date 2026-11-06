@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Type } from "@earendil-works/pi-ai";
+import { arr, obj, str } from "@earendil-works/pi-schema";
 import { AssistantEntry, configure, type ConversationId, defineExtension, defineTool, type Extension } from "@earendil-works/pi-durable";
 import { ThreadDoc } from "./docs.ts";
 import type { ChatMessage } from "./render.ts";
@@ -173,13 +173,13 @@ export function approachesExtension(options: ApproachesOptions): Extension {
 			"Experimental. Only when someone asks you to try or compare several approaches: work on 2 to 4 of them at once, " +
 			"each in its own workspace from your branch's last commit (commit first), and post a comparison people choose " +
 			"from with a button. It costs about as much as that many separate requests; say so. Don't pick one yourself.",
-		parameters: Type.Object({
-			request: Type.String({ description: "What was asked, complete enough for someone starting fresh" }),
-			approaches: Type.Array(Type.Object({ name: Type.String({ description: "A few words" }), plan: Type.String({ description: "The approach, in a sentence or two" }) }), {
+		parameters: obj({
+			request: str({ description: "What was asked, complete enough for someone starting fresh" }),
+			approaches: arr(obj({ name: str({ description: "A few words" }), plan: str({ description: "The approach, in a sentence or two" }) }, { open: true }), {
 				minItems: 2,
 				maxItems: MAX_APPROACHES,
 			}),
-		}),
+		}, { open: true }),
 		execute: async (args, api, context) => {
 			const parentId: number = api.conversationId;
 			const { workspaces, store } = options;

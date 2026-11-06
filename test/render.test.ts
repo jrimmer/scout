@@ -69,17 +69,17 @@ describe("render", () => {
 		};
 		const failed = { role: "assistant", content: [], stopReason: "error", errorMessage: '400: {"type":"server_error","message":"scheduler admission timeout"}' };
 		const view = new ThreadView({ surface, channel: "C", threadTs: "1" });
-		view.handle([{ type: "run_start", inputs: [] }]);
+		view.handle([{ type: "run_start" }]);
 		view.handle([{ type: "message_end", entry: { model: [failed] } } as never]);
-		view.handle([{ type: "run_end", inputs: [] }]);
+		view.handle([{ type: "run_end" }]);
 		await view.settled();
 		assert.match(posted.at(-1) ?? "", /^I ran into a problem and stopped: the model didn't answer \(scheduler admission timeout\)/);
 
 		const said = { role: "assistant", content: [{ type: "text", text: "Checking the disk." }], stopReason: "toolUse" };
-		view.handle([{ type: "run_start", inputs: [] }]);
+		view.handle([{ type: "run_start" }]);
 		view.handle([{ type: "message_end", entry: { model: [said] } } as never]);
 		view.handle([{ type: "message_end", entry: { model: [failed] } } as never]);
-		view.handle([{ type: "run_end", inputs: [] }]);
+		view.handle([{ type: "run_end" }]);
 		await view.settled();
 		assert.match(posted.at(-1) ?? "", /^Checking the disk\.\n\n_Then I ran into a problem and stopped: the model didn't answer/);
 	});
@@ -136,9 +136,9 @@ describe("thread view", () => {
 		const remembered: (string | undefined)[] = [];
 		const view = new ThreadView({ surface, channel: "C", threadTs: "1", resumeTs: "old", onRunMessage: (ts) => remembered.push(ts) });
 		view.handle([{ type: "snapshot", run: {} } as never]);
-		view.handle([{ type: "run_end", inputs: [] }]);
+		view.handle([{ type: "run_end" }]);
 		await view.settled();
-		view.handle([{ type: "run_start", inputs: [] }]);
+		view.handle([{ type: "run_start" }]);
 		await view.settled();
 		assert.deepEqual(calls, ["update old", "update old", "post"]);
 		assert.deepEqual(remembered, ["old", undefined, "new"]);
@@ -175,7 +175,7 @@ describe("answers that always arrive", () => {
 		const s = surface({ failUpdate: true });
 		const ends: (string | undefined)[] = [];
 		const view = new ThreadView({ surface: s, channel: "C", threadTs: "1", onRunEnd: (_a, ts) => ends.push(ts) });
-		view.handle([{ type: "run_start", inputs: [] }, said("All done."), { type: "run_end", inputs: [] }] as never);
+		view.handle([{ type: "run_start" }, said("All done."), { type: "run_end" }] as never);
 		await view.settled();
 		assert.deepEqual(s.calls.map((c) => c.split("\n")[0]), ["post _Working… 0s_", "post All done."]);
 		assert.deepEqual(ends, ["p2"], "the answer's own message, for approvals and 🔁");
@@ -209,7 +209,7 @@ describe("answers that always arrive", () => {
 		const remembered: (string | undefined)[] = [];
 		const errors = mock.method(console, "error", () => {});
 		const view = new ThreadView({ surface: s, channel: "C", threadTs: "1", onRunEnd: (_a, ts) => ends.push(ts), onRunMessage: (ts) => remembered.push(ts), wait: async (ms) => void waits.push(ms) });
-		view.handle([{ type: "run_start", inputs: [] }, said(`First. ${"More. ".repeat(2_500)}`), { type: "run_end", inputs: [] }] as never);
+		view.handle([{ type: "run_start" }, said(`First. ${"More. ".repeat(2_500)}`), { type: "run_end" }] as never);
 		await view.settled();
 		errors.mock.restore();
 		assert.deepEqual(waits, [120_000, 120_000], "a wait each time Slack was down");
@@ -226,7 +226,7 @@ describe("answers that always arrive", () => {
 		const remembered: (string | undefined)[] = [];
 		const errors = mock.method(console, "error", () => {});
 		const view = new ThreadView({ surface: s, channel: "C", threadTs: "1", onRunEnd: (_a, ts) => ends.push(ts), onRunMessage: (ts) => remembered.push(ts), wait: async (ms) => void waits.push(ms) });
-		view.handle([{ type: "run_start", inputs: [] }, said("All done."), { type: "run_end", inputs: [] }] as never);
+		view.handle([{ type: "run_start" }, said("All done."), { type: "run_end" }] as never);
 		await view.settled();
 		errors.mock.restore();
 		assert.deepEqual(waits, []);
@@ -261,7 +261,7 @@ describe("answers that always arrive", () => {
 			onRunEnd: (answer, ts) => ends.push({ answer, ts }),
 			onRunMessage: (ts) => remembered.push(ts),
 		});
-		view.handle([{ type: "run_start", inputs: [] }, said("All done."), { type: "run_end", inputs: [] }] as never);
+		view.handle([{ type: "run_start" }, said("All done."), { type: "run_end" }] as never);
 		await view.settled();
 		errors.mock.restore();
 		assert.deepEqual(sent.at(-1), { text: "All done.", blocks: [] },"the retry is text only: no blocks, so no context or notes either");
@@ -281,7 +281,7 @@ describe("answers that always arrive", () => {
 			},
 		};
 		const view = new ThreadView({ surface, channel: "C", threadTs: "1", onRunEnd: (_a, _ts, outcome) => ends.push(outcome) });
-		view.handle([{ type: "run_start", inputs: [] }, said("Done."), { type: "run_end", inputs: [] }] as never);
+		view.handle([{ type: "run_start" }, said("Done."), { type: "run_end" }] as never);
 		await view.settled();
 		errors.mock.restore();
 		assert.deepEqual(ends, ["answered"]);
@@ -291,14 +291,14 @@ describe("answers that always arrive", () => {
 		const long = `The short version: it works.\n\n${"Details. ".repeat(1500)}`;
 		const withFiles = surface({ attach: "ok" });
 		let view = new ThreadView({ surface: withFiles, channel: "C", threadTs: "1" });
-		view.handle([{ type: "run_start", inputs: [] }, said(long), { type: "run_end", inputs: [] }] as never);
+		view.handle([{ type: "run_start" }, said(long), { type: "run_end" }] as never);
 		await view.settled();
 		assert.equal(withFiles.calls[1], `attach answer.md ${long.trim().length}`);
 		assert.match(withFiles.calls[2]!, /^update p1 The short version: it works\./);
 
 		const without = surface({ attach: "fail" });
 		view = new ThreadView({ surface: without, channel: "C", threadTs: "1" });
-		view.handle([{ type: "run_start", inputs: [] }, said(long), { type: "run_end", inputs: [] }] as never);
+		view.handle([{ type: "run_start" }, said(long), { type: "run_end" }] as never);
 		await view.settled();
 		assert.match(without.calls[1]!, /^update p1 The short version/, "the message is the answer's first part, not a promise of a file");
 		assert.equal(without.calls.filter((c) => c.startsWith("post")).length, 3, "the progress message, then the rest of the answer");
@@ -319,7 +319,7 @@ describe("answers that always arrive", () => {
 		const s = surface();
 		let slow = 0;
 		const view = new ThreadView({ surface: s, channel: "C", threadTs: "1", now: () => now, onSlow: () => slow++, behind: () => true });
-		view.handle([{ type: "run_start", inputs: [] }] as never);
+		view.handle([{ type: "run_start" }] as never);
 		await view.settled();
 		assert.ok(SAYINGS.behind.some((line) => s.calls[0]!.includes(line.slice(0, 20))), "warned it's slow today");
 		view.handle([{ type: "auto_retry_start", attempt: 1, at: 0, errorMessage: "x" }] as never);
@@ -334,7 +334,7 @@ describe("answers that always arrive", () => {
 		view.handle([{ type: "tool_execution_end", toolName: "bash" }] as never);
 		now = 140 * 60_000;
 		assert.equal(view.check(now), true, "45 minutes with nothing running: stop");
-		view.handle([{ type: "run_end", inputs: [] }] as never);
+		view.handle([{ type: "run_end" }] as never);
 		await view.settled();
 		assert.match(s.calls.at(-1)!, /^update p1 I stopped: I hadn't got anywhere in 50 m/, "counted from when the command finished");
 	});

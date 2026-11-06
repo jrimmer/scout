@@ -3,7 +3,7 @@ import { ENDINGS, type Ending, PHASES, type Phase } from "./reactions.ts";
 import { existsSync, readdirSync, readFileSync, watch } from "node:fs";
 import { promisify } from "node:util";
 import { basename, join, sep } from "node:path";
-import { Type } from "@earendil-works/pi-ai";
+import { obj, str } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord";
 import { type ConversationId, type DocumentReader, defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import { type Alert, type AlertPolicy, parseAlertPolicy } from "./alerts.ts";
@@ -166,7 +166,7 @@ export function profileExtension(profile: Profile, workspace: WorkspaceFacts) {
 	const loadSkill = defineTool({
 		name: "load_skill",
 		description: "Load a skill by name. Skills hold know-how the team wrote down; load one when it matches the task.",
-		parameters: Type.Object({ name: Type.String() }),
+		parameters: obj({ name: str() }, { open: true }),
 		replay: "safe",
 		execute: async (args, api, context) => {
 			const skill = skillsFor(await channelOf(api, api.conversationId, context)).find((s) => s.name === args.name);

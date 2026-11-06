@@ -4,9 +4,10 @@ import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord";
-import { AssistantEntry, type ConversationId, ProviderDoc, watchEvents } from "@earendil-works/pi-durable";
+import { AssistantEntry, type ConversationId, ProviderDoc } from "@earendil-works/pi-durable";
 import type { Config, RepoConfig } from "./config.ts";
 import { ThreadDoc } from "./docs.ts";
+import { ViewEvents } from "./render.ts";
 import type { Scout } from "./scout.ts";
 import { copyIn } from "./workspaces.ts";
 
@@ -465,7 +466,9 @@ export async function runTask(
 		},
 		context,
 	);
-	const events = await watchEvents(scout.harness, conversation.id as ConversationId, context);
+	const watch = await conversation.watch(context);
+	const views = new ViewEvents();
+	views.next(watch.value);
 	let answer = "";
 	let steps = 0;
 	const usage: Usage = { toolCalls: 0, badToolCalls: 0, modelCalls: 0, retries: 0, inputTokens: 0, outputTokens: 0, firstTokens: [] };
@@ -473,9 +476,10 @@ export async function runTask(
 	let modelFrom: number | undefined;
 	let retryFrom: number | undefined;
 	const toolFrom = new Map<string, { at: number; first: boolean; name: string }>();
-	events.start(async (batch) => {
+	watch.start(async (call) => {
+		if (call.kind !== "value") return;
 		const now = Date.now();
-		for (const event of batch) {
+		for (const event of views.next(call.value)) {
 			// Times are when the events arrive, which is close enough to see where minutes go.
 			if (event.type === "message_start") modelFrom ??= now;
 			if (event.type === "message_end" && modelFrom !== undefined) {
@@ -614,7 +618,7 @@ export async function runTask(
 		pass = false;
 		why.push(`the run broke: ${error instanceof Error ? error.message : String(error)}`);
 	} finally {
-		await events.stop();
+		await watch.stop();
 		await scout.workspaces.remove(conversation.id).catch(() => {});
 	}
 	const ended = Date.now();

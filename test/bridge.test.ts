@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { Type } from "@earendil-works/pi-ai";
+import { obj } from "@earendil-works/pi-schema";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { ThreadDoc } from "../src/docs.ts";
@@ -75,7 +75,7 @@ describe("bridge", () => {
 		const wait = defineTool({
 			name: "wait",
 			description: "Wait",
-			parameters: Type.Object({}),
+			parameters: obj({}, { open: true }),
 			execute: (_args, _api, ctx) => {
 				waiting++;
 				return new Promise((_resolve, reject) =>
