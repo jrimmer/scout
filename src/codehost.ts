@@ -93,7 +93,10 @@ export function createCodeHostExtension(options: CodeHostOptions) {
 			const target = await options.target(conversationId, context);
 			const { source, branch, base, mirror } = target;
 
-			if (options.commitAll && source.kind === "dir") await commitEverything(source.dir, args.title);
+			if (options.commitAll && source.kind === "dir") {
+				await refuseLeftoverMarkers(source.dir);
+				await commitEverything(source.dir, args.title);
+			}
 			const dirty = source.kind === "dir" ? await git(["-C", source.dir, "status", "--porcelain"]) : await source.status();
 			if (dirty !== "") throw new Error(`Uncommitted changes; commit them first:\n${dirty}`);
 			await mirror.refresh(0);
@@ -240,6 +243,57 @@ async function bringIn(target: PullTarget, published: string, list: string): Pro
 	return merged
 		? `${said}\n\nI merged their commits into your files. Read what changed, adjust your work to fit if it needs to, and call open_pull_request again. In your reply, say whose work you built on.`
 		: `${said}\n\nTheir changes conflict with yours, and I can't merge them here. Leave the pull request as it is, and say in your reply what conflicts, so a person can sort it out.`;
+}
+
+/** What bringing the base branch into a directory clone came to. */
+export type BaseMerge = { state: "current" | "merged" | "conflicts"; /** Files with conflict markers in them, for `conflicts`. */ files: string[] };
+
+/**
+ * Bring the base branch's latest commits into a directory clone (a reflection's, whose agent has no shell and can't
+ * touch `.git`), so a pull request the base has moved past can merge again. The host runs the merge, with hooks off.
+ * It commits when it merges cleanly. When it conflicts it leaves the merge unfinished, with the conflict markers in the
+ * files: the agent resolves them by editing, and `open_pull_request` commits the result as the merge.
+ */
+export async function mergeBaseInto(target: PullTarget): Promise<BaseMerge> {
+	const { source, base, branch, mirror } = target;
+	if (source.kind !== "dir") throw new Error("Only a directory clone is merged by the host; a sandbox merges for itself.");
+	const dir = source.dir;
+	const safe = ["-C", dir, "-c", "core.hooksPath=/dev/null"];
+	// A merge left half done (the base moved again before it was resolved) starts over from the current base, so the
+	// resolution so far is thrown away and made again; what the agent wrote before the merge began was committed then.
+	if (await inMerge(dir)) await git([...safe, "merge", "--abort"]);
+	await commitEverything(dir, `Work in progress on ${branch}`);
+	await mirror.refresh(0);
+	await git([...safe, "fetch", "--quiet", "--no-tags", mirror.path, `+refs/heads/${base}:refs/remotes/origin/${base}`]);
+	const theirs = `refs/remotes/origin/${base}`;
+	if (await isAncestor(dir, theirs, "HEAD")) return { state: "current", files: [] };
+	try {
+		await git([...safe, "merge", "--quiet", "--no-edit", theirs]);
+		return { state: "merged", files: [] };
+	} catch (error) {
+		const files = (await git([...safe, "diff", "--name-only", "--diff-filter=U"]).catch(() => "")).split("\n").filter(Boolean);
+		if (files.length === 0) {
+			await git([...safe, "merge", "--abort"]).catch(() => {});
+			throw error;
+		}
+		return { state: "conflicts", files };
+	}
+}
+
+async function inMerge(dir: string): Promise<boolean> {
+	return git(["-C", dir, "rev-parse", "-q", "--verify", "MERGE_HEAD"]).then(
+		() => true,
+		() => false,
+	);
+}
+
+/** A merge is waiting to be resolved and a file still has its markers: say so, rather than publish them. */
+async function refuseLeftoverMarkers(dir: string): Promise<void> {
+	if (!(await inMerge(dir))) return;
+	const found = await git(["-C", dir, "grep", "--untracked", "-n", "-I", "-E", "^(<{7} |>{7} )"]).catch(() => "");
+	if (found === "") return;
+	const files = [...new Set(found.split("\n").map((l) => l.split(":")[0]))].slice(0, 8);
+	throw new Error(`Conflict markers (<<<<<<< and >>>>>>>) are still in ${files.join(", ")}. Edit each file to keep what both sides meant, take every marker out, and call open_pull_request again.`);
 }
 
 /** Paths where a code host or CI service reads pipeline definitions. */

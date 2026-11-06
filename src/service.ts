@@ -1001,6 +1001,22 @@ export async function startService(options: ServiceOptions) {
 			threadActivity: (pull) => threads.byConversation(pull.conversationId)?.lastActivity,
 			conflict: async (pull, status, attempt) => {
 				if (threads.byConversation(pull.conversationId) === undefined) return;
+				if (pull.kind === "profile") {
+					// The reflection's agent has no shell: the host merges the base into its files and says what's left to do.
+					if (reflector === undefined) return;
+					const told = await reflector.syncWithBase(pull.conversationId).catch((error: unknown) => {
+						console.error(`bringing ${pull.url} up to date with ${status.baseRef} failed:`, error);
+						return undefined;
+					});
+					if (told === undefined) return;
+					await bridge.work(
+						pull.conversationId,
+						`Your pull request ${pull.url} no longer merges cleanly into ${status.baseRef}: it has moved on since you branched.\n\n${told}\n\nThis is automatic attempt ${attempt} of ${UPKEEP_TRIES}.`,
+						`conflict:${pull.url}:${status.head}:${status.base}`,
+						"bring it up to date",
+					);
+					return;
+				}
 				const base = await workspaces.refreshBase(pull.conversationId);
 				const prompt = [
 					`Your pull request ${pull.url} (${pull.slug} #${pull.number}) no longer merges cleanly into ${status.baseRef}: it has moved on since you branched. Its latest commits are now in your clone as origin/${base}.`,
@@ -1413,7 +1429,7 @@ export async function startService(options: ServiceOptions) {
 		work.push(bridge.drain().catch((error: unknown) => console.error("starting queued requests failed:", error)));
 		work.push(health.watch("reviews", "reviewing pull requests failed", () => pullReviewer.poll()));
 		if (own) {
-			work.push(health.watch("upkeep", "looking after Scout's pull requests failed", () => upkeep.poll(pulls.open("work"), now)));
+			work.push(health.watch("upkeep", "looking after Scout's pull requests failed", () => upkeep.poll(pulls.open("work"), now).then(() => upkeep.poll(pulls.open("profile"), now, { mergeableOnly: true }))));
 			work.push(health.watch("branches", "deleting closed pull requests' branches failed", cleanUpBranches));
 			work.push(health.watch("recaps", "following up on stalled threads failed", followUpStalledThreads));
 		}

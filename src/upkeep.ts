@@ -61,7 +61,8 @@ export class PullUpkeep {
 		`);
 	}
 
-	async poll(open: readonly PullRow[], now = Date.now()): Promise<void> {
+	/** `mergeableOnly` leaves out the nudge and the closing of quiet ones: for pull requests that are meant to wait for people (the profile's). */
+	async poll(open: readonly PullRow[], now = Date.now(), options: { mergeableOnly?: boolean } = {}): Promise<void> {
 		if (this.#polling) return;
 		this.#polling = true;
 		try {
@@ -69,7 +70,7 @@ export class PullUpkeep {
 				const status = await this.#forge.pullStatus(pull.slug, pull.number);
 				if (!status.open) continue;
 				await this.#mergeable(pull, status);
-				if (this.#pingAfterMs > 0) await this.#tidy(pull, status, now);
+				if (this.#pingAfterMs > 0 && options.mergeableOnly !== true) await this.#tidy(pull, status, now);
 			}
 		} finally {
 			this.#polling = false;

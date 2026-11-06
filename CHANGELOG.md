@@ -34,6 +34,12 @@ A change to any of these that needs people to act is a major version. Everything
   closed or still open, from the links in later pull requests' descriptions (`Fixes #12`, `Reverts #40`, "builds on #8").
 - **A code host login is joined to its Slack user** by the lookup that already decides who may ask for work, so a
   person's pull requests and their threads are found together.
+- **A profile proposal the base has moved past is brought up to date.** When the nightly reflection's pull request stops
+  merging cleanly, the host merges the profile's base branch into the reflection's files (it has no shell and can't touch
+  `.git`, so the host runs git, with hooks off), leaves any conflict markers in the files, and asks the reflection's
+  thread to resolve them and open the pull request again. Two tries, then it asks a person, as for Scout's code pull
+  requests. A pull request that still has markers in it is refused, not published. These pull requests are only kept
+  mergeable: they are never nudged or closed for being quiet.
 - **`npm run eval:retrieval`** measures whether search by meaning would find the right threads more often than words
   alone. It ships nothing; embeddings are not part of Scout until they win on real questions.
 

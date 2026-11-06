@@ -11,7 +11,7 @@ import {
 	section,
 } from "@earendil-works/pi-durable";
 import { createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import type { PullTarget } from "./codehost.ts";
+import { mergeBaseInto, type PullTarget } from "./codehost.ts";
 import { ReflectionDoc, ThreadDoc } from "./docs.ts";
 import { describeNotes, type Memory } from "./memory.ts";
 import type { CodeHost } from "./codehost.ts";
@@ -126,6 +126,24 @@ export class Reflector {
 			slug: this.#options.profileRepo.slug,
 			mirror: this.mirror,
 		};
+	}
+
+	/**
+	 * The profile's base branch has moved past a reflection's pull request: bring it into the reflection's files (the
+	 * host runs git; the agent has no shell and can't touch `.git`), and say what to do next.
+	 */
+	async syncWithBase(conversationId: number): Promise<string> {
+		const { context } = this.#options;
+		const target = await this.target(conversationId, context);
+		const merge = await mergeBaseInto(target);
+		const done = `call open_pull_request again with the same title and description, so the pull request is updated.`;
+		if (merge.state === "current") return `The base branch (${target.base}) is already in your files, so nothing needs merging on my side. If the pull request still shows a conflict, say so in your reply: it needs a person.`;
+		if (merge.state === "merged") return `I merged ${target.base} into your files and it went in cleanly. Read what changed, adjust your work if it needs to fit, and ${done}`;
+		return (
+			`I merged ${target.base} into your files, and these conflict: ${merge.files.join(", ")}. They hold conflict markers (<<<<<<<, =======, >>>>>>>). ` +
+			`Edit each one to keep what both sides meant, take out every marker, and ${done} You can't run git; I did the merge, and the next call commits it. ` +
+			`Each marker block holds both sides: above ======= is yours, below it is what the base branch has now. Keep both sides' changes where they don't contradict, and don't retype the parts around them.`
+		);
 	}
 
 	/** What people said on these pull requests, as indented lines under each. */

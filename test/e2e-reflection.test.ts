@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -296,6 +296,50 @@ describe("end to end: the nightly reflection", () => {
 				posts(e2e).some((p) => p.channel === HOME && p.thread !== undefined && /\*bob\* asked for changes on <.*>:\n> Say which command not to use\./.test(p.text)),
 				"in the reflection's thread",
 			);
+		} finally {
+			await r.close();
+		}
+	});
+
+	it("brings the profile's base into a proposal it has moved past, and the agent resolves what conflicts", async () => {
+		const r = await start({ hour: 0 });
+		const { e2e } = r;
+		const seen = { digest: "" };
+		const prompts: string[] = [];
+		try {
+			await aThread(r);
+			e2e.faux.setResponses(proposal(seen));
+			await e2e.service.reflect();
+			await proposed(r);
+
+			// Someone adds the same skill on main with other words: the proposal no longer merges.
+			mkdirSync(join(r.profileRepo.seed, "skills"), { recursive: true });
+			r.profileRepo.commit({ "skills/linter.md": "---\ndescription: Linting\n---\nUse the repo's lint script.\n" }, "someone writes the linter skill");
+			r.profileRepo.push("main");
+			e2e.host.get(PROFILE_SLUG, 1)!.pull!.mergeable = false;
+
+			e2e.faux.setResponses([
+				(transcript) => {
+					prompts.push(JSON.stringify(transcript));
+					return fauxAssistantMessage([fauxToolCall("read", { path: "skills/linter.md" })], toolUse);
+				},
+				fauxAssistantMessage([fauxToolCall("write", { path: "skills/linter.md", content: "---\ndescription: Linting\n---\nUse the repo's lint script: ./bin/lint.\n" })], toolUse),
+				fauxAssistantMessage([fauxToolCall("open_pull_request", { title: "Teach Scout the linter", body: "Merged main in; the skill now keeps both." })], toolUse),
+				fauxAssistantMessage("Brought it up to date and resolved the conflict in the linter skill."),
+			]);
+			await e2e.service.tick.housekeeping();
+			await until(() => e2e.said().some((t) => t.includes("Brought it up to date and resolved")), 20_000, "the answer");
+			await e2e.service.scout.harness.waitForIdle(context);
+
+			assert.match(prompts[0] ?? "", /no longer merges cleanly into main/);
+			assert.match(prompts[0] ?? "", /these conflict: skills\/linter\.md/);
+			assert.match(prompts[0] ?? "", /<<<<<<</, "the markers are what the agent read");
+			assert.match(prompts[0] ?? "", /This is automatic attempt 1 of 2\./);
+			const branch = branchForDay(r.day());
+			assert.equal(git("--git-dir", r.profileRepo.remote, "show", `${branch}:skills/linter.md`), "---\ndescription: Linting\n---\nUse the repo's lint script: ./bin/lint.");
+			assert.equal(git("--git-dir", r.profileRepo.remote, "rev-list", "--parents", "-n", "1", branch).split(" ").length, 3, "published as a merge of main");
+			assert.equal(e2e.host.opened().filter((p) => p.slug === PROFILE_SLUG).length, 1, "the same pull request, updated");
+			assert.equal(announcements(e2e).length, 1);
 		} finally {
 			await r.close();
 		}
